@@ -1,0 +1,68 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { ArrowDown, MessageSquarePlus } from 'lucide-vue-next'
+import type { Session } from '../../../types/session'
+import MessageItem from './MessageItem.vue'
+import { useConversationScroll } from '../../../composables/useConversationScroll'
+import { useWorkspaceStore } from '../../../stores/workspace'
+
+const props = defineProps<{ session: Session }>()
+
+const workspace = useWorkspaceStore()
+const listRef = ref<HTMLElement | null>(null)
+
+const { onScroll, restore, followIfAtBottom, scrollToBottom, showBackToLatest } =
+  useConversationScroll(listRef)
+
+// 切换会话：恢复滚动位置
+watch(
+  () => props.session.id,
+  (id) => void restore(id),
+  { immediate: true },
+)
+
+// 消息新增或流式增量：处于底部才跟随
+watch(
+  () => {
+    const ms = props.session.messages
+    const last = ms[ms.length - 1]
+    return `${ms.length}:${last?.content.length ?? 0}:${last?.toolCalls?.length ?? 0}`
+  },
+  () => void followIfAtBottom(),
+)
+
+const generating = computed(() => workspace.isGenerating(props.session.id))
+</script>
+
+<template>
+  <div class="relative min-h-0 flex-1">
+    <div ref="listRef" class="h-full overflow-y-auto" @scroll="onScroll">
+      <div class="mx-auto max-w-3xl px-6 py-6">
+        <MessageItem v-for="msg in session.messages" :key="msg.id" :message="msg" />
+
+        <!-- 空会话引导 -->
+        <div v-if="session.messages.length === 0" class="flex flex-col items-center gap-3 pt-28 text-neutral-400">
+          <MessageSquarePlus class="h-8 w-8 text-neutral-300" />
+          <p class="text-sm">开始一段新的对话</p>
+          <p class="text-xs">当前为本地 Mock 服务，回复内容仅用于界面演示</p>
+        </div>
+
+        <!-- 生成中提示 -->
+        <div v-if="generating" class="mb-4 flex items-center gap-2 text-xs text-neutral-400">
+          <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+          正在生成…
+        </div>
+      </div>
+    </div>
+
+    <!-- 返回最新消息 -->
+    <button
+      v-if="showBackToLatest"
+      class="absolute right-6 bottom-4 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-500 shadow-sm hover:bg-neutral-50"
+      title="回到最新消息"
+      @click="scrollToBottom"
+    >
+      <ArrowDown class="h-4 w-4" />
+    </button>
+  </div>
+</template>

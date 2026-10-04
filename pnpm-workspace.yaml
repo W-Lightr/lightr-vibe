@@ -1,0 +1,9 @@
+# pnpm v11 从 pnpm-workspace.yaml 读取设置（本项目内 .npmrc 被全局 config.yaml 覆盖）
+# 本机未开启开发者模式、无法创建 symlink/junction，因此：
+# - nodeLinker: hoisted（不生成 .pnpm symlink 树）
+# - storeDir 放在项目内（registerProject 中 isSubdir 为真时跳过 symlink 注册）
+# - packageImportMethod: hardlink（store 与 node_modules 同在 H: 卷）
+packages: []
+nodeLinker: hoisted
+storeDir: H:/AI/Light-vibe/lightr-vibe/.pnpm-store
+packageImportMethod: hardlink
