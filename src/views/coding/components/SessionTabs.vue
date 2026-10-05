@@ -1,51 +1,83 @@
 <script setup lang="ts">
-import { X } from 'lucide-vue-next'
+import { X, FileCode2, FileText, File } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
+import { fileIconKind } from '../../../utils/file'
 
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
+
+function tabTitle(tabId: string): string {
+  const tab = workspace.tabs.find((t) => t.id === tabId)
+  if (!tab) return ''
+  if (tab.kind === 'session') return sessionStore.get(tab.sessionId)?.title ?? '已删除会话'
+  return tab.fileName ?? tab.filePath ?? '文件'
+}
+
+function fileIcon(name: string) {
+  const kind = fileIconKind(name)
+  if (kind === 'code') return FileCode2
+  if (kind === 'text') return FileText
+  return File
+}
 </script>
 
 <template>
-  <!-- Chrome 风格标签：圆角顶部、激活标签与下方内容连通、非激活标签间细分隔线 -->
+  <!-- Chrome 风格标签：激活标签白底圆角顶部并连通内容区；非激活标签融入灰色标签条 -->
+  <!-- 左侧保留一段灰色间隔，让首个标签的圆角与标签条底色形成层次（对照设计图） -->
   <div
-    class="flex min-w-0 items-stretch self-stretch overflow-x-auto pl-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    class="flex min-w-0 items-stretch self-stretch overflow-x-auto pl-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     data-no-drag
   >
     <div
-      v-for="(id, index) in workspace.openSessionIds"
-      :key="id"
-      class="group relative flex h-full max-w-56 min-w-24 shrink-0 cursor-pointer items-center gap-2 rounded-t-lg px-3"
+      v-for="tab in workspace.tabs"
+      :key="tab.id"
+      class="group relative flex h-full max-w-60 min-w-28 shrink-0 cursor-pointer items-center gap-2.5 rounded-t-xl px-3.5"
       :class="[
-        id === workspace.activeSessionId
-          ? 'relative z-[1] bg-white text-neutral-800'
-          : 'text-neutral-500 hover:bg-neutral-200/70',
-        // 相邻两个非激活标签之间显示细分隔线
-        index > 0 &&
-        id !== workspace.activeSessionId &&
-        workspace.openSessionIds[index - 1] !== workspace.activeSessionId
-          ? 'border-l border-neutral-300/70'
-          : '',
+        tab.id === workspace.activeTabId
+          ? 'relative z-[1] bg-white text-neutral-900'
+          : 'text-neutral-500 hover:bg-neutral-200/60',
       ]"
-      :title="sessionStore.get(id)?.title ?? id"
-      @click="workspace.openSession(id)"
+      :title="tabTitle(tab.id)"
+      @click="workspace.activeTabId = tab.id"
     >
-      <!-- 状态圆点（favicon 位）：生成中蓝色脉冲 / 空闲灰 -->
+      <!-- 会话标签：状态圆点（激活高饱和蓝 / 未激活灰蓝 / 生成中脉冲）；文件标签：类型图标 -->
       <span
+        v-if="tab.kind === 'session'"
         class="h-2 w-2 shrink-0 rounded-full"
-        :class="workspace.isGenerating(id) ? 'animate-pulse bg-blue-500' : 'bg-neutral-400/70'"
+        :class="
+          workspace.isGenerating(tab.sessionId)
+            ? 'animate-pulse bg-blue-500'
+            : tab.id === workspace.activeTabId
+              ? 'bg-blue-500'
+              : 'bg-slate-400'
+        "
       />
-      <span class="min-w-0 flex-1 truncate text-xs" :class="id === workspace.activeSessionId && 'font-medium'">
-        {{ sessionStore.get(id)?.title ?? '已删除会话' }}
-      </span>
-      <button
-        class="flex h-4.5 w-4.5 shrink-0 cursor-pointer items-center justify-center rounded-full text-neutral-400 hover:bg-neutral-300/70 hover:text-neutral-700"
-        :class="id === workspace.activeSessionId ? 'flex' : 'hidden group-hover:flex'"
-        title="关闭标签"
-        @click.stop="workspace.closeTab(id)"
+      <component
+        :is="fileIcon(tab.fileName ?? '')"
+        v-else
+        class="h-3.5 w-3.5 shrink-0 text-slate-400"
+      />
+
+      <span
+        class="min-w-0 flex-1 truncate text-[13px]"
+        :class="tab.id === workspace.activeTabId ? 'font-medium text-neutral-900' : ''"
       >
-        <X class="h-3 w-3" />
+        {{ tabTitle(tab.id) }}
+      </span>
+
+      <!-- 关闭按钮：始终占位（避免悬浮时标签宽度跳动），未激活标签以透明度过渡显现 -->
+      <button
+        class="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded transition-opacity duration-150"
+        :class="
+          tab.id === workspace.activeTabId
+            ? 'text-neutral-700 opacity-100 hover:bg-neutral-200 hover:text-neutral-900'
+            : 'text-neutral-500 opacity-0 hover:bg-neutral-300/70 hover:text-neutral-800 group-hover:opacity-100 focus-visible:opacity-100'
+        "
+        title="关闭标签"
+        @click.stop="workspace.closeTab(tab.id)"
+      >
+        <X class="h-3.5 w-3.5" />
       </button>
     </div>
   </div>

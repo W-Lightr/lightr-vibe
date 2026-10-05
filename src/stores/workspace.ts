@@ -1,9 +1,9 @@
-// 工作区 UI 状态：活动会话、已打开标签、面板开关、模型与执行模式选择。
+// 工作区 UI 状态：打开的标签（会话/文件）、活动标签、面板开关、模型与执行模式选择。
 // 标签关闭不删除会话；删除会话时同步清理标签与活动状态。
 
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
-import type { ExecutionMode } from '../types/session'
+import { computed, ref } from 'vue'
+import type { ExecutionMode, OpenTab } from '../types/session'
 
 export const MODELS = [
   'GS/Qwen3-Coder-Next-FP8 · medium',
@@ -18,60 +18,89 @@ export const EXECUTION_MODES: { value: ExecutionMode; label: string }[] = [
 ]
 
 export const useWorkspaceStore = defineStore('workspace', () => {
-  const activeSessionId = ref<string | null>(null)
-  const openSessionIds = ref<string[]>([])
+  const tabs = ref<OpenTab[]>([])
+  const activeTabId = ref<string | null>(null)
   const sidebarVisible = ref(true)
   const inspectorVisible = ref(true)
+  /** 左/右栏宽度（px），拖拽分隔条调整 */
+  const leftWidth = ref(260)
+  const rightWidth = ref(335)
   /** 侧栏搜索框开关（侧栏隐藏时由顶栏搜索按钮联动打开） */
   const sidebarSearchOpen = ref(false)
   const selectedModel = ref<string>(MODELS[0])
   const executionMode = ref<ExecutionMode>('auto')
   const generatingSessionIds = ref<string[]>([])
 
-  /** 打开会话标签（已打开则复用），并设为活动会话 */
-  function openSession(id: string) {
-    if (!openSessionIds.value.includes(id)) openSessionIds.value.push(id)
-    activeSessionId.value = id
+  const activeTab = computed(() => tabs.value.find((t) => t.id === activeTabId.value) ?? null)
+  const activeSessionId = computed(() =>
+    activeTab.value?.kind === 'session' ? (activeTab.value.sessionId ?? null) : null,
+  )
+
+  /** 打开会话标签（已打开则复用），并设为活动标签 */
+  function openSession(sessionId: string) {
+    let tab = tabs.value.find((t) => t.kind === 'session' && t.sessionId === sessionId)
+    if (!tab) {
+      tab = { id: `tab-ses-${sessionId}`, kind: 'session', sessionId }
+      tabs.value.push(tab)
+    }
+    activeTabId.value = tab.id
   }
 
-  /** 关闭标签（不删除会话）；关闭活动标签时切换到相邻标签 */
-  function closeTab(id: string) {
-    const idx = openSessionIds.value.indexOf(id)
+  /** 打开文件编辑标签（同路径复用） */
+  function openFile(filePath: string, fileName: string, projectId: string) {
+    let tab = tabs.value.find((t) => t.kind === 'file' && t.filePath === filePath)
+    if (!tab) {
+      tab = { id: `tab-file-${filePath}`, kind: 'file', filePath, fileName, projectId }
+      tabs.value.push(tab)
+    }
+    activeTabId.value = tab.id
+  }
+
+  /** 关闭标签（不删除会话/文件）；关闭活动标签时切换到相邻标签 */
+  function closeTab(tabId: string) {
+    const idx = tabs.value.findIndex((t) => t.id === tabId)
     if (idx === -1) return
-    openSessionIds.value.splice(idx, 1)
-    if (activeSessionId.value === id) {
-      const next = openSessionIds.value[idx] ?? openSessionIds.value[idx - 1] ?? null
-      activeSessionId.value = next
+    tabs.value.splice(idx, 1)
+    if (activeTabId.value === tabId) {
+      activeTabId.value = tabs.value[idx]?.id ?? tabs.value[idx - 1]?.id ?? null
     }
   }
 
-  /** 删除会话：同步清理标签与活动状态 */
-  function forgetSession(id: string) {
-    closeTab(id)
-    openSessionIds.value = openSessionIds.value.filter((s) => s !== id)
-    if (activeSessionId.value === id) activeSessionId.value = null
+  /** 删除会话：同步清理其标签与活动状态 */
+  function forgetSession(sessionId: string) {
+    tabs.value = tabs.value.filter((t) => !(t.kind === 'session' && t.sessionId === sessionId))
+    if (!tabs.value.some((t) => t.id === activeTabId.value)) {
+      activeTabId.value = tabs.value[0]?.id ?? null
+    }
   }
 
   function setGenerating(id: string, generating: boolean) {
     const has = generatingSessionIds.value.includes(id)
     if (generating && !has) generatingSessionIds.value.push(id)
-    if (!generating && has) generatingSessionIds.value = generatingSessionIds.value.filter((s) => s !== id)
+    if (!generating && has) {
+      generatingSessionIds.value = generatingSessionIds.value.filter((s) => s !== id)
+    }
   }
 
-  function isGenerating(id: string | null): boolean {
+  function isGenerating(id: string | null | undefined): boolean {
     return !!id && generatingSessionIds.value.includes(id)
   }
 
   return {
+    tabs,
+    activeTabId,
+    activeTab,
     activeSessionId,
-    openSessionIds,
     sidebarVisible,
     inspectorVisible,
+    leftWidth,
+    rightWidth,
     sidebarSearchOpen,
     selectedModel,
     executionMode,
     generatingSessionIds,
     openSession,
+    openFile,
     closeTab,
     forgetSession,
     setGenerating,

@@ -5,7 +5,7 @@ import {
   Minus,
   Square,
   X,
-  Plus,
+  SquarePen,
   Play,
   SquareTerminal,
   Ellipsis,
@@ -17,16 +17,22 @@ import {
 import SessionTabs from './SessionTabs.vue'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
+import { useProjectStore } from '../../../stores/project'
 
 defineEmits<{ 'toggle-terminal': [] }>()
 
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
+const projectStore = useProjectStore()
 const appWindow = getCurrentWindow()
 const message = useMessage()
 
 function newSession() {
-  const session = sessionStore.createSession(workspace.selectedModel)
+  const projectId = projectStore.folderProjects()[0]?.id
+  const session = sessionStore.createSession(workspace.selectedModel, {
+    kind: 'folder',
+    projectId,
+  })
   workspace.openSession(session.id)
 }
 
@@ -69,14 +75,15 @@ function notImplemented(label: string) {
     <!-- 会话标签 -->
     <SessionTabs />
 
-    <!-- 新建标签 -->
+    <!-- 分隔线 + 新建会话（设计图：竖线 + 编辑图标） -->
+    <div class="mx-1.5 h-4 w-px shrink-0 self-center bg-neutral-300" />
     <button
-      class="mx-1 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center self-center rounded-full text-neutral-500 hover:bg-neutral-200/70"
+      class="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center self-center rounded-md text-neutral-500 hover:bg-neutral-200/70 hover:text-neutral-700"
       title="新建会话"
       data-no-drag
       @click="newSession"
     >
-      <Plus class="h-4 w-4" />
+      <SquarePen class="h-4 w-4" />
     </button>
 
     <div class="min-w-2 flex-1" />

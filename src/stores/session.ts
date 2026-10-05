@@ -6,9 +6,42 @@ import { computed, ref } from 'vue'
 import type { Message, Session, ToolCall } from '../types/session'
 import { conversationService } from '../services/conversationService'
 import { createId } from '../utils/id'
+import { tmpSessionDirSync } from '../utils/appData'
+
+// 示例文件夹会话（演示「文件夹」分组与文件浏览；后续由真实目录接入）
+function seedFolderSession(): Session {
+  const now = Date.now()
+  const s = conversationService.createSession('snake 游戏', 'GS/Qwen3-Coder-Next-FP8 · medium', {
+    kind: 'folder',
+    projectId: 'proj-29028',
+  })
+  s.createdAt = now - 20 * 3_600_000
+  s.updatedAt = now - 17 * 3_600_000
+  s.messages = [
+    {
+      id: createId('msg'),
+      sessionId: s.id,
+      role: 'user',
+      type: 'text',
+      content: '写一个贪吃蛇 html',
+      status: 'done',
+      createdAt: s.createdAt,
+    },
+    {
+      id: createId('msg'),
+      sessionId: s.id,
+      role: 'assistant',
+      type: 'text',
+      content: '已创建贪吃蛇游戏： snake.html\n\n使用方向键控制，撞墙或撞到自己则重新开始。',
+      status: 'done',
+      createdAt: s.createdAt + 60_000,
+    },
+  ]
+  return s
+}
 
 export const useSessionStore = defineStore('session', () => {
-  const sessions = ref<Session[]>([])
+  const sessions = ref<Session[]>([seedFolderSession()])
 
   const byId = computed(() => {
     const map = new Map<string, Session>()
@@ -20,8 +53,17 @@ export const useSessionStore = defineStore('session', () => {
     return id ? (byId.value.get(id) ?? null) : null
   }
 
-  function createSession(model: string): Session {
-    const session = conversationService.createSession(`新会话 ${sessions.value.length + 1}`, model)
+  function createSession(
+    model: string,
+    opts: { kind: Session['kind']; projectId?: string },
+  ): Session {
+    const session = conversationService.createSession(
+      `新会话 ${sessions.value.length + 1}`,
+      model,
+      opts,
+    )
+    // 临时会话落盘路径：用户数据目录 /.lightr-vibe/tmpsession/<id>
+    if (session.kind === 'tmp') session.storagePath = `${tmpSessionDirSync()}/${session.id}`
     sessions.value.unshift(session)
     return session
   }

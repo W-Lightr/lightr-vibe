@@ -5,6 +5,10 @@ import router from './router'
 
 import './assets/main.css'
 import '@xterm/xterm/css/xterm.css'
+import { initAppData } from './utils/appData'
+
+// 解析软件数据目录（用户目录/.lightr-vibe），临时会话落盘于其 tmpsession 子目录
+void initAppData()
 
 // ---- Monaco Editor worker 配置（Vite ?worker 语法）----
 // 注意：monaco-editor 0.57+ 的 exports 映射为 "./*.js" -> "./esm/vs/*.js"，

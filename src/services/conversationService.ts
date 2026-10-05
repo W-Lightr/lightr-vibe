@@ -67,7 +67,11 @@ const THINKING_TEXT =
 
 export const conversationService = {
   /** 创建本地会话记录 */
-  createSession(title: string, model: string): Session {
+  createSession(
+    title: string,
+    model: string,
+    opts: { kind: Session['kind']; projectId?: string; storagePath?: string },
+  ): Session {
     const now = Date.now()
     return {
       id: createId('ses'),
@@ -76,10 +80,13 @@ export const conversationService = {
       status: 'idle',
       createdAt: now,
       updatedAt: now,
-      gitBranch: 'main',
+      gitBranch: opts.kind === 'folder' ? 'main' : '—',
       extensionId: createId('ext'),
       tokenUsage: { input: 0, output: 0, total: 0, contextWindow: 128_000 },
       messages: [],
+      kind: opts.kind,
+      projectId: opts.projectId,
+      storagePath: opts.storagePath,
     }
   },
 

@@ -68,8 +68,7 @@ async function copyValue(key: string, value: string) {
 </script>
 
 <template>
-  <aside class="flex h-full w-[335px] shrink-0 flex-col border-l border-neutral-200 bg-white">
-    <div class="min-h-0 flex-1 overflow-y-auto p-4">
+  <div class="h-full overflow-y-auto p-4">
       <!-- 会话头部 -->
       <div class="flex items-start justify-between gap-2">
         <div class="min-w-0">
@@ -127,6 +126,5 @@ async function copyValue(key: string, value: string) {
           <span class="text-neutral-600">{{ formatDateTime(session.updatedAt) }}</span>
         </div>
       </div>
-    </div>
-  </aside>
+  </div>
 </template>

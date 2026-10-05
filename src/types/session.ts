@@ -35,6 +35,8 @@ export interface Message {
   toolCalls?: ToolCall[]
 }
 
+export type SessionKind = 'folder' | 'tmp'
+
 export interface Session {
   id: string
   title: string
@@ -46,6 +48,38 @@ export interface Session {
   extensionId: string
   tokenUsage: TokenUsage
   messages: Message[]
+  /** 会话类型：文件夹会话 / 临时聊天会话 */
+  kind: SessionKind
+  /** 所属项目（工作区）；临时会话无项目 */
+  projectId?: string
+  /** 临时会话的落盘路径（用户数据目录 /.lightr-vibe/tmpsession） */
+  storagePath?: string
+}
+
+/** 中央工作区打开的标签：会话标签或文件编辑标签 */
+export interface OpenTab {
+  id: string
+  kind: 'session' | 'file'
+  sessionId?: string
+  filePath?: string
+  fileName?: string
+  projectId?: string
+}
+
+/** 工作区文件树节点 */
+export interface FileNode {
+  name: string
+  type: 'dir' | 'file'
+  children?: FileNode[]
+}
+
+/** 项目（会话所属工作区） */
+export interface Project {
+  id: string
+  name: string
+  root: FileNode[]
+  /** 文件内容（path -> content），Mock 内存文件系统 */
+  files: Record<string, string>
 }
 
 /** 工作区 UI 状态（布局 / 标签 / 选择项） */
