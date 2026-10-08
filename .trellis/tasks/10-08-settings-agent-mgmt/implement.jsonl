@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "设置页/Agent 管理全部新 UI 的视觉规范：neutral 灰阶、blue-500 强调、rounded-md、text-xs/[13px]、无阴影、中文文案"}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "新视图落点 src/views/settings/components/、stores/agent.ts、services/opencodeService.ts 的模块边界与 Tauri mock 接缝"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "SFC 形态、type-only props/emits、naive-ui 按需导入、data-no-drag 拖拽契约"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "useAgentStore setup store 形态、写锁与 granular mutators 约定"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "types/agent.ts 的字面量联合、T | null 查找、无 any/enum 约定"}
+{"file": ".trellis/tasks/10-08-settings-agent-mgmt/research/opencode-integration.md", "reason": "OpenCode 检测链路（.cmd shim 回退）、opencode.jsonc 实测结构、官方 schema 键名（model/small_model/permission）、JSONC 安全写回方案"}

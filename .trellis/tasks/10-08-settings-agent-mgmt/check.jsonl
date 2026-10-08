@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令（pnpm build）、禁止模式清单（any/enum/console.log/未清理监听）、中文注释要求"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "逐条核对新 UI 是否符合视觉规范（色彩/字号/圆角/动效/中文文案）"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "核对 SFC 结构、props/emits 类型化、naive-ui 导入方式、data-no-drag 覆盖"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "核对 useAgentStore 的 setup 形态、写锁、跨 store 清理边界"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "核对 types/agent.ts 与 jsonc 封装的类型约定（字面量联合、Partial、null 语义）"}
+{"file": ".trellis/tasks/10-08-settings-agent-mgmt/research/opencode-integration.md", "reason": "核对实现与实测事实一致：schema 键名 snake_case、.cmd 回退链、备份/mtime 冲突保护、apiKey 掩码"}
