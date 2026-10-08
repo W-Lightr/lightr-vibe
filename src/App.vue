@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from 'vue'
 import { NConfigProvider, NMessageProvider } from 'naive-ui'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { getAppWindow } from './utils/window'
 
 // ---- 无边框窗口：全局拖拽 / 双击最大化 ----
 // 拖拽区域由 [data-drag-region] 标记；交互控件与 [data-no-drag] 区域排除在外
-const appWindow = getCurrentWindow()
+// 浏览器 dev 环境 appWindow 为 null：拖拽逻辑自动停用（AC7）
+const appWindow = getAppWindow()
 
 const INTERACTIVE = 'button, a, input, textarea, select, [data-no-drag]'
 
@@ -17,11 +18,11 @@ function dragTarget(e: MouseEvent): HTMLElement | null {
 }
 
 function onMouseDown(e: MouseEvent) {
-  if (dragTarget(e)) void appWindow.startDragging()
+  if (appWindow && dragTarget(e)) void appWindow.startDragging()
 }
 
 function onDblClick(e: MouseEvent) {
-  if (dragTarget(e)) void appWindow.toggleMaximize()
+  if (appWindow && dragTarget(e)) void appWindow.toggleMaximize()
 }
 
 onMounted(() => {

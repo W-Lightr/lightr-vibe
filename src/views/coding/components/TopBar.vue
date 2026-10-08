@@ -14,6 +14,7 @@ import {
   Search,
   Settings,
 } from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
 import SessionTabs from './SessionTabs.vue'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
@@ -21,6 +22,7 @@ import { useProjectStore } from '../../../stores/project'
 
 defineEmits<{ 'toggle-terminal': [] }>()
 
+const router = useRouter()
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
@@ -114,7 +116,7 @@ function notImplemented(label: string) {
       >
         <PanelRight class="h-4 w-4" />
       </button>
-      <button class="tb" title="设置" @click="notImplemented('设置')">
+      <button class="tb" title="设置" @click="router.push('/settings')">
         <Settings class="h-4 w-4" />
       </button>
 

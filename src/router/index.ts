@@ -10,6 +10,11 @@ const router = createRouter({
       component: HomeView,
     },
     {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('../views/settings/SettingsView.vue'),
+    },
+    {
       path: '/coding',
       component: () => import('../layouts/WorkspaceLayout.vue'),
       children: [

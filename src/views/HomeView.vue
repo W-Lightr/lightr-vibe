@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Code, Minus, Square, X } from 'lucide-vue-next'
+import { Code, Minus, Settings, Square, X } from 'lucide-vue-next'
+import { getAppWindow } from '../utils/window'
 
 const router = useRouter()
-const appWindow = getCurrentWindow()
+// 浏览器 dev 环境为 null：隐藏窗口三键（AC7）
+const appWindow = getAppWindow()
 
 // 配置数组驱动渲染，后续新功能只需在此追加
 const features = [
@@ -23,24 +24,32 @@ const features = [
     <!-- 无边框窗口拖拽区（顶部留白条）+ 窗口控制 -->
     <div data-drag-region class="absolute inset-x-0 top-0 flex h-10 items-center justify-end px-2">
       <div class="flex items-center gap-0.5" data-no-drag>
+        <!-- 设置入口（PRD R1：Home 右上角齿轮） -->
+        <button
+          class="mr-1 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
+          title="设置"
+          @click="router.push('/settings')"
+        >
+          <Settings class="h-4 w-4" />
+        </button>
         <button
           class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
           title="最小化"
-          @click="appWindow.minimize()"
+          @click="appWindow?.minimize()"
         >
           <Minus class="h-4 w-4" />
         </button>
         <button
           class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
           title="最大化 / 还原"
-          @click="appWindow.toggleMaximize()"
+          @click="appWindow?.toggleMaximize()"
         >
           <Square class="h-3.5 w-3.5" />
         </button>
         <button
           class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-red-500 hover:text-white"
           title="关闭"
-          @click="appWindow.close()"
+          @click="appWindow?.close()"
         >
           <X class="h-4 w-4" />
         </button>
