@@ -23,6 +23,7 @@ This directory documents the actual conventions of the Lightr-vibe frontend
 | [State Management](./state-management.md) | Pinia setup stores, boundaries, IDs | Filled |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, verification commands, forbidden patterns | Filled |
 | [Type Safety](./type-safety.md) | Type patterns, nullability conventions | Filled |
+| [UI Style](./ui-style.md) | Visual design language: color, type, shape, motion | Filled |
 
 ---
 
