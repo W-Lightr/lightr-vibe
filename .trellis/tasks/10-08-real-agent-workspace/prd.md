@@ -73,3 +73,20 @@
 newline-delimited JSON-RPC stdio；session/new 首调 7.6-8.9s（超时 ≥30s）；模型经
 configOptions 暴露（无 list_models）；cancel 44ms 生效；stdin 关闭干净退出；
 Windows 直 spawn 真身 exe + CREATE_NO_WINDOW，.cmd shim 需解析回退。
+
+## 集成评审（2026-10-09 主会话核对）
+
+| 跨子 AC | 状态 | 证据 |
+|---|---|---|
+| 1 打开真实文件夹 → 树 → 打开文件 → 保存落盘 | ⏳ 待人工（AC2-6） | 子1 六 cargo 单测覆盖越界/冲突/原子写；UI 路径待 GUI 点验 |
+| 2 项目下新建会话 → 真实流式 + 工具面板 + 停止 | ⏳ 待人工 | 子2 probe 真机 end_turn 往返 + usage 实测；UI 待点验 |
+| 3 重启恢复项目与会话、可继续 | ⏳ 待人工 | 两侧持久化实现 + 命名空间静态验证通过 |
+| 4 浏览器 dev 双功能回退 mock 且有提示条 | ✅ | vite dev transform 200（/coding、/settings、全部新模块） |
+| 5 不破坏设置页/Agent 管理（回归） | ✅ | git diff 证实设置页/agent store/fs.rs(子2) 零改动；pnpm build 全绿 |
+
+已修复的跨子集成问题：
+- `tmpSessionDirSync()` 原指向 `~/.lightr-vibe/tmpsession`（根，属其他应用面）→
+  子2 核查修订为命名空间内 `~/.lightr-vibe/lightr-vibe/tmpsession`。
+- 子1 遗留的「移除项目时会话解绑」组件层直改 → 子2 收敛为
+  `sessionStore.orphanSessionsOf` action。
+- 子2 会话创建需项目 rootPath 作 cwd → 三处 createSession 调用点已接。
