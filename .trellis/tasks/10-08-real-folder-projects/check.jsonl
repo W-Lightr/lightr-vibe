@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令、禁止模式、中文注释、无 console.log 残留核查"}
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核对 fs 命令错误矩阵、越界保护、capabilities 最小授权（dialog:allow-open 唯一新增）"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "逐条核对新 UI（最近分组/dirty 圆点/错误行）视觉规范"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "核对 project store 持久化与 mock 双通道边界"}
+{"file": ".trellis/tasks/10-08-real-agent-workspace/prd.md", "reason": "核对命名空间约束：既有 ~/.lightr-vibe 根文件未被读写"}

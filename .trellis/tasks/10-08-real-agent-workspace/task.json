@@ -1,0 +1,29 @@
+{
+  "id": "real-agent-workspace",
+  "name": "real-agent-workspace",
+  "title": "真实 Agent 会话与文件夹管理",
+  "description": "父任务：将编码工作区从 mock 切换到真实能力 —— 子任务1 真实文件夹项目管理（打开/浏览/编辑落盘），子任务2 OpenCode ACP 真实对话（会话流/工具调用/停止）；父任务持有总需求、任务地图与集成验收",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "lightr",
+  "assignee": "lightr",
+  "createdAt": "2026-10-08",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-08-real-folder-projects",
+    "10-08-opencode-acp-chat"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

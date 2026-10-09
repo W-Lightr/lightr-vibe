@@ -1,0 +1,6 @@
+{"file": ".trellis/tasks/10-08-opencode-acp-chat/research/acp-protocol.md", "reason": "核对实现与规范一致：update 变体处理、cancel 语义、permission 响应形状、错误码映射"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令与禁止模式核查"}
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核对超时矩阵、进程死亡处理、双通道收敛在 service 层"}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "核对 composable 边界：store 不直调 invoke、事件流分层"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "审批卡/错误卡视觉与中文文案核查"}
+{"file": ".trellis/tasks/10-08-real-agent-workspace/prd.md", "reason": "核对 Q1/Q2 决策落地与命名空间安全"}

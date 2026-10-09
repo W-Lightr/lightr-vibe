@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "Rust fs 命令契约风格：camelCase、conflict 语义、原子写、isTauri 双通道、.cmd 回退 gotcha"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "project store 真实化：setup store 形态、持久化加载时机、actions 边界"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "懒加载树/审批无关但 dirty 圆点、最近分组、按钮禁用态的视觉规范"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "FilesTree/FileEditorView 重写的 SFC 形态与 naive-ui 导入约定"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Project/DirEntry 类型迁移与错误串字面量联合约定"}
+{"file": ".trellis/tasks/10-08-real-agent-workspace/prd.md", "reason": "父任务决策：Q3 持久化+最近分组、数据命名空间安全约束"}

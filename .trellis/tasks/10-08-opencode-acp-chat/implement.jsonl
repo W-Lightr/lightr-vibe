@@ -1,0 +1,7 @@
+{"file": ".trellis/tasks/10-08-opencode-acp-chat/research/acp-protocol.md", "reason": "ACP v1 方法表/字段形状/流式/取消/权限语义——Rust 路由与前端映射的唯一契约源"}
+{"file": ".trellis/tasks/10-08-opencode-acp-chat/research/opencode-acp-probe.md", "reason": "实测时序（initialize 1.2s、session/new 8s、cancel 44ms）、Windows spawn 真身解析、错误形态矩阵"}
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "命令面 camelCase/超时/conflict 风格一致性；emit 事件契约扩展"}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "useConversation 重写与 useAcpPermission 的 composable 形态、模块级状态、AbortController 类比"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "session store 持久化 hooks 与 granular mutators 沿用"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "PermissionCard/错误卡/模型下拉视觉规范"}
+{"file": ".trellis/tasks/10-08-real-agent-workspace/prd.md", "reason": "父任务决策 Q1 引导不假回复、Q2 自存索引+消息落盘、命名空间约束"}
