@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from 'vue'
-import { NConfigProvider, NMessageProvider } from 'naive-ui'
+import { NConfigProvider, NDialogProvider, NMessageProvider } from 'naive-ui'
 import { getAppWindow } from './utils/window'
 
 // ---- 无边框窗口：全局拖拽 / 双击最大化 ----
@@ -38,9 +38,11 @@ onBeforeUnmount(() => {
 <template>
   <NConfigProvider class="h-full">
     <NMessageProvider>
-      <div class="h-screen overflow-hidden bg-white text-neutral-800">
-        <RouterView />
-      </div>
+      <NDialogProvider>
+        <div class="h-screen overflow-hidden bg-white text-neutral-800">
+          <RouterView />
+        </div>
+      </NDialogProvider>
     </NMessageProvider>
   </NConfigProvider>
 </template>

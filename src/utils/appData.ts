@@ -16,6 +16,19 @@ export function tmpSessionDirSync(): string {
   return `${appDataDirSync()}/${TMP_SESSION_DIR_NAME}`
 }
 
+/** 本应用命名空间子目录（父任务约束：只写 ~/.lightr-vibe/lightr-vibe/，
+ *  禁止触碰根下其他应用的既有 projects.json/sessions.json/messages/） */
+export const APP_NAMESPACE_DIR_NAME = 'lightr-vibe'
+
+export function appNamespaceDirSync(): string {
+  return `${appDataDirSync()}/${APP_NAMESPACE_DIR_NAME}`
+}
+
+/** 项目索引持久化文件：~/.lightr-vibe/lightr-vibe/projects.json */
+export function projectsIndexFileSync(): string {
+  return `${appNamespaceDirSync()}/projects.json`
+}
+
 /** 异步解析真实用户目录（Tauri 环境）；浏览器 dev 环境回退为占位路径 */
 export async function initAppData(): Promise<string> {
   if (cachedDir) return cachedDir

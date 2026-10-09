@@ -6,9 +6,7 @@ import router from './router'
 import './assets/main.css'
 import '@xterm/xterm/css/xterm.css'
 import { initAppData } from './utils/appData'
-
-// 解析软件数据目录（用户目录/.lightr-vibe），临时会话落盘于其 tmpsession 子目录
-void initAppData()
+import { useProjectStore } from './stores/project'
 
 // ---- Monaco Editor worker 配置（Vite ?worker 语法）----
 // 注意：monaco-editor 0.57+ 的 exports 映射为 "./*.js" -> "./esm/vs/*.js"，
@@ -43,7 +41,20 @@ import tsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker'
 
 const app = createApp(App)
 
-app.use(createPinia())
+const pinia = createPinia()
+app.use(pinia)
 app.use(router)
 
-app.mount('#app')
+// 启动流程：解析数据目录 → 加载项目索引（~/.lightr-vibe/lightr-vibe/projects.json）→ mount。
+// 项目列表需在任何视图渲染前就绪（侧栏「文件夹/最近」分组直接消费）。
+async function bootstrap() {
+  await initAppData()
+  try {
+    await useProjectStore(pinia).load()
+  } catch {
+    // 索引加载失败不阻塞启动：以空项目列表进入，用户可重新打开文件夹
+  }
+  app.mount('#app')
+}
+
+void bootstrap()

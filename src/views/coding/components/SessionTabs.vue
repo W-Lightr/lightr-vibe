@@ -41,7 +41,7 @@ function fileIcon(name: string) {
       :title="tabTitle(tab.id)"
       @click="workspace.activeTabId = tab.id"
     >
-      <!-- 会话标签：状态圆点（激活高饱和蓝 / 未激活灰蓝 / 生成中脉冲）；文件标签：类型图标 -->
+      <!-- 会话标签：状态圆点（激活高饱和蓝 / 未激活灰蓝 / 生成中脉冲）；文件标签：类型图标 + dirty 圆点 -->
       <span
         v-if="tab.kind === 'session'"
         class="h-2 w-2 shrink-0 rounded-full"
@@ -53,11 +53,15 @@ function fileIcon(name: string) {
               : 'bg-slate-400'
         "
       />
-      <component
-        :is="fileIcon(tab.fileName ?? '')"
-        v-else
-        class="h-3.5 w-3.5 shrink-0 text-slate-400"
-      />
+      <template v-else>
+        <component :is="fileIcon(tab.fileName ?? '')" class="h-3.5 w-3.5 shrink-0 text-slate-400" />
+        <!-- 未保存修改：amber 语义色圆点（ui-style：amber 仅用于警示语义） -->
+        <span
+          v-if="workspace.isFileDirty(tab.id)"
+          class="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
+          title="未保存的修改"
+        />
+      </template>
 
       <span
         class="min-w-0 flex-1 truncate text-[13px]"

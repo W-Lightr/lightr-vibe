@@ -66,22 +66,6 @@ export interface OpenTab {
   projectId?: string
 }
 
-/** 工作区文件树节点 */
-export interface FileNode {
-  name: string
-  type: 'dir' | 'file'
-  children?: FileNode[]
-}
-
-/** 项目（会话所属工作区） */
-export interface Project {
-  id: string
-  name: string
-  root: FileNode[]
-  /** 文件内容（path -> content），Mock 内存文件系统 */
-  files: Record<string, string>
-}
-
 /** 工作区 UI 状态（布局 / 标签 / 选择项） */
 export interface WorkspaceState {
   activeSessionId: string | null

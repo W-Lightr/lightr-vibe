@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { NPopconfirm, useMessage } from 'naive-ui'
 import {
   PanelLeftClose,
   Search,
@@ -13,16 +14,58 @@ import {
   FolderInput,
   Settings,
   ChevronRight,
+  Trash2,
 } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
 import { useProjectStore } from '../../../stores/project'
+import { canPickFolder, fsService, projectNameFromPath } from '../../../services/fsService'
+import { formatRelativeTime } from '../../../utils/time'
 import SessionItem from './SessionItem.vue'
 import type { Session } from '../../../types/session'
 
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
+const message = useMessage()
+
+/** 原生目录对话框仅桌面端可用；浏览器 dev 环境按钮禁用态（R1） */
+const pickAvailable = canPickFolder()
+const picking = ref(false)
+
+/** 「打开文件夹」：原生对话框选目录 → 校验可读 → 加入项目列表并持久化 */
+async function openFolder() {
+  if (!pickAvailable || picking.value) return
+  picking.value = true
+  try {
+    const picked = await fsService.pickFolder()
+    if (!picked) return // 用户取消
+    // 校验目录存在且可读：列一次根目录，失败则拒绝加入
+    try {
+      await fsService.listDir(picked, picked)
+    } catch {
+      message.error('无法读取该目录，请确认目录存在且有访问权限')
+      return
+    }
+    const project = projectStore.addProject(picked, projectNameFromPath(picked))
+    message.success(`已打开文件夹「${project.name}」`)
+  } catch {
+    message.error('打开文件夹失败')
+  } finally {
+    picking.value = false
+  }
+}
+
+/** 移除项目：仅删索引不删磁盘文件；其会话 projectId 置空归入「聊天」组（design D4） */
+function removeProject(projectId: string) {
+  for (const s of sessionStore.sessions) {
+    if (s.projectId === projectId) {
+      s.projectId = undefined
+      s.kind = 'tmp'
+    }
+  }
+  projectStore.removeProject(projectId)
+}
 
 // 侧栏内导航选中项（chat 之外的菜单为占位状态）
 type NavKey = 'chat' | 'automation' | 'todos' | 'repo' | 'canvas'
@@ -55,7 +98,8 @@ function commitRename() {
 }
 
 function createSession() {
-  const projectId = projectStore.folderProjects()[0]?.id
+  // 新会话默认挂到最近打开的项目（无项目则为无工作区会话）
+  const projectId = projectStore.recentProjects[0]?.id
   const session = sessionStore.createSession(workspace.selectedModel, {
     kind: 'folder',
     projectId,
@@ -85,8 +129,7 @@ function filterSessions(list: Session[]) {
 
 /** 文件夹分组：每个文件夹项目 + 其下会话 */
 const folderGroups = computed(() =>
-  projectStore
-    .folderProjects()
+  projectStore.projects
     .map((project) => ({
       project,
       sessions: filterSessions(sessionStore.sessions.filter((s) => s.projectId === project.id)),
@@ -94,14 +137,34 @@ const folderGroups = computed(() =>
     .filter((g) => g.sessions.length > 0 || !query.value.trim()),
 )
 
-/** 临时聊天会话 */
+/** 临时聊天会话（含项目被移除后归入的孤儿会话，design D4） */
 const tmpSessions = computed(() =>
-  filterSessions(sessionStore.sessions.filter((s) => s.kind === 'tmp')),
+  filterSessions(
+    sessionStore.sessions.filter((s) => s.kind === 'tmp' || !projectStore.get(s.projectId)),
+  ),
 )
 
-/** 最近会话（全部，按更新时间倒序） */
-const recentSessions = computed(() => filterSessions(sessionStore.sessions).slice(0, 8))
+/** 「最近」分组：lastOpenedAt 倒序前 5 个项目（R3） */
+const recentProjects = computed(() => projectStore.recentProjects)
 const recentOpen = ref(false)
+
+/** 点击最近项目：更新 lastOpenedAt，并打开其最新会话（无会话则新建），文件树随即浏览该项目 */
+function openProject(projectId: string) {
+  projectStore.touchProject(projectId)
+  const sessions = sessionStore.sessions
+    .filter((s) => s.projectId === projectId)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+  if (sessions[0]) {
+    workspace.openSession(sessions[0].id)
+  } else {
+    const session = sessionStore.createSession(workspace.selectedModel, {
+      kind: 'folder',
+      projectId,
+    })
+    workspace.openSession(session.id)
+  }
+  activeNav.value = 'chat'
+}
 </script>
 
 <template>
@@ -192,18 +255,39 @@ const recentOpen = ref(false)
       <!-- 文件夹 -->
       <div class="mb-1 flex items-center justify-between px-2.5 pt-1 pb-1">
         <span class="text-[11px] text-neutral-400">文件夹</span>
+        <!-- 打开文件夹：桌面端弹原生目录对话框；浏览器 dev 禁用态（R1） -->
         <button
-          class="cursor-pointer rounded p-0.5 text-neutral-400 hover:bg-neutral-200 hover:text-neutral-600"
-          title="打开文件夹"
+          class="cursor-pointer rounded p-0.5 text-neutral-400 hover:bg-neutral-200 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+          :title="pickAvailable ? '打开文件夹' : '打开文件夹（桌面端可用）'"
+          :disabled="!pickAvailable || picking"
+          data-no-drag
+          @click="openFolder"
         >
           <FolderInput class="h-3.5 w-3.5" />
         </button>
       </div>
-      <div v-for="group in folderGroups" :key="group.project.id" class="mb-2">
-        <div class="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-neutral-600 hover:bg-neutral-200/50">
-          <FolderOpen class="h-4 w-4 text-neutral-500" />
-          <span class="flex-1 truncate">{{ group.project.name }}</span>
-          <span class="text-[10px] text-neutral-400">{{ group.sessions.length }}</span>
+      <div v-for="group in folderGroups" :key="group.project.id" class="group/proj mb-2">
+        <div
+          class="flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-neutral-600 hover:bg-neutral-200/50"
+          :title="group.project.rootPath"
+          @click="openProject(group.project.id)"
+        >
+          <FolderOpen class="h-4 w-4 shrink-0 text-neutral-500" />
+          <span class="min-w-0 flex-1 truncate">{{ group.project.name }}</span>
+          <span class="text-[10px] text-neutral-400 group-hover/proj:hidden">{{ group.sessions.length }}</span>
+          <!-- 悬浮操作：移除项目（仅删索引，不删磁盘文件） -->
+          <NPopconfirm @positive-click="removeProject(group.project.id)">
+            <template #trigger>
+              <button
+                class="hidden h-4.5 w-4.5 shrink-0 cursor-pointer items-center justify-center rounded text-neutral-400 hover:bg-neutral-300/60 hover:text-red-500 group-hover/proj:flex"
+                title="移除项目（不删除磁盘文件）"
+                @click.stop
+              >
+                <Trash2 class="h-3 w-3" />
+              </button>
+            </template>
+            移除项目「{{ group.project.name }}」？磁盘文件不会被删除，其会话将归入「聊天」组。
+          </NPopconfirm>
         </div>
         <div class="ml-4 border-l border-neutral-300/80 pl-1.5">
           <SessionItem
@@ -224,6 +308,13 @@ const recentOpen = ref(false)
           </p>
         </div>
       </div>
+      <p v-if="folderGroups.length === 0" class="px-2.5 py-1 text-[11px] text-neutral-400">
+        {{ pickAvailable ? '暂无项目，点击右上按钮打开文件夹' : '暂无项目（浏览器模式为 mock 数据）' }}
+      </p>
+      <!-- 浏览器 dev mock 提示条（AC7，样式沿用设置页 mock 提示模式） -->
+      <p v-if="!pickAvailable" class="px-2.5 pb-1 text-[10px] text-neutral-400">
+        浏览器模式：项目与文件为 mock 数据，「打开文件夹」桌面端可用
+      </p>
 
       <!-- 聊天（临时会话） -->
       <div class="mb-1 flex items-center justify-between px-2.5 pt-1 pb-1">
@@ -253,7 +344,7 @@ const recentOpen = ref(false)
         暂无临时会话
       </p>
 
-      <!-- 最近 -->
+      <!-- 最近：lastOpenedAt 倒序前 5 个项目（父任务 Q3） -->
       <button
         class="mt-1 flex w-full cursor-pointer items-center gap-1 px-2.5 py-1.5 text-[11px] text-neutral-400 hover:text-neutral-600"
         @click="recentOpen = !recentOpen"
@@ -262,19 +353,22 @@ const recentOpen = ref(false)
         <ChevronRight class="h-3 w-3 transition-transform" :class="recentOpen && 'rotate-90'" />
       </button>
       <div v-if="recentOpen" class="ml-2 border-l border-neutral-300/80 pl-1.5">
-        <SessionItem
-          v-for="s in recentSessions"
-          :key="`recent-${s.id}`"
-          :session="s"
-          :active="s.id === workspace.activeSessionId"
-          :renaming="false"
-          :rename-draft="''"
-          @select="workspace.openSession(s.id)"
-          @rename="startRename(s.id, s.title)"
-          @commit-rename="commitRename"
-          @cancel-rename="renamingId = null"
-          @remove="removeSession(s.id)"
-        />
+        <div
+          v-for="p in recentProjects"
+          :key="`recent-${p.id}`"
+          class="group/recent flex h-9 cursor-pointer items-center gap-2 rounded-md px-2.5 text-[13px] text-neutral-600 hover:bg-neutral-200/50"
+          :title="p.rootPath"
+          @click="openProject(p.id)"
+        >
+          <FolderOpen class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+          <span class="min-w-0 flex-1 truncate">{{ p.name }}</span>
+          <span class="shrink-0 text-[10px] text-neutral-400 group-hover/recent:hidden">
+            {{ formatRelativeTime(p.lastOpenedAt) }}
+          </span>
+        </div>
+        <p v-if="recentProjects.length === 0" class="px-2.5 py-1.5 text-[11px] text-neutral-400">
+          暂无最近项目
+        </p>
       </div>
 
       <p

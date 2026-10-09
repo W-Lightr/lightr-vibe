@@ -30,6 +30,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const selectedModel = ref<string>(MODELS[0])
   const executionMode = ref<ExecutionMode>('auto')
   const generatingSessionIds = ref<string[]>([])
+  /** dirty 文件标签集合（tabId）：编辑器内容偏离加载基线，标签显示圆点 */
+  const dirtyFileTabs = ref<string[]>([])
 
   const activeTab = computed(() => tabs.value.find((t) => t.id === activeTabId.value) ?? null)
   const activeSessionId = computed(() =>
@@ -56,11 +58,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     activeTabId.value = tab.id
   }
 
-  /** 关闭标签（不删除会话/文件）；关闭活动标签时切换到相邻标签 */
+  /** 关闭标签（不删除会话/文件）；关闭活动标签时切换到相邻标签；清理 dirty 标记 */
   function closeTab(tabId: string) {
     const idx = tabs.value.findIndex((t) => t.id === tabId)
     if (idx === -1) return
     tabs.value.splice(idx, 1)
+    dirtyFileTabs.value = dirtyFileTabs.value.filter((t) => t !== tabId)
     if (activeTabId.value === tabId) {
       activeTabId.value = tabs.value[idx]?.id ?? tabs.value[idx - 1]?.id ?? null
     }
@@ -86,6 +89,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return !!id && generatingSessionIds.value.includes(id)
   }
 
+  /** 设置文件标签 dirty 状态（tabId） */
+  function setFileDirty(tabId: string, dirty: boolean) {
+    const has = dirtyFileTabs.value.includes(tabId)
+    if (dirty && !has) dirtyFileTabs.value.push(tabId)
+    if (!dirty && has) dirtyFileTabs.value = dirtyFileTabs.value.filter((t) => t !== tabId)
+  }
+
+  function isFileDirty(tabId: string | null | undefined): boolean {
+    return !!tabId && dirtyFileTabs.value.includes(tabId)
+  }
+
   return {
     tabs,
     activeTabId,
@@ -99,11 +113,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     selectedModel,
     executionMode,
     generatingSessionIds,
+    dirtyFileTabs,
     openSession,
     openFile,
     closeTab,
     forgetSession,
     setGenerating,
     isGenerating,
+    setFileDirty,
+    isFileDirty,
   }
 })

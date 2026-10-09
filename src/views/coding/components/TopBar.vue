@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useMessage } from 'naive-ui'
 import {
   Minus,
@@ -19,6 +18,7 @@ import SessionTabs from './SessionTabs.vue'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
 import { useProjectStore } from '../../../stores/project'
+import { getAppWindow } from '../../../utils/window'
 
 defineEmits<{ 'toggle-terminal': [] }>()
 
@@ -26,11 +26,13 @@ const router = useRouter()
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
-const appWindow = getCurrentWindow()
+// 浏览器 dev 环境为 null：窗口三键隐藏（tauri-bridge gotcha：getCurrentWindow 会抛错）
+const appWindow = getAppWindow()
 const message = useMessage()
 
 function newSession() {
-  const projectId = projectStore.folderProjects()[0]?.id
+  // 新会话默认挂到最近打开的项目（无项目则为无工作区会话）
+  const projectId = projectStore.recentProjects[0]?.id
   const session = sessionStore.createSession(workspace.selectedModel, {
     kind: 'folder',
     projectId,
@@ -122,28 +124,30 @@ function notImplemented(label: string) {
 
       <div class="mx-1 h-4 w-px bg-neutral-300" />
 
-      <!-- 窗口控制（无边框自绘） -->
-      <button
-        class="tb"
-        title="最小化"
-        @click="appWindow.minimize()"
-      >
-        <Minus class="h-4 w-4" />
-      </button>
-      <button
-        class="tb"
-        title="最大化 / 还原"
-        @click="appWindow.toggleMaximize()"
-      >
-        <Square class="h-3.5 w-3.5" />
-      </button>
-      <button
-        class="tb cursor-pointer hover:bg-red-500 hover:text-white"
-        title="关闭"
-        @click="appWindow.close()"
-      >
-        <X class="h-4 w-4" />
-      </button>
+      <!-- 窗口控制（无边框自绘）；浏览器 dev 环境隐藏 -->
+      <template v-if="appWindow">
+        <button
+          class="tb"
+          title="最小化"
+          @click="appWindow.minimize()"
+        >
+          <Minus class="h-4 w-4" />
+        </button>
+        <button
+          class="tb"
+          title="最大化 / 还原"
+          @click="appWindow.toggleMaximize()"
+        >
+          <Square class="h-3.5 w-3.5" />
+        </button>
+        <button
+          class="tb cursor-pointer hover:bg-red-500 hover:text-white"
+          title="关闭"
+          @click="appWindow.close()"
+        >
+          <X class="h-4 w-4" />
+        </button>
+      </template>
     </div>
   </div>
 </template>

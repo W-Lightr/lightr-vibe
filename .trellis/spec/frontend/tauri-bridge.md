@@ -126,6 +126,45 @@ saveApiKey(provider.key)
 
 ---
 
+## Filesystem commands (`src-tauri/src/fs.rs`, task 10-08-real-folder-projects)
+
+Signatures (camelCase results, `Result<_, String>` with fixed error strings):
+
+```rust
+fs_list_dir { path, rootPath }  -> { entries: DirEntry[] }   // dirs-first; .git lists empty
+fs_read_file { path, rootPath } -> { text, mtimeMs }         // too-large(>2MB) / binary(NUL)
+fs_write_file { path, text, expectedMtime, rootPath } -> { mtimeMs }  // conflict / atomic
+fs_read_text { path }  -> Option<String>                     // app-owned files, no mtime gate
+fs_write_text { path, text }                                 // auto-creates parent dirs
+```
+
+- Error string vocabulary (frontend maps to Chinese via `FS_ERROR_MESSAGES`):
+  `too-large | binary | not-found | outside-project | conflict`. Both the Rust and
+  the mock channel must be able to produce every string — keep them in sync.
+- Boundary: every project-scoped command takes `rootPath`; Rust `ensure_inside`
+  normalizes `..` lexically then compares **by path components** (`starts_with`),
+  so `/rootEvil` never matches `/root`. Frontend re-checks with a trailing-slash
+  prefix before invoking.
+- User source files get **no `.bak`** (would pollute the user's git status);
+  conflict protection + atomic tmp+rename is the guarantee. `.bak` remains only
+  for the single-file opencode config in `agent.rs`.
+- Atomic write must clean the tmp file on **both** failure branches (write and
+  rename).
+
+## App data namespace (hard rule)
+
+`~/.lightr-vibe/` root already contains **another application's** data
+(`projects.json`, `sessions.json`, `messages/`, …). Lightr-vibe must only write
+under `~/.lightr-vibe/lightr-vibe/` (see `appNamespaceDirSync()` in
+`src/utils/appData.ts`). Never read or write the root-level files.
+
+## Native dialogs
+
+Directory picking uses `@tauri-apps/plugin-dialog` from the **frontend**
+(`open({ directory: true })`, dynamic import inside the isTauri branch only).
+Capability surface added for it: `dialog:allow-open` — nothing else. Rust has no
+cross-platform native dialog; do not re-implement picking in Rust.
+
 ## Gotchas
 
 > **Warning**: `getCurrentWindow()` throws in a plain browser dev server.

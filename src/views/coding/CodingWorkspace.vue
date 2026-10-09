@@ -24,7 +24,8 @@ const activeSession = computed(() => sessionStore.get(workspace.activeSessionId)
 const terminalVisible = ref(false)
 
 function createSession() {
-  const projectId = projectStore.folderProjects()[0]?.id
+  // 新会话默认挂到最近打开的项目（无项目则为无工作区会话）
+  const projectId = projectStore.recentProjects[0]?.id
   const session = sessionStore.createSession(workspace.selectedModel, {
     kind: 'folder',
     projectId,
