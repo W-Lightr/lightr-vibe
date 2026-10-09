@@ -14,12 +14,13 @@ import { MODELS, EXECUTION_MODES, useWorkspaceStore } from '../../../stores/work
 import { useSessionStore } from '../../../stores/session'
 import { useConversation } from '../../../composables/useConversation'
 import { formatTokens } from '../../../utils/time'
+import type { AcpConfigOptionGroup, AcpConfigOptionValue } from '../../../types/acp'
 
 const props = defineProps<{ sessionId: string }>()
 
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
-const { send, stop } = useConversation()
+const { send, stop, setModel } = useConversation()
 
 const draft = ref('')
 const attachments = ref<string[]>([])
@@ -30,7 +31,40 @@ const generating = computed(() => workspace.isGenerating(props.sessionId))
 const canSend = computed(() => draft.value.trim().length > 0 && !generating.value)
 const session = computed(() => sessionStore.get(props.sessionId))
 
-const modelOptions = MODELS.map((m) => ({ label: m, value: m }))
+/** 会话级模型下拉（design §3）：session/new configOptions 优先，
+ * workspace.MODELS 静态数组兜底（浏览器 mock / 未建连时） */
+const modelOptions = computed(() => {
+  const config = session.value?.configOptions?.find(
+    (o) => o.id === 'model' || o.category === 'model',
+  )
+  if (config?.options?.length) {
+    const flat: { label: string; value: string }[] = []
+    for (const opt of config.options) {
+      if ('value' in opt) {
+        const v = opt as AcpConfigOptionValue
+        flat.push({ label: v.name ?? v.value, value: v.value })
+      } else {
+        const g = opt as AcpConfigOptionGroup
+        for (const sub of g.options ?? []) {
+          flat.push({ label: g.group ? `${g.group} / ${sub.name ?? sub.value}` : (sub.name ?? sub.value), value: sub.value })
+        }
+      }
+    }
+    if (flat.length) return flat
+  }
+  return MODELS.map((m) => ({ label: m, value: m }))
+})
+
+/** 下拉当前值：会话已建连用 session.model（ACP currentValue），否则用全局默认 */
+const currentModel = computed({
+  get: () => session.value?.model ?? workspace.selectedModel,
+  set: (v: string) => {
+    workspace.selectedModel = v
+    if (session.value) session.value.model = v
+    void setModel(props.sessionId, v)
+  },
+})
+
 const modeOptions = EXECUTION_MODES.map((m) => ({ label: m.label, value: m.value }))
 
 function autoResize() {
@@ -129,10 +163,11 @@ function pickFiles(e: Event) {
           </button>
 
           <NSelect
-            v-model:value="workspace.selectedModel"
+            v-model:value="currentModel"
             :options="modelOptions"
             size="small"
             :consistent-menu-width="false"
+            :disabled="generating"
             class="!w-56"
           />
           <NSelect

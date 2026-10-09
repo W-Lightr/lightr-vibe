@@ -7,6 +7,8 @@ import './assets/main.css'
 import '@xterm/xterm/css/xterm.css'
 import { initAppData } from './utils/appData'
 import { useProjectStore } from './stores/project'
+import { useSessionStore } from './stores/session'
+import { initAcpListeners } from './services/acpService'
 
 // ---- Monaco Editor worker 配置（Vite ?worker 语法）----
 // 注意：monaco-editor 0.57+ 的 exports 映射为 "./*.js" -> "./esm/vs/*.js"，
@@ -45,8 +47,8 @@ const pinia = createPinia()
 app.use(pinia)
 app.use(router)
 
-// 启动流程：解析数据目录 → 加载项目索引（~/.lightr-vibe/lightr-vibe/projects.json）→ mount。
-// 项目列表需在任何视图渲染前就绪（侧栏「文件夹/最近」分组直接消费）。
+// 启动流程：解析数据目录 → 加载项目索引 → 加载会话索引（懒加载消息）→
+// 订阅 ACP 事件 → mount。列表需在任何视图渲染前就绪（侧栏分组直接消费）。
 async function bootstrap() {
   await initAppData()
   try {
@@ -54,6 +56,12 @@ async function bootstrap() {
   } catch {
     // 索引加载失败不阻塞启动：以空项目列表进入，用户可重新打开文件夹
   }
+  try {
+    await useSessionStore(pinia).load()
+  } catch {
+    // 会话索引损坏/缺失不阻塞启动：以空会话列表进入
+  }
+  void initAcpListeners()
   app.mount('#app')
 }
 

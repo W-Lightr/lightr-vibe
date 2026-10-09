@@ -56,14 +56,10 @@ async function openFolder() {
   }
 }
 
-/** 移除项目：仅删索引不删磁盘文件；其会话 projectId 置空归入「聊天」组（design D4） */
+/** 移除项目：仅删索引不删磁盘文件；其会话收敛为孤儿（projectId 置空归入「聊天」组，
+ * store action 统一处理 + 索引落盘，design D4 / 子任务 1 遗留项 3） */
 function removeProject(projectId: string) {
-  for (const s of sessionStore.sessions) {
-    if (s.projectId === projectId) {
-      s.projectId = undefined
-      s.kind = 'tmp'
-    }
-  }
+  sessionStore.orphanSessionsOf(projectId)
   projectStore.removeProject(projectId)
 }
 
@@ -98,11 +94,12 @@ function commitRename() {
 }
 
 function createSession() {
-  // 新会话默认挂到最近打开的项目（无项目则为无工作区会话）
+  // 新会话默认挂到最近打开的项目（无项目则为无工作区会话）；cwd 绑项目根（PRD R2）
   const projectId = projectStore.recentProjects[0]?.id
   const session = sessionStore.createSession(workspace.selectedModel, {
     kind: 'folder',
     projectId,
+    cwd: projectStore.get(projectId)?.rootPath,
   })
   workspace.openSession(session.id)
   activeNav.value = 'chat'
@@ -160,6 +157,7 @@ function openProject(projectId: string) {
     const session = sessionStore.createSession(workspace.selectedModel, {
       kind: 'folder',
       projectId,
+      cwd: projectStore.get(projectId)?.rootPath,
     })
     workspace.openSession(session.id)
   }

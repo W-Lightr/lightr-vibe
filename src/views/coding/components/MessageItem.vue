@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   ChevronRight,
   Brain,
@@ -8,6 +9,7 @@ import {
   RefreshCw,
   AlertCircle,
   Square,
+  Settings,
 } from 'lucide-vue-next'
 import type { Message } from '../../../types/session'
 import MarkdownContent from './MarkdownContent.vue'
@@ -18,6 +20,7 @@ import { useWorkspaceStore } from '../../../stores/workspace'
 const props = defineProps<{ message: Message }>()
 
 const workspace = useWorkspaceStore()
+const router = useRouter()
 const { regenerate, stop } = useConversation()
 
 const copied = ref(false)
@@ -28,6 +31,10 @@ const isThinking = computed(() => props.message.type === 'thinking')
 const isError = computed(() => props.message.type === 'error')
 const isStreaming = computed(() => props.message.status === 'streaming')
 const generating = computed(() => workspace.isGenerating(props.message.sessionId))
+/** 错误卡「去设置」按钮：dead（进程/未安装）与 auth（凭据）两类错误引导跳设置页（PRD R4） */
+const showSettingsLink = computed(
+  () => props.message.errorKind === 'dead' || props.message.errorKind === 'auth',
+)
 
 async function copy() {
   try {
@@ -68,13 +75,21 @@ async function copy() {
     </div>
   </div>
 
-  <!-- 错误提示 -->
+  <!-- 错误提示（PRD R4：dead / 凭据 / timeout 错误卡 + 「去设置」按钮） -->
   <div
     v-else-if="isError"
     class="mb-4 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-600"
   >
     <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
-    <span class="break-words">{{ message.content || '生成失败' }}</span>
+    <span class="min-w-0 flex-1 break-words">{{ message.content || '生成失败' }}</span>
+    <button
+      v-if="showSettingsLink"
+      class="flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md border border-red-200 bg-white px-2 text-xs text-red-600 hover:bg-red-100"
+      @click="router.push('/settings')"
+    >
+      <Settings class="h-3 w-3" />
+      去设置
+    </button>
   </div>
 
   <!-- AI 回复 / 工具调用记录 -->

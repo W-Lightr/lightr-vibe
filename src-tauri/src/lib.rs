@@ -1,4 +1,5 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod acp;
 mod agent;
 mod fs;
 
@@ -26,8 +27,22 @@ pub fn run() {
             fs::fs_read_file,
             fs::fs_write_file,
             fs::fs_read_text,
-            fs::fs_write_text
+            fs::fs_write_text,
+            acp::acp_start,
+            acp::acp_status,
+            acp::acp_session_new,
+            acp::acp_session_load,
+            acp::acp_prompt,
+            acp::acp_cancel,
+            acp::acp_set_config,
+            acp::acp_respond_permission
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // ACP 长驻子进程清理：App.vue onBeforeUnmount 不可靠 → Rust 侧退出钩子
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                acp::shutdown();
+            }
+        });
 }

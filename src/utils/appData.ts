@@ -1,6 +1,6 @@
-// 软件数据目录约定：用户目录下的 .lightr-vibe 为应用数据根目录，
-// 其中 tmpsession/ 存放临时聊天会话数据。
-// 当前仅解析路径供界面与后续持久化使用；真实读写待接入 Tauri fs 插件。
+// 软件数据目录约定：用户目录下的 .lightr-vibe 为应用数据根目录。
+// 命名空间硬规则（tauri-bridge spec）：本应用只写 ~/.lightr-vibe/lightr-vibe/，
+// 临时会话工作目录 tmpsession/ 也在命名空间内（根目录属于其他应用的既有数据）。
 
 let cachedDir: string | null = null
 
@@ -13,7 +13,7 @@ export function appDataDirSync(): string {
 }
 
 export function tmpSessionDirSync(): string {
-  return `${appDataDirSync()}/${TMP_SESSION_DIR_NAME}`
+  return `${appNamespaceDirSync()}/${TMP_SESSION_DIR_NAME}`
 }
 
 /** 本应用命名空间子目录（父任务约束：只写 ~/.lightr-vibe/lightr-vibe/，
@@ -27,6 +27,21 @@ export function appNamespaceDirSync(): string {
 /** 项目索引持久化文件：~/.lightr-vibe/lightr-vibe/projects.json */
 export function projectsIndexFileSync(): string {
   return `${appNamespaceDirSync()}/projects.json`
+}
+
+/** 会话索引持久化文件：~/.lightr-vibe/lightr-vibe/sessions-index.json（PRD R3） */
+export function sessionsIndexFileSync(): string {
+  return `${appNamespaceDirSync()}/sessions-index.json`
+}
+
+/** 会话消息落盘目录：~/.lightr-vibe/lightr-vibe/sessions/ */
+export function sessionsDirSync(): string {
+  return `${appNamespaceDirSync()}/sessions`
+}
+
+/** 单个会话的消息文件路径：sessions/<id>.json */
+export function sessionMessagesFileSync(id: string): string {
+  return `${sessionsDirSync()}/${id}.json`
 }
 
 /** 异步解析真实用户目录（Tauri 环境）；浏览器 dev 环境回退为占位路径 */

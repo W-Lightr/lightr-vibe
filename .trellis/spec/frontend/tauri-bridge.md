@@ -165,6 +165,41 @@ Directory picking uses `@tauri-apps/plugin-dialog` from the **frontend**
 Capability surface added for it: `dialog:allow-open` — nothing else. Rust has no
 cross-platform native dialog; do not re-implement picking in Rust.
 
+## ACP session events (`src-tauri/src/acp.rs`, task 10-08-opencode-acp-chat)
+
+- Transport: **newline-delimited JSON-RPC 2.0 over stdio** (no Content-Length).
+  One `writeln!` of compact JSON per message; blank/non-JSON lines are skipped.
+- Rust routes stdout lines three ways: response (has `id` **and** no `method`) →
+  pending oneshot; notification (`method`, no `id`) → `app.emit`; client request
+  (`method` + `id`) → `request_permission` forwarded to the UI,
+  `fs/*` / `terminal/*` / `elicitation/*` refused with `-32601`.
+- **JSON-RPC ids are preserved as raw `Value`** — agent may legitimately use
+  string ids. Never model an incoming id as `u64`, and never treat `id: null`
+  as a response.
+- Events emitted: `acp://update` `{sessionId, update}` · `acp://permission`
+  `{requestId, sessionId, toolCall, options}` · `acp://status` `{status, reason}`.
+
+> **Critical gotcha**: the `sessionId` on ACP events is the **agent-side** id
+> (`ses_xxx` from opencode), while local sessions use `createId('ses')` ids
+> (`ses-xxxxxxxx`). Every consumer must map through
+> `sessionStore.findByAcpSessionId()` before touching local state. Skipping this
+> mapping silently drops all streaming updates and makes permission cards never
+> appear (both were real bugs found in review).
+
+Other ACP behaviors worth keeping:
+
+- `tool_call_update.content` is **cumulative replacement** — overwrite, never append.
+- `session/load` replays history as `session/update` before responding; suppress
+  those updates for that session or the local transcript doubles.
+- `session/cancel` is a notification (no response awaited); idle cancel is a
+  safe no-op; cancel must also resolve that session's pending permissions.
+- Permission option selection must match by `kinds` (`allow_once` before
+  `allow_always`), never by array position.
+- Timeouts: initialize 10s / `session/new` 30s / `prompt` 300s / other 30s.
+  The first `session/new` on a cold agent takes 8–13s (model enumeration).
+- Always `create_dir_all(cwd)` before `session/new` — the protocol requires an
+  existing absolute cwd.
+
 ## Gotchas
 
 > **Warning**: `getCurrentWindow()` throws in a plain browser dev server.

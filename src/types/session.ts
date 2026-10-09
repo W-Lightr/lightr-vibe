@@ -1,10 +1,15 @@
 // 会话与消息的核心数据模型
 
+import type { AcpConfigOption } from './acp'
+
 export type MessageRole = 'user' | 'assistant'
 export type MessageType = 'text' | 'thinking' | 'error'
 export type MessageStatus = 'pending' | 'streaming' | 'done' | 'stopped' | 'error'
 export type SessionStatus = 'idle' | 'generating' | 'error'
 export type ExecutionMode = 'auto' | 'confirm' | 'plan'
+
+/** 错误消息卡类别：决定文案与「去设置」按钮（PRD R4） */
+export type MessageErrorKind = 'dead' | 'auth' | 'timeout' | 'generic'
 
 export interface ToolCall {
   id: string
@@ -33,6 +38,8 @@ export interface Message {
   /** 同一次问答轮次的关联 ID（用户消息 / 执行过程 / 助手回复共享） */
   turnId?: string
   toolCalls?: ToolCall[]
+  /** 错误消息类别（type === 'error' 时有意义）：决定文案与「去设置」按钮 */
+  errorKind?: MessageErrorKind
 }
 
 export type SessionKind = 'folder' | 'tmp'
@@ -52,8 +59,18 @@ export interface Session {
   kind: SessionKind
   /** 所属项目（工作区）；临时会话无项目 */
   projectId?: string
-  /** 临时会话的落盘路径（用户数据目录 /.lightr-vibe/tmpsession） */
+  /** 临时会话的落盘路径（~/.lightr-vibe/lightr-vibe/tmpsession） */
   storagePath?: string
+  /** 对应的 ACP 会话 ID（session/new 返回）；未建连时为 undefined */
+  acpSessionId?: string
+  /** ACP 会话工作目录（项目 rootPath 或 tmpsession 目录） */
+  cwd?: string
+  /** session/new 返回的会话级配置项（model/mode select）；MessageComposer 消费 */
+  configOptions?: AcpConfigOption[]
+  /** ACP 会话 mode（D3：仅记录不暴露 UI，恒 build） */
+  mode?: string
+  /** 消息是否已从磁盘懒加载（索引恢复后打开标签才读，design §4） */
+  messagesLoaded?: boolean
 }
 
 /** 中央工作区打开的标签：会话标签或文件编辑标签 */

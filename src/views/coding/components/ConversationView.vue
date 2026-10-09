@@ -3,21 +3,33 @@ import { computed, ref, watch } from 'vue'
 import { ArrowDown, MessageSquarePlus } from 'lucide-vue-next'
 import type { Session } from '../../../types/session'
 import MessageItem from './MessageItem.vue'
+import PermissionCard from './PermissionCard.vue'
 import { useConversationScroll } from '../../../composables/useConversationScroll'
+import { useAcpPermission } from '../../../composables/useAcpPermission'
+import { useSessionStore } from '../../../stores/session'
 import { useWorkspaceStore } from '../../../stores/workspace'
+import { isTauri } from '../../../utils/isTauri'
 
 const props = defineProps<{ session: Session }>()
 
 const workspace = useWorkspaceStore()
+const sessionStore = useSessionStore()
 const listRef = ref<HTMLElement | null>(null)
+
+// confirm 模式权限审批队列（PRD 权限 UX：绑定执行模式）
+const { pending } = useAcpPermission()
+const permissionQueue = computed(() => pending.value.filter((e) => e.sessionId === props.session.id))
 
 const { onScroll, restore, followIfAtBottom, scrollToBottom, showBackToLatest } =
   useConversationScroll(listRef)
 
-// 切换会话：恢复滚动位置
+// 打开会话标签时懒加载落盘消息（design §4）
 watch(
   () => props.session.id,
-  (id) => void restore(id),
+  (id) => {
+    void sessionStore.ensureMessages(id)
+    void restore(id)
+  },
   { immediate: true },
 )
 
@@ -38,13 +50,18 @@ const generating = computed(() => workspace.isGenerating(props.session.id))
   <div class="relative min-h-0 flex-1">
     <div ref="listRef" class="h-full overflow-y-auto" @scroll="onScroll">
       <div class="mx-auto max-w-3xl px-6 py-6">
+        <!-- confirm 模式权限审批卡（PRD R2：对话内审批） -->
+        <PermissionCard v-for="req in permissionQueue" :key="req.requestId" :event="req" />
+
         <MessageItem v-for="msg in session.messages" :key="msg.id" :message="msg" />
 
         <!-- 空会话引导 -->
         <div v-if="session.messages.length === 0" class="flex flex-col items-center gap-3 pt-28 text-neutral-400">
           <MessageSquarePlus class="h-8 w-8 text-neutral-300" />
           <p class="text-sm">开始一段新的对话</p>
-          <p class="text-xs">当前为本地 Mock 服务，回复内容仅用于界面演示</p>
+          <p class="text-xs">
+            {{ isTauri() ? '由 OpenCode Agent 提供真实回复' : '当前为本地 Mock 服务，回复内容仅用于界面演示' }}
+          </p>
         </div>
 
         <!-- 生成中提示 -->
