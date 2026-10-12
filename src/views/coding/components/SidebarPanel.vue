@@ -12,7 +12,6 @@ import {
   Infinity as InfinityIcon,
   FolderOpen,
   FolderInput,
-  Settings,
   ChevronRight,
   Trash2,
 } from 'lucide-vue-next'
@@ -266,13 +265,13 @@ function openProject(projectId: string) {
       </div>
       <div v-for="group in folderGroups" :key="group.project.id" class="group/proj mb-2">
         <div
-          class="flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-neutral-600 hover:bg-neutral-200/50"
+          class="flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-xs text-neutral-600 hover:bg-neutral-200/50"
           :title="group.project.rootPath"
           @click="openProject(group.project.id)"
         >
           <FolderOpen class="h-4 w-4 shrink-0 text-neutral-500" />
           <span class="min-w-0 flex-1 truncate">{{ group.project.name }}</span>
-          <span class="text-[10px] text-neutral-400 group-hover/proj:hidden">{{ group.sessions.length }}</span>
+          <span class="flex w-4 justify-end text-[10px] text-neutral-400 group-hover/proj:hidden">{{ group.sessions.length }}</span>
           <!-- 悬浮操作：移除项目（仅删索引，不删磁盘文件） -->
           <NPopconfirm @positive-click="removeProject(group.project.id)">
             <template #trigger>
@@ -378,13 +377,7 @@ function openProject(projectId: string) {
     </div>
 
     <!-- 底部状态栏 -->
-    <div class="flex h-9 shrink-0 items-center justify-between border-t border-neutral-200 px-2">
-      <button
-        class="flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-200/60"
-      >
-        <Settings class="h-3.5 w-3.5" />
-        设置
-      </button>
+    <div class="flex h-9 shrink-0 items-center justify-end border-t border-neutral-200 px-3">
       <span class="pr-1 text-[11px] text-neutral-400">{{ sessionStore.sessions.length }} 个会话</span>
     </div>
   </aside>

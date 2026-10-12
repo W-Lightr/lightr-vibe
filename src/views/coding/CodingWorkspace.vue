@@ -93,15 +93,21 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 }
 
 .divider {
-  width: 4px;
+  position: relative;
+  z-index: 10;
+  width: 1px;
   flex-shrink: 0;
   cursor: col-resize;
   background: transparent;
-  transition: background-color 0.15s;
 }
-.divider:hover,
-.resizing .divider {
-  background: #bfdbfe;
+/* 不可见但保留 6px 宽的拖拽命中区（居中覆盖，不占布局宽度） */
+.divider::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
 }
 </style>
 
