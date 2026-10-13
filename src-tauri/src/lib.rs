@@ -1,6 +1,8 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod acp;
 mod agent;
+mod agent_type;
+mod engine;
 mod fs;
 
 #[tauri::command]
@@ -18,11 +20,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             greet,
-            agent::agent_detect_opencode,
-            agent::agent_read_opencode_config,
-            agent::agent_write_opencode_config,
+            agent::agent_detect,
+            agent::agent_read_config,
+            agent::agent_write_config,
             agent::agent_read_env_file,
             agent::agent_write_env_file,
+            engine::acp_list_agents,
+            engine::engine_default_get,
+            engine::engine_default_set,
             fs::fs_list_dir,
             fs::fs_read_file,
             fs::fs_write_file,

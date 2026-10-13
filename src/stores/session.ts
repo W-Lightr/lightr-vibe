@@ -7,6 +7,8 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { Message, Session, ToolCall } from '../types/session'
 import type { SessionIndexEntry } from '../types/acp'
+import type { EngineWire } from '../types/engine'
+import { DEFAULT_ENGINE_WIRE } from '../types/engine'
 import { conversationService } from '../services/conversationService'
 import { fsService } from '../services/fsService'
 import { createId } from '../utils/id'
@@ -19,6 +21,8 @@ function seedFolderSession(): Session {
   const s = conversationService.createSession('snake 游戏', 'GS/Qwen3-Coder-Next-FP8 · medium', {
     kind: 'folder',
     projectId: 'proj-29028',
+    // 种子会话必须带 engineId，否则落库出现 engineId: undefined 脏记录（AC10）
+    engineId: DEFAULT_ENGINE_WIRE,
   })
   s.createdAt = now - 20 * 3_600_000
   s.updatedAt = now - 17 * 3_600_000
@@ -62,6 +66,7 @@ function toIndexEntry(s: Session): SessionIndexEntry {
     acpSessionId: s.acpSessionId,
     model: s.model,
     mode: s.mode,
+    engineId: s.engineId,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
   }
@@ -119,6 +124,8 @@ function sessionFromEntry(entry: SessionIndexEntry): Session {
     tokenUsage: { input: 0, output: 0, total: 0, contextWindow: 128_000, cachedRead: 0, cachedWrite: 0 },
     messages: [],
     messagesLoaded: false,
+    // 旧索引缺 engineId → 回退 open_code（AC5 向后兼容）
+    engineId: entry.engineId ?? DEFAULT_ENGINE_WIRE,
     kind: entry.kind,
     projectId: entry.projectId,
     cwd: entry.cwd,
@@ -219,12 +226,18 @@ export const useSessionStore = defineStore('session', () => {
 
   function createSession(
     model: string,
-    opts: { kind: Session['kind']; projectId?: string; cwd?: string },
+    opts: {
+      kind: Session['kind']
+      projectId?: string
+      cwd?: string
+      /** 会话绑定的引擎 wire；缺省 open_code（弹窗选择链路由此写入） */
+      engineId?: EngineWire
+    },
   ): Session {
     const session = conversationService.createSession(
       `新会话 ${sessions.value.length + 1}`,
       model,
-      opts,
+      { ...opts, engineId: opts.engineId ?? DEFAULT_ENGINE_WIRE },
     )
     session.messagesLoaded = true
     // 会话 cwd：文件夹会话绑项目 rootPath（调用方传入）；无项目 → 命名空间内 tmpsession 目录
@@ -271,6 +284,8 @@ export const useSessionStore = defineStore('session', () => {
     const forked = conversationService.createSession(`${source.title} · 分叉`, source.model, {
       kind: source.kind,
       projectId: source.projectId,
+      // 分叉继承源会话引擎（会话内不切换，见 R8）
+      engineId: source.engineId,
     })
     forked.cwd = source.cwd
     forked.mode = source.mode

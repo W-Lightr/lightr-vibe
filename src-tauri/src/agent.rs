@@ -1,5 +1,6 @@
 // Agent 检测与配置文件读写命令：仅用 std::process / std::fs，
 // 不新增前端 capability、不引入新 crate（design D1）。
+// 检测/配置/版本解析全部按 `AcpAgentMeta` 声明执行（引擎化）。
 // why: 本机 opencode 是 version-fox 的 .cmd shim，CreateProcess 不能直接执行，
 // 需要「直接 spawn → cmd /C」回退链（research/opencode-integration.md §1）。
 
@@ -9,6 +10,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::agent_type::AgentType;
+use crate::engine::{self, AcpAgentMeta};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -72,8 +76,19 @@ fn home_dir() -> Result<PathBuf, String> {
     Ok(PathBuf::from(value))
 }
 
-fn opencode_config_path() -> Result<PathBuf, String> {
-    Ok(home_dir()?.join(".config").join("opencode").join("opencode.jsonc"))
+/// 引擎配置文件路径：按 `AcpAgentMeta.launch.config_path` 组合 home；
+/// 无配置声明的引擎返回 None。
+fn engine_config_path(meta: &AcpAgentMeta) -> Result<Option<PathBuf>, String> {
+    match meta.launch.config_path {
+        Some(parts) => {
+            let mut path = home_dir()?;
+            for part in parts {
+                path = path.join(part);
+            }
+            Ok(Some(path))
+        }
+        None => Ok(None),
+    }
 }
 
 fn env_file_path() -> Result<PathBuf, String> {
@@ -94,25 +109,6 @@ fn mtime_ms(path: &Path) -> Result<u64, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_millis() as u64)
-}
-
-/// which 语义解析 opencode 可执行路径（opencode / opencode.cmd / opencode.exe）
-fn resolve_bin() -> Option<String> {
-    let path_var = std::env::var("PATH").ok()?;
-    let candidates: &[&str] = if cfg!(windows) {
-        &["opencode.exe", "opencode.cmd", "opencode.bat", "opencode"]
-    } else {
-        &["opencode"]
-    };
-    for dir in std::env::split_paths(&path_var) {
-        for name in candidates {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate.to_string_lossy().into_owned());
-            }
-        }
-    }
-    None
 }
 
 // ---------- 外部命令执行（超时 + .cmd shim 回退） ----------
@@ -187,10 +183,12 @@ fn read_all(mut handle: Option<impl Read>) -> String {
     buf
 }
 
-/// 执行 opencode 子命令：直接 spawn 失败（CreateProcess 不能执行 .cmd shim）
-/// 时回退 `cmd /C opencode ...`（research §1 回退链）。超时不回退（避免叠加 2×5s）。
-fn run_opencode(args: &[&str]) -> Result<CmdOutput, RunError> {
-    let mut direct = Command::new("opencode");
+/// 执行引擎子命令：直接 spawn 失败（CreateProcess 不能执行 .cmd shim）
+/// 时回退 `cmd /C <bin> ...`（research §1 回退链）。超时不回退（避免叠加 2×5s）。
+/// bin 取 meta.launch.bin_candidates[0]（Windows 下为 .exe 首选）。
+fn run_engine(meta: &AcpAgentMeta, args: &[&str]) -> Result<CmdOutput, RunError> {
+    let bin = meta.launch.bin_candidates[0];
+    let mut direct = Command::new(bin);
     direct.args(args);
     match run_with_timeout(direct) {
         Ok(out) => Ok(out),
@@ -198,7 +196,7 @@ fn run_opencode(args: &[&str]) -> Result<CmdOutput, RunError> {
             #[cfg(windows)]
             {
                 let mut wrapped = Command::new("cmd");
-                wrapped.arg("/C").arg("opencode").args(args);
+                wrapped.arg("/C").arg(bin).args(args);
                 run_with_timeout(wrapped).map_err(|fallback| {
                     RunError::Other(format!(
                         "{}；cmd /C 回退亦失败: {}",
@@ -298,20 +296,46 @@ fn atomic_write(path: &Path, text: &str) -> Result<(), String> {
 
 // ---------- Tauri commands ----------
 
-/// 检测 opencode：PATH 解析 + --version + acp --help（仅探测不启动服务）。
+/// 解析 wire engineId（缺省 opencode；未知报错）。
+fn parse_engine(engine_id: Option<&str>) -> Result<AgentType, String> {
+    match engine_id {
+        Some(id) => AgentType::from_wire(id).ok_or_else(|| format!("未知引擎: {}", id)),
+        None => Ok(AgentType::OpenCode),
+    }
+}
+
+/// 检测引擎：PATH 解析 + --version + acp --help（仅探测不启动服务），规则来自 meta。
 /// why async + spawn_blocking: 检测最多串行两条外部命令（各 5s 超时），
 /// 不能阻塞主线程/async runtime。
 #[tauri::command]
-pub async fn agent_detect_opencode() -> DetectResult {
-    match tauri::async_runtime::spawn_blocking(detect_opencode_inner).await {
+pub async fn agent_detect(engine_id: Option<String>) -> DetectResult {
+    let engine = match parse_engine(engine_id.as_deref()) {
+        Ok(e) => e,
+        Err(msg) => {
+            return DetectResult {
+                installed: false,
+                version: None,
+                bin_path: None,
+                platform: format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH),
+                acp_ok: false,
+                config_path: String::new(),
+                config_exists: false,
+                detail: Some(msg),
+            }
+        }
+    };
+    let meta = engine::get_agent_meta(engine);
+    match tauri::async_runtime::spawn_blocking(move || detect_inner(&meta)).await {
         Ok(result) => result,
         Err(e) => DetectResult {
             installed: false,
             version: None,
-            bin_path: resolve_bin(),
+            bin_path: engine::resolve_bin(&meta),
             platform: format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH),
             acp_ok: false,
-            config_path: opencode_config_path()
+            config_path: engine_config_path(&meta)
+                .ok()
+                .flatten()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             config_exists: false,
@@ -320,22 +344,22 @@ pub async fn agent_detect_opencode() -> DetectResult {
     }
 }
 
-fn detect_opencode_inner() -> DetectResult {
-    let bin_path = resolve_bin();
+fn detect_inner(meta: &AcpAgentMeta) -> DetectResult {
+    let bin_path = engine::resolve_bin(meta);
     let platform = format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH);
-    let (config_path, config_exists) = match opencode_config_path() {
-        Ok(p) => {
+    let (config_path, config_exists) = match engine_config_path(meta) {
+        Ok(Some(p)) => {
             let exists = p.exists();
             (p.to_string_lossy().into_owned(), exists)
         }
-        Err(_) => (String::new(), false),
+        _ => (String::new(), false),
     };
 
     let mut problems: Vec<String> = Vec::new();
     let mut version: Option<String> = None;
 
-    // 1) 版本探测
-    match run_opencode(&["--version"]) {
+    // 1) 版本探测（args 来自 meta.launch.detect_args）
+    match run_engine(meta, meta.launch.detect_args) {
         Ok(out) if out.code == Some(0) => {
             version = extract_version(&out.stdout).or_else(|| extract_version(&out.stderr));
             if version.is_none() {
@@ -346,8 +370,8 @@ fn detect_opencode_inner() -> DetectResult {
         Err(e) => problems.push(format!("--version {}", e.message())),
     }
 
-    // 2) ACP 能力探测（退出码 0 = 可用；仅 --help，不启动服务）
-    let acp_ok = match run_opencode(&["acp", "--help"]) {
+    // 2) ACP 能力探测（退出码 0 = 可用；仅 --help，不启动服务；args 来自 meta）
+    let acp_ok = match run_engine(meta, meta.launch.acp_probe_args) {
         Ok(out) => out.code == Some(0),
         Err(e) => {
             problems.push(format!("acp --help {}", e.message()));
@@ -374,10 +398,19 @@ fn detect_opencode_inner() -> DetectResult {
     }
 }
 
-/// 读 opencode.jsonc 原文 + mtime（前端负责 JSONC 解析与补丁生成，design D2）
+/// 读引擎配置文件原文 + mtime（前端负责 JSONC 解析与补丁生成，design D2）。
+/// engine_id 缺省 opencode；引擎无配置声明 → text: null。
 #[tauri::command]
-pub fn agent_read_opencode_config() -> Result<ConfigReadResult, String> {
-    let path = opencode_config_path()?;
+pub fn agent_read_config(engine_id: Option<String>) -> Result<ConfigReadResult, String> {
+    let engine = parse_engine(engine_id.as_deref())?;
+    let meta = engine::get_agent_meta(engine);
+    let Some(path) = engine_config_path(&meta)? else {
+        return Ok(ConfigReadResult {
+            text: None,
+            mtime_ms: None,
+            path: String::new(),
+        });
+    };
     let path_str = path.to_string_lossy().into_owned();
     if !path.exists() {
         return Ok(ConfigReadResult {
@@ -395,15 +428,18 @@ pub fn agent_read_opencode_config() -> Result<ConfigReadResult, String> {
     })
 }
 
-/// 写回 opencode.jsonc：mtime 冲突校验 → .bak-<ts> 备份（保留 5 份）→ 原子写。
+/// 写回引擎配置文件：mtime 冲突校验 → .bak-<ts> 备份（保留 5 份）→ 原子写。
 /// expected_mtime 为 None 表示读取时文件不存在；不一致统一返回 Err("conflict")，
 /// 前端据此提示「配置已被外部修改」并重新加载（research §5）。
 #[tauri::command]
-pub fn agent_write_opencode_config(
+pub fn agent_write_config(
+    engine_id: Option<String>,
     text: String,
     expected_mtime: Option<u64>,
 ) -> Result<ConfigWriteResult, String> {
-    let path = opencode_config_path()?;
+    let engine = parse_engine(engine_id.as_deref())?;
+    let meta = engine::get_agent_meta(engine);
+    let path = engine_config_path(&meta)?.ok_or("该引擎无独立配置文件")?;
     let exists = path.exists();
     match (expected_mtime, exists) {
         // 读时不存在、写时出现了 → 外部新建，视为冲突

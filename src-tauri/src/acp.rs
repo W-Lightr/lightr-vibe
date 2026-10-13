@@ -20,6 +20,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
+use crate::agent_type::AgentType;
+use crate::engine::{self, AcpAgentMeta, ContextWindowSource};
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -91,112 +94,37 @@ fn rpc_error_string(err: &Value) -> String {
 
 /// 从 Windows .cmd shim 文本提取真身 exe 路径（version-fox 形态：
 /// `"%dp0%\node_modules\opencode-ai\bin\opencode.exe" %*`，probe §0）。
-/// 支持 `%dp0%` 与 `%~dp0` 两种占位符；替换后统一为单个路径分隔符。
-fn extract_exe_from_shim(shim_text: &str, shim_dir: &str) -> Option<String> {
-    let dir = shim_dir.trim_end_matches(['\\', '/']);
-    let with_sep = format!("{}\\", dir);
-    let mut in_quote = false;
-    let mut token = String::new();
-    for ch in shim_text.chars() {
-        if ch == '"' {
-            if in_quote {
-                if token.to_ascii_lowercase().ends_with(".exe") {
-                    let resolved = token
-                        .replace("%~dp0\\", &with_sep)
-                        .replace("%~dp0", &with_sep)
-                        .replace("%dp0%\\", &with_sep)
-                        .replace("%dp0%", &with_sep);
-                    return Some(resolved);
-                }
-                token.clear();
-            }
-            in_quote = !in_quote;
-        } else if in_quote {
-            token.push(ch);
-        }
-    }
-    None
-}
+/// 实现已收敛到 engine.rs（单一实现，acp.rs / agent.rs 共用）。
+#[cfg(test)]
+use engine::extract_exe_from_shim;
 
-enum SpawnSpec {
-    /// 直接 spawn 真身 exe（probe §0 路线 1：长驻双向 stdio 进程最干净）
-    Exe(PathBuf),
-    /// 末选回退：`cmd /C opencode acp`（tauri-bridge Gotcha：.cmd 无法 CreateProcess）
-    CmdFallback,
-}
-
-/// which 语义解析 opencode（与 agent.rs::resolve_bin 同逻辑；why 重复实现：
-/// 不触碰设置页子任务的 agent.rs 文件面）
-fn resolve_bin() -> Option<String> {
-    let path_var = std::env::var("PATH").ok()?;
-    let candidates: &[&str] = if cfg!(windows) {
-        &["opencode.exe", "opencode.cmd", "opencode.bat", "opencode"]
-    } else {
-        &["opencode"]
-    };
-    for dir in std::env::split_paths(&path_var) {
-        for name in candidates {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate.to_string_lossy().into_owned());
-            }
-        }
-    }
-    None
-}
-
-/// spawn 解析链（PRD R1）：which opencode → .cmd shim 文本提取真身 exe → cmd /C 末选
-fn resolve_spawn() -> SpawnSpec {
-    if let Some(bin) = resolve_bin() {
-        let path = Path::new(&bin);
-        let ext = path
-            .extension()
-            .map(|e| e.to_string_lossy().to_ascii_lowercase());
-        match ext.as_deref() {
-            Some("cmd") | Some("bat") => {
-                if let Ok(text) = std::fs::read_to_string(path) {
-                    let dir = path
-                        .parent()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    if let Some(exe) = extract_exe_from_shim(&text, &dir) {
-                        if Path::new(&exe).is_file() {
-                            return SpawnSpec::Exe(PathBuf::from(exe));
-                        }
-                    }
-                }
-            }
-            _ => {
-                if path.is_file() {
-                    return SpawnSpec::Exe(path.to_path_buf());
-                }
-            }
-        }
-    }
-    SpawnSpec::CmdFallback
-}
-
-/// 构造 `opencode acp` 子进程 Command（stdin/stdout/stderr 管道 + Windows 无窗口）。
-/// 剔除父进程（本 app 自身可能从某个正在运行的 opencode 实例继承的）server 鉴权环境变量：
-/// `OPENCODE_SERVER_USERNAME` / `OPENCODE_SERVER_PASSWORD` 是「另一个 opencode 实例」
-/// 的 server 凭据，泄漏给子进程会让 Zen 免费通道上游鉴权失败
-/// （`-32603 ... Invalid credential`）。剔除后回到「无 server 凭据」干净态，
-/// 与 codeg 独立启动 `opencode acp` 等价。用户 provider 的 apiKey 在 config 文件里，不受影响。
-fn build_acp_command() -> Command {
-    let mut cmd = match resolve_spawn() {
-        SpawnSpec::Exe(path) => {
+/// 构造引擎 ACP 子进程 Command（stdin/stdout/stderr 管道 + Windows 无窗口）。
+/// 严格按 `AcpAgentMeta` 取参：bin 候选 / subcommand / env 清洗列表均来自声明，
+/// 协议路由代码不引用引擎名（AC8）。
+///
+/// env_strip 剔除父进程可能继承的 server 凭据（如 opencode 的
+/// `OPENCODE_SERVER_USERNAME/PASSWORD`）：泄漏给子进程会让 Zen 免费通道上游鉴权失败
+/// （`-32603 ... Invalid credential`）。剔除后回到干净态，与 codeg 独立启动等价。
+fn build_acp_command(meta: &AcpAgentMeta) -> Command {
+    let mut cmd = match engine::resolve_spawn(meta) {
+        engine::SpawnSpec::Exe(path) => {
             let mut c = Command::new(path);
-            c.arg("acp");
+            c.arg(meta.launch.acp_subcommand);
             c
         }
-        SpawnSpec::CmdFallback => {
+        engine::SpawnSpec::CmdFallback => {
             let mut c = Command::new("cmd");
-            c.arg("/C").arg("opencode").arg("acp");
+            // 用去扩展名的裸名交给 cmd：cmd 走 PATHEXT 解析（可命中 .exe/.cmd/.bat），
+            // 比写死 bin_candidates[0]（如 "opencode.exe"）更贴近原 `cmd /C opencode` 语义。
+            c.arg("/C")
+                .arg(engine::bare_bin_name(meta))
+                .arg(meta.launch.acp_subcommand);
             c
         }
     };
-    cmd.env_remove("OPENCODE_SERVER_USERNAME");
-    cmd.env_remove("OPENCODE_SERVER_PASSWORD");
+    for var in meta.launch.env_strip {
+        cmd.env_remove(var);
+    }
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -210,6 +138,10 @@ fn build_acp_command() -> Command {
 struct AcpConn {
     /// 本地会话 id（connId）：事件/命令路由键，与 ACP 进程一一对应
     conn_id: String,
+    /// 该连接绑定的引擎（建连时确定；会话级命令从连接取，不再重复传参）。
+    /// 本期会话级命令无需按引擎分支，字段为「新增第 2 个引擎」预留的落点。
+    #[allow(dead_code)]
+    engine: AgentType,
     /// 进程死亡原因（dead 后写入，acp_status(connId) 与事件共用）
     dead_reason: Mutex<Option<String>>,
     child: Mutex<Child>,
@@ -609,7 +541,7 @@ fn idle_sweep_loop(app: AppHandle) {
 
 /// 建立/复用某会话的 ACP 连接（幂等）：spawn + 读线程 + initialize 握手。
 /// 已有活连接直接返回其 agentInfo；否则启动全新进程（design §8.1）。
-fn connect_inner(app: AppHandle, conn_id: String) -> Result<StartResult, String> {
+fn connect_inner(app: AppHandle, conn_id: String, engine: AgentType) -> Result<StartResult, String> {
     // per-session 启动锁：并发 connect 串行化
     let lock = connect_lock(&conn_id);
     let _guard = lock.lock().unwrap();
@@ -627,12 +559,13 @@ fn connect_inner(app: AppHandle, conn_id: String) -> Result<StartResult, String>
 
     ensure_idle_sweep(&app);
 
-    let mut cmd = build_acp_command();
+    let meta = engine::get_agent_meta(engine);
+    let mut cmd = build_acp_command(&meta);
     // ACP 自身 cwd 与会话 cwd 无关（session/new 传 cwd），无需 --cwd
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("启动 opencode acp 失败: {}（未安装或 PATH 异常）", e))?;
+        .map_err(|e| format!("启动 {} 失败: {}（未安装或 PATH 异常）", meta.name, e))?;
     let stdin = child.stdin.take().ok_or("无法获取子进程 stdin")?;
     let stdout = child.stdout.take().ok_or("无法获取子进程 stdout")?;
     let stderr = child.stderr.take().ok_or("无法获取子进程 stderr")?;
@@ -640,6 +573,7 @@ fn connect_inner(app: AppHandle, conn_id: String) -> Result<StartResult, String>
     let stderr_tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let conn = Arc::new(AcpConn {
         conn_id: conn_id.clone(),
+        engine,
         dead_reason: Mutex::new(None),
         child: Mutex::new(child),
         stdin: Mutex::new(Some(BufWriter::new(stdin))),
@@ -870,7 +804,7 @@ impl Drop for ProbeChild {
 
 /// 探针主体（阻塞，必须在 spawn_blocking 内跑）：
 /// resolve_spawn → initialize → session/new → 取 configOptions → 清理子进程。
-fn probe_options_inner(cwd: Option<String>) -> Result<ProbeResult, String> {
+fn probe_options_inner(cwd: Option<String>, engine: AgentType) -> Result<ProbeResult, String> {
     // cwd 必须为存在的绝对路径（协议 §9），否则 session/new 回 -32602
     let work_dir: PathBuf = match cwd {
         Some(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
@@ -879,11 +813,12 @@ fn probe_options_inner(cwd: Option<String>) -> Result<ProbeResult, String> {
     std::fs::create_dir_all(&work_dir).map_err(|e| format!("创建探针目录失败: {}", e))?;
     let cwd_str = work_dir.to_string_lossy().into_owned();
 
-    let mut cmd = build_acp_command();
+    let meta = engine::get_agent_meta(engine);
+    let mut cmd = build_acp_command(&meta);
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("启动 opencode acp 失败: {}（未安装或 PATH 异常）", e))?;
+        .map_err(|e| format!("启动 {} 失败: {}（未安装或 PATH 异常）", meta.name, e))?;
     let stdin = child.stdin.take().ok_or("无法获取探针子进程 stdin")?;
     let stdout = child.stdout.take().ok_or("无法获取探针子进程 stdout")?;
     let stderr = child.stderr.take().ok_or("无法获取探针子进程 stderr")?;
@@ -1078,12 +1013,24 @@ fn opencode_catalog_path() -> Option<PathBuf> {
     Some(PathBuf::from(cache_root).join("opencode").join("models.json"))
 }
 
-/// 解析模型上下文窗口（优先级对齐 codeg）：用户 opencode 配置 → models.dev 缓存目录。
-/// 查不到返回 None（前端保持既有分母，不臆造）。
-fn model_context_window_inner(provider: &str, model: &str) -> Option<u64> {
+/// 解析模型上下文窗口（按引擎的 context-window 策略）：opencode 用
+/// 用户配置 → models.dev 缓存目录。无策略的引擎返回 None（前端保持既有分母，不臆造）。
+fn model_context_window_inner(provider: &str, model: &str, engine: AgentType) -> Option<u64> {
     if provider.trim().is_empty() || model.trim().is_empty() {
         return None;
     }
+    let meta = engine::get_agent_meta(engine);
+    match meta.launch.context_window {
+        ContextWindowSource::OpenCodeConfigAndCatalog => {
+            model_context_window_opencode(provider, model)
+        }
+        ContextWindowSource::None => None,
+    }
+}
+
+/// opencode 策略：用户 opencode 配置 → models.dev 缓存目录。
+/// 查不到返回 None（前端保持既有分母，不臆造）。
+fn model_context_window_opencode(provider: &str, model: &str) -> Option<u64> {
     // 1) 用户配置：$OPENCODE_CONFIG → config.json → opencode.json → opencode.jsonc
     let mut config_files: Vec<PathBuf> = Vec::new();
     if let Ok(cfg) = std::env::var("OPENCODE_CONFIG") {
@@ -1117,10 +1064,16 @@ fn model_context_window_inner(provider: &str, model: &str) -> Option<u64> {
 // ---------- Tauri commands ----------
 
 /// 建立/复用某会话的 ACP 连接（幂等）：为该 connId spawn 独立进程 + initialize 握手。
-/// 已有活连接直接返回其 agentInfo（避免重复 ~1.2s 握手）。
+/// 已有活连接直接返回其 agentInfo（避免重复 ~1.2s 握手）。engine_id 为 wire 值。
 #[tauri::command]
-pub async fn acp_connect(app: AppHandle, session_id: String) -> Result<StartResult, String> {
-    tauri::async_runtime::spawn_blocking(move || connect_inner(app, session_id))
+pub async fn acp_connect(
+    app: AppHandle,
+    session_id: String,
+    engine_id: String,
+) -> Result<StartResult, String> {
+    let engine = AgentType::from_wire(&engine_id)
+        .ok_or_else(|| format!("acp:-32602 未知引擎: {}", engine_id))?;
+    tauri::async_runtime::spawn_blocking(move || connect_inner(app, session_id, engine))
         .await
         .map_err(|e| format!("acp 任务执行失败: {}", e))?
 }
@@ -1169,21 +1122,34 @@ pub fn acp_status(conn_id: String) -> StatusResult {
 /// 不触碰任何长驻连接（CONNS），不 emit 事件；供前端会话打开/手动刷新时填充模型缓存。
 /// cwd 缺省用临时目录（协议要求存在的绝对 cwd）。
 #[tauri::command]
-pub async fn acp_probe_options(cwd: Option<String>) -> Result<ProbeResult, String> {
-    tauri::async_runtime::spawn_blocking(move || probe_options_inner(cwd))
+pub async fn acp_probe_options(
+    cwd: Option<String>,
+    engine_id: Option<String>,
+) -> Result<ProbeResult, String> {
+    let engine = match engine_id.as_deref() {
+        Some(id) => AgentType::from_wire(id)
+            .ok_or_else(|| format!("acp:-32602 未知引擎: {}", id))?,
+        None => AgentType::OpenCode,
+    };
+    tauri::async_runtime::spawn_blocking(move || probe_options_inner(cwd, engine))
         .await
         .map_err(|e| format!("acp 任务执行失败: {}", e))?
 }
 
-/// 按 provider/model 解析模型上下文窗口（limit.context）：用户 opencode 配置 →
-/// opencode 缓存的 models.dev 目录（对齐 codeg）。查不到返回 None（前端保持既有分母）。
-/// 纯文件读取，不触碰 ACP 进程/连接。
+/// 按 provider/model 解析模型上下文窗口（limit.context），策略来自引擎声明。
+/// 查不到返回 None（前端保持既有分母）。纯文件读取，不触碰 ACP 进程/连接。
 #[tauri::command]
 pub async fn agent_model_context_window(
     provider: String,
     model: String,
+    engine_id: Option<String>,
 ) -> Result<Option<u64>, String> {
-    tauri::async_runtime::spawn_blocking(move || model_context_window_inner(&provider, &model))
+    let engine = match engine_id.as_deref() {
+        Some(id) => AgentType::from_wire(id)
+            .ok_or_else(|| format!("acp:-32602 未知引擎: {}", id))?,
+        None => AgentType::OpenCode,
+    };
+    tauri::async_runtime::spawn_blocking(move || model_context_window_inner(&provider, &model, engine))
         .await
         .map_err(|e| format!("acp 任务执行失败: {}", e))
 }

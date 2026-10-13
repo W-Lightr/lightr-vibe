@@ -1,0 +1,6 @@
+{"file": ".trellis/tasks/10-13-acp-multi-engine/research/codeg-reference.md", "reason": "核查实现是否照 codeg 的抄/砍边界：抄了 AgentType wire 契约/注册表/单一 store/fallback，砍了下载安装/自定义/DB——防止过度复刻重型机制。"}
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核查引擎化改造后所有 ACP/agent 命令签名、事件形状、spawn/probe/context-window 契约与 per-session 8 项不变量未被破坏，且文档已同步。"}
+{"file": ".trellis/tasks/archive/2026-10/10-08-opencode-acp-chat/research/acp-protocol.md", "reason": "核查引擎抽象未偏离 ACP 协议：configOptions 模型来源、initialize/session 生命周期、timeout 矩阵保持正确。"}
+{"file": ".trellis/tasks/archive/2026-10/10-08-opencode-acp-chat/research/opencode-acp-probe.md", "reason": "核查 opencode AcpAgentMeta 声明值与实测一致（bin 回退链、env strip、8-13s session/new、cancel 语义）。"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "AC1 验证门禁：cargo check / cargo test --lib / vue-tsc 全绿；无未用导入、无 console.log、无死代码残留（改名后尤其）。"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "核查前端引擎类型与 engineId 字段无 any/非空断言，mock 与真实 service 形状一致。"}

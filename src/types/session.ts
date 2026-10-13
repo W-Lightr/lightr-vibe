@@ -1,6 +1,7 @@
 // 会话与消息的核心数据模型
 
 import type { AcpConfigOption } from './acp'
+import type { EngineWire } from './engine'
 
 export type MessageRole = 'user' | 'assistant'
 export type MessageType = 'text' | 'thinking' | 'error'
@@ -59,6 +60,8 @@ export interface Session {
   extensionId: string
   tokenUsage: TokenUsage
   messages: Message[]
+  /** 会话绑定的引擎 wire 标识（创建时确定，会话内不切换）；旧数据缺省 open_code */
+  engineId: EngineWire
   /** 会话类型：文件夹会话 / 临时聊天会话 */
   kind: SessionKind
   /** 所属项目（工作区）；临时会话无项目 */

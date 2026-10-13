@@ -1,0 +1,9 @@
+{"file": ".trellis/tasks/10-13-acp-multi-engine/research/codeg-reference.md", "reason": "codeg 多-agent 抽象的抄/砍决策表与权威 file:line：AgentType 枚举+wire 契约、AcpAgentMeta 注册表、AcpAgentInfo 形状、前端单一共享 store + AgentSelector fallback。本任务照 codeg 裁剪实现，务必先读此文件。"}
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "ACP 命令面契约、per-session connId 路由、spawn/probe/context-window/检测/配置的引擎化改造必须保持该 spec 的所有契约与 8 项不变量；命令签名与事件形状改动需同步此文档。"}
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "§Adding a Rust command + frontend dual-channel service：引擎命令（acp_list_agents/engine_default_*/agent_detect）必须遵循 isTauri 双通道、camelCase、单 service 模块、错误串约定。"}
+{"file": ".trellis/tasks/archive/2026-10/10-08-opencode-acp-chat/research/acp-protocol.md", "reason": "ACP v1 协议契约：spawn 参数、configOptions（模型来源）、initialize/session 语义——引擎抽象层必须覆盖的差异面，决定 LaunchSpec 字段边界。"}
+{"file": ".trellis/tasks/archive/2026-10/10-08-opencode-acp-chat/research/opencode-acp-probe.md", "reason": "opencode 1.18.35 实测：真身 exe 解析、.cmd 回退、握手/超时、env 泄漏（OPENCODE_SERVER_*）——作为 opencode AcpAgentMeta 声明的权威值来源。"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "新建会话弹窗 NewSessionDialog.vue 与设置页引擎列表改造需遵循组件规范（type-only props、script setup 等）。"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "NewSessionDialog 与 AgentManageView 引擎选择 UI 必须符合 light/neutral/ui-style（rounded-md、text-[13px]、blue 主色、无阴影）。"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "新增 engine store（单一共享）、session store 加 engineId、agent store 按 AgentType 键——遵循 setup store 约定。"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "AgentType 前端镜像类型、AcpAgentInfo、Session/SessionIndexEntry 加 engineId 需遵守 no-any/no-! 约束。"}

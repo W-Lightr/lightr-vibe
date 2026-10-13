@@ -25,22 +25,27 @@ import {
 } from './opencodeMock'
 
 export const opencodeService = {
-  /** 检测 opencode 安装/版本/ACP 能力 */
-  async detect(): Promise<DetectResult> {
+  /** 检测引擎安装/版本/ACP 能力（engineId 缺省回退 opencode） */
+  async detect(engineId?: string): Promise<DetectResult> {
     if (!isTauri()) return mockDetect()
-    return invoke<DetectResult>('agent_detect_opencode')
+    return invoke<DetectResult>('agent_detect', { engineId })
   },
 
-  /** 读 opencode.jsonc 原文 + mtime（不解析，解析在 normalizeConfig） */
-  async readConfig(): Promise<ConfigReadResult> {
+  /** 读配置文件原文 + mtime（不解析，解析在 normalizeConfig） */
+  async readConfig(engineId?: string): Promise<ConfigReadResult> {
     if (!isTauri()) return mockReadConfig()
-    return invoke<ConfigReadResult>('agent_read_opencode_config')
+    return invoke<ConfigReadResult>('agent_read_config', { engineId })
   },
 
   /** 写回补丁后的完整文本；mtime 不一致抛「conflict」错误（Rust 侧校验） */
-  async writeConfig(text: string, expectedMtime: number | null): Promise<ConfigWriteResult> {
+  async writeConfig(
+    text: string,
+    expectedMtime: number | null,
+    engineId?: string,
+  ): Promise<ConfigWriteResult> {
     if (!isTauri()) return mockWriteConfig(text, expectedMtime)
-    return invoke<ConfigWriteResult>('agent_write_opencode_config', {
+    return invoke<ConfigWriteResult>('agent_write_config', {
+      engineId,
       text,
       expectedMtime,
     })

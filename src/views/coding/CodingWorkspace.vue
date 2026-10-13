@@ -9,9 +9,11 @@ import MessageComposer from './components/MessageComposer.vue'
 import FileEditorView from './components/FileEditorView.vue'
 import RightPanel from './components/RightPanel.vue'
 import TerminalPanel from './components/TerminalPanel.vue'
+import NewSessionDialog from './components/NewSessionDialog.vue'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { useSessionStore } from '../../stores/session'
 import { useProjectStore } from '../../stores/project'
+import type { EngineWire } from '../../types/engine'
 
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
@@ -24,12 +26,19 @@ const activeSession = computed(() => sessionStore.get(workspace.activeSessionId)
 const terminalVisible = ref(false)
 
 function createSession() {
-  // 新会话默认挂到最近打开的项目（无项目则为无工作区会话）；cwd 绑项目根（PRD R2）
+  // 新会话：先弹窗选引擎（PRD R5），确认后挂到最近打开的项目
+  newDialogOpen.value = true
+}
+
+/** 弹窗确认：以所选引擎创建文件夹会话（engineId 写入 Session） */
+const newDialogOpen = ref(false)
+function onDialogConfirm(engineId: EngineWire) {
   const projectId = projectStore.recentProjects[0]?.id
   const session = sessionStore.createSession(workspace.selectedModel, {
     kind: 'folder',
     projectId,
     cwd: projectStore.get(projectId)?.rootPath,
+    engineId,
   })
   workspace.openSession(session.id)
 }
@@ -173,5 +182,12 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
         </div>
       </div>
     </div>
+
+    <!-- 新建会话弹窗（选引擎，PRD R5） -->
+    <NewSessionDialog
+      :open="newDialogOpen"
+      @close="newDialogOpen = false"
+      @confirm="onDialogConfirm"
+    />
   </div>
 </template>

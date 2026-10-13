@@ -25,6 +25,7 @@ import {
 } from 'lucide-vue-next'
 import { MODELS, EXECUTION_MODES, useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
+import { useEngineStore } from '../../../stores/engine'
 import { useProjectStore } from '../../../stores/project'
 import {
   useConversation,
@@ -39,6 +40,7 @@ const props = defineProps<{ sessionId: string }>()
 
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
+const engineStore = useEngineStore()
 const projectStore = useProjectStore()
 const { send, stop, setModel, setConfigOption, reconnect, reconnecting, ensureConnected } =
   useConversation()
@@ -287,8 +289,10 @@ const healthLabel = computed(() => HEALTH_META[healthState.value].label)
 const healthClass = computed(() => HEALTH_META[healthState.value].cls)
 /** 连接中：文字用与「正在生成…」同款 shimmer 动效 */
 const healthShimmer = computed(() => healthState.value === 'connecting')
-/** agent 名（无进程信息时用字面 OpenCode） */
-const agentName = computed(() => acpHealth.value?.agentInfo?.name ?? 'OpenCode')
+/** agent 名（无进程信息时按会话引擎取显示名，不写死 OpenCode，R6） */
+const agentName = computed(
+  () => acpHealth.value?.agentInfo?.name ?? engineStore.agentName(session.value?.engineId),
+)
 /** 弹层错误原因（仅异常态显示） */
 const healthReason = computed(() =>
   healthState.value === 'error' ? (acpHealth.value?.reason ?? null) : null,
@@ -396,7 +400,7 @@ function pickFiles(e: Event) {
           ref="textareaEl"
           v-model="draft"
           rows="1"
-          placeholder="与 OpenCode 协作"
+          placeholder="与 Agent 协作"
           class="block max-h-[200px] min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[13.5px] leading-6 text-neutral-800 outline-none placeholder:text-neutral-400"
           @keydown="onKeydown"
         />

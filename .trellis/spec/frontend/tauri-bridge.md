@@ -297,6 +297,89 @@ split on the **first** `/` only (the modelId itself may contain `/`, e.g.
 the resolved window to `tokenUsage.contextWindow` immediately (best-effort,
 never blocks); the live `usage_update.size` still refines it per turn.
 
+## Agent / engine registry (`src-tauri/src/agent_type.rs` + `engine.rs`, task 10-13-acp-multi-engine)
+
+The ACP layer is **engine-pluggable**, modeled on codeg's multi-agent abstraction but
+trimmed to "spawn a system-installed engine" (no download/install/version-pinning/
+custom agents/DB — those are out of scope). Two Rust modules:
+
+- **`agent_type.rs`** — `AgentType` compile-time enum (currently only `OpenCode`) with
+  `as_wire()` / `from_wire()` / `Display` / `Serialize` / `Deserialize` and
+  `BUILTIN_AGENT_TYPES`.
+- **`engine.rs`** — `AcpAgentMeta { agent_type, name, description, launch: LaunchSpec }`,
+  `get_agent_meta(AgentType) -> AcpAgentMeta` (exhaustive `match`), `AcpAgentInfo`
+  (camelCase serde), `list_agents()`, and `bare_bin_name()`.
+
+### Wire contract (persistence boundary — DO NOT rename)
+
+`AgentType::as_wire()` is the **stable persisted form** written to
+`SessionIndexEntry.engineId` / `Session.engineId` (`"open_code"` today). Renaming a
+wire string silently orphans every saved session that references it — the
+`builtin_wire_names_are_unchanged` test locks the mapping (mirrors codeg). Unknown
+wire → `from_wire` returns `None`; Rust commands error, frontend falls back to
+`DEFAULT_ENGINE_WIRE` (`'open_code'`).
+
+### Command surface
+
+- `acp_connect(sessionId, engineId)` — engineId is the wire string; parsed to
+  `AgentType` and bound to `AcpConn.engine`. Session-level commands
+  (`session_new/load/prompt/cancel/set_config/respond_permission/session_close`)
+  remain **connId-only** — engine is read from the connection.
+- `acp_probe_options(cwd?, engineId?)`, `agent_model_context_window(provider, model, engineId?)`
+  — engineId optional, defaults to opencode.
+- `agent_detect(engineId)`, `agent_read_config(engineId)`, `agent_write_config(engineId)`
+  — the old `agent_*_opencode` names are retired (single rename, no alias).
+- `acp_list_agents()` → `AcpAgentInfo[]`; `engine_default_get()` / `engine_default_set(engineId)`.
+- `agent_read_env_file` / `agent_write_env_file` stay engine-agnostic (app-level env).
+
+### `agent_model_context_window` signature
+
+`(provider, model, engineId?)`. **`provider` and `model` are separate params** (not a
+joined `provider/model`). The Rust side dispatches on the engine's
+`ContextWindowSource` (`OpenCodeConfigAndCatalog` today) — the opencode
+config→models.dev-cache lookup lives behind that variant, not inline in a branch.
+
+### Engine-specific code placement (AC8)
+
+Protocol routing (`reader_loop` / `handle_incoming` / `handle_client_request`) **must
+not branch on engine name**. Engine-specific code lives only in: spawn construction
+(`resolve_bin`/`resolve_spawn`/`build_acp_command` take `&AcpAgentMeta`), detect chain
+(`agent.rs`, engine-ified end to end), config path, and context-window lookup. All
+constants (bin candidates, subcommand, env strip, detect args, config path) come from
+`LaunchSpec`. Adding an engine = new enum variant + one `match` arm in `get_agent_meta`.
+
+> **Warning**: `env_strip` is engine data now (opencode strips
+> `OPENCODE_SERVER_USERNAME`/`OPENCODE_SERVER_PASSWORD`). New engines declare their own.
+> The Windows fallback uses `bare_bin_name()` (extension-stripped) so `cmd /C <bin>`
+> keeps PATHEXT resolution — never feed it `bin_candidates[0]` verbatim.
+
+### Frontend
+
+- `src/types/engine.ts` — `EngineWire` (`'open_code'`), `AcpAgentInfo`,
+  `BUILTIN_ENGINE_WIRES`, `DEFAULT_ENGINE_WIRE`.
+- `src/services/engineService.ts` — sole `invoke` site for `acp_list_agents` /
+  `engine_default_get` / `engine_default_set`; isTauri dual-channel + mock.
+- `src/stores/engine.ts` — **single shared store** (like codeg `use-acp-agents`):
+  `agents` (sorted `sortOrder` + name), `fresh`, `defaultEngineId`,
+  `preselectedEngineId` (default → first-available fallback, **without writing back
+  the default** — fallback ≠ user confirmation), `load()`/`refresh()`,
+  `setDefaultEngine()`, `pickEngine()`, `agentName()`. On fetch failure it keeps the
+  last list (never clears); browser dev falls back to a static opencode entry.
+- `NewSessionDialog.vue` — engine picker at new-session entry points
+  (`SidebarPanel.vue` folder/tmp, `CodingWorkspace.vue`, `TopBar.vue`). Confirm writes
+  `engineId` into the created `Session`.
+- `AgentManageView.vue` — list from the engine store, reactive selection, plus a
+  "default engine" chooser writing `settings.json`.
+
+### Known gap (second-engine work)
+
+`stores/agent.ts` keeps `detectResults` keyed by engine wire with a derived
+`detectResult = detectResults[activeEngineId]`, but **nothing writes `activeEngineId`**
+today; `AgentManageView.refresh()` writes `detectResults[selectedAgentId]` while the
+detail panel reads `activeEngineId`. With a single engine these coincide. When R7
+gains a second engine, wire `selectedAgentId → activeEngineId` or the settings detail
+will render the wrong engine's precheck.
+
 ## Gotchas
 
 > **Warning**: `getCurrentWindow()` throws in a plain browser dev server.

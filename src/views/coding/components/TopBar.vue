@@ -14,11 +14,14 @@ import {
   Settings,
 } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
+import { ref } from 'vue'
 import SessionTabs from './SessionTabs.vue'
+import NewSessionDialog from './NewSessionDialog.vue'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
 import { useProjectStore } from '../../../stores/project'
 import { getAppWindow } from '../../../utils/window'
+import type { EngineWire } from '../../../types/engine'
 
 defineEmits<{ 'toggle-terminal': [] }>()
 
@@ -31,12 +34,19 @@ const appWindow = getAppWindow()
 const message = useMessage()
 
 function newSession() {
-  // 新会话默认挂到最近打开的项目（无项目则为无工作区会话）；cwd 绑项目根（PRD R2）
+  // 新会话：先弹窗选引擎（PRD R5），确认后挂到最近打开的项目
+  newDialogOpen.value = true
+}
+
+/** 弹窗确认：以所选引擎创建文件夹会话（engineId 写入 Session） */
+const newDialogOpen = ref(false)
+function onDialogConfirm(engineId: EngineWire) {
   const projectId = projectStore.recentProjects[0]?.id
   const session = sessionStore.createSession(workspace.selectedModel, {
     kind: 'folder',
     projectId,
     cwd: projectStore.get(projectId)?.rootPath,
+    engineId,
   })
   workspace.openSession(session.id)
 }
@@ -150,6 +160,13 @@ function notImplemented(label: string) {
         </button>
       </template>
     </div>
+
+    <!-- 新建会话弹窗（选引擎，PRD R5） -->
+    <NewSessionDialog
+      :open="newDialogOpen"
+      @close="newDialogOpen = false"
+      @confirm="onDialogConfirm"
+    />
   </div>
 </template>
 

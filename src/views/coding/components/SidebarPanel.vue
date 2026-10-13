@@ -18,15 +18,19 @@ import {
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
 import { useProjectStore } from '../../../stores/project'
+import { useEngineStore } from '../../../stores/engine'
 import { useConversation } from '../../../composables/useConversation'
 import { canPickFolder, fsService, projectNameFromPath } from '../../../services/fsService'
 import { formatRelativeTime } from '../../../utils/time'
 import SessionItem from './SessionItem.vue'
+import NewSessionDialog from './NewSessionDialog.vue'
 import type { Session } from '../../../types/session'
+import type { EngineWire } from '../../../types/engine'
 
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
+const engineStore = useEngineStore()
 const { closeConnection } = useConversation()
 const message = useMessage()
 
@@ -95,19 +99,34 @@ function commitRename() {
 }
 
 function createSession() {
-  // 新会话默认挂到最近打开的项目（无项目则为无工作区会话）；cwd 绑项目根（PRD R2）
+  // 新会话：先弹窗选引擎（PRD R5）；确认后挂到最近打开的项目（无项目则无工作区）
+  newDialogKind.value = 'folder'
+  dialogOpen.value = true
+}
+
+function createTmpSession() {
+  newDialogKind.value = 'tmp'
+  dialogOpen.value = true
+}
+
+/** 新建会话弹窗：选择引擎后落地会话（engineId 写入 Session，PRD R5/R8） */
+const dialogOpen = ref(false)
+const newDialogKind = ref<'folder' | 'tmp'>('folder')
+
+function onDialogConfirm(engineId: EngineWire) {
+  if (newDialogKind.value === 'tmp') {
+    const session = sessionStore.createSession(workspace.selectedModel, { kind: 'tmp', engineId })
+    workspace.openSession(session.id)
+    activeNav.value = 'chat'
+    return
+  }
   const projectId = projectStore.recentProjects[0]?.id
   const session = sessionStore.createSession(workspace.selectedModel, {
     kind: 'folder',
     projectId,
     cwd: projectStore.get(projectId)?.rootPath,
+    engineId,
   })
-  workspace.openSession(session.id)
-  activeNav.value = 'chat'
-}
-
-function createTmpSession() {
-  const session = sessionStore.createSession(workspace.selectedModel, { kind: 'tmp' })
   workspace.openSession(session.id)
   activeNav.value = 'chat'
 }
@@ -161,6 +180,7 @@ function openProject(projectId: string) {
       kind: 'folder',
       projectId,
       cwd: projectStore.get(projectId)?.rootPath,
+      engineId: engineStore.defaultEngineId,
     })
     workspace.openSession(session.id)
   }
@@ -384,5 +404,8 @@ function openProject(projectId: string) {
     <div class="flex h-9 shrink-0 items-center justify-end border-t border-neutral-200 px-3">
       <span class="pr-1 text-[11px] text-neutral-400">{{ sessionStore.sessions.length }} 个会话</span>
     </div>
+
+    <!-- 新建会话弹窗（选引擎，PRD R5） -->
+    <NewSessionDialog :open="dialogOpen" @close="dialogOpen = false" @confirm="onDialogConfirm" />
   </aside>
 </template>

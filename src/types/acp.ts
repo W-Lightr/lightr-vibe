@@ -2,6 +2,8 @@
 // update 变体用判别联合（sessionUpdate 字段）；反向 request 的 toolCall 是
 // ToolCallUpdate 增量形状（协议 §6），全部字段容忍缺失。
 
+import type { EngineWire } from './engine'
+
 /** ACP 进程状态（acp://status 事件 / acp_status 命令） */
 export type AcpProcessStatus = 'ready' | 'dead' | 'stopped'
 
@@ -168,6 +170,8 @@ export interface SessionIndexEntry {
   acpSessionId?: string
   model: string
   mode?: string
+  /** 会话绑定的引擎 wire 标识；旧索引缺该字段 → 加载时回退 open_code（AC5） */
+  engineId?: EngineWire
   createdAt: number
   updatedAt: number
 }

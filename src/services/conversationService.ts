@@ -3,6 +3,7 @@
 // 注意：所有响应均为本地模拟数据，不代表真实模型调用。
 
 import type { Session, ToolCall } from '../types/session'
+import type { EngineWire } from '../types/engine'
 import { createId } from '../utils/id'
 
 export interface SendMessageOptions {
@@ -70,7 +71,12 @@ export const conversationService = {
   createSession(
     title: string,
     model: string,
-    opts: { kind: Session['kind']; projectId?: string; storagePath?: string },
+    opts: {
+      kind: Session['kind']
+      projectId?: string
+      storagePath?: string
+      engineId: EngineWire
+    },
   ): Session {
     const now = Date.now()
     return {
@@ -84,6 +90,7 @@ export const conversationService = {
       extensionId: createId('ext'),
       tokenUsage: { input: 0, output: 0, total: 0, contextWindow: 128_000, cachedRead: 0, cachedWrite: 0 },
       messages: [],
+      engineId: opts.engineId,
       kind: opts.kind,
       projectId: opts.projectId,
       storagePath: opts.storagePath,

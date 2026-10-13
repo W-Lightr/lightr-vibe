@@ -38,7 +38,7 @@ export interface PrecheckItem {
   detail: string
 }
 
-/** Rust `agent_detect_opencode` 返回值（design §2.1 契约） */
+/** Rust `agent_detect(engineId)` 返回值（design §2.1 契约；engineId 缺省回退 opencode） */
 export interface DetectResult {
   installed: boolean
   version: string | null
@@ -51,14 +51,14 @@ export interface DetectResult {
   detail: string | null
 }
 
-/** Rust `agent_read_opencode_config` 返回值 */
+/** Rust `agent_read_config(engineId)` 返回值 */
 export interface ConfigReadResult {
   text: string | null
   mtimeMs: number | null
   path: string
 }
 
-/** Rust `agent_write_opencode_config` 返回值 */
+/** Rust `agent_write_config(engineId, text, expectedMtime)` 返回值 */
 export interface ConfigWriteResult {
   mtimeMs: number
 }

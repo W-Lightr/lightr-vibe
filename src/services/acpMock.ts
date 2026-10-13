@@ -96,7 +96,7 @@ function simulatePermission(
 }
 
 export const acpMock = {
-  async connect(sessionId: string): Promise<AcpStartResult> {
+  async connect(sessionId: string, _engineId?: string): Promise<AcpStartResult> {
     connectedSessions.add(sessionId)
     return {
       status: 'ready',
@@ -126,7 +126,7 @@ export const acpMock = {
   },
 
   /** 一次性探针（浏览器）：复用 mock 配置项生成器，形状与 acp_probe_options 一致 */
-  async probeOptions(_cwd?: string): Promise<{ configOptions: AcpConfigOption[] }> {
+  async probeOptions(_cwd?: string, _engineId?: string): Promise<{ configOptions: AcpConfigOption[] }> {
     return { configOptions: mockConfigOptions() }
   },
 
@@ -300,7 +300,7 @@ export const acpMock = {
   },
 
   /** 浏览器 mock：固定的模型上下文窗口表；未命中返回 null */
-  modelContextWindow(provider: string, model: string): number | null {
+  modelContextWindow(provider: string, model: string, _engineId?: string): number | null {
     const key = `${provider}/${model}`
     const map: Record<string, number> = {
       'mock/gpt-mini': 128_000,

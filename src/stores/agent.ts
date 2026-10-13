@@ -13,6 +13,8 @@ import type {
   PrecheckItem,
 } from '../types/agent'
 import { PERMISSION_KEYS } from '../types/agent'
+import type { EngineWire } from '../types/engine'
+import { DEFAULT_ENGINE_WIRE } from '../types/engine'
 import { normalizeConfig, opencodeService } from '../services/opencodeService'
 import { patchConfig, type ConfigEdit } from '../utils/jsonc'
 import { isTauri } from '../utils/isTauri'
@@ -21,11 +23,19 @@ import { isTauri } from '../utils/isTauri'
 export type SaveError = { kind: 'conflict' } | { kind: 'error'; message: string }
 
 export const useAgentStore = defineStore('agent', () => {
-  // ---- 检测状态 ----
+  // ---- 检测状态（按引擎 wire 键；设计 D3：调用点按 engineId 取）----
   const detecting = ref(false)
-  const detectResult = ref<DetectResult | null>(null)
+  /** 每个引擎独立的检测结果（键 = wire） */
+  const detectResults = ref<Record<string, DetectResult>>({})
+  /** 当前设置页/详情页聚焦的引擎（默认 opencode） */
+  const activeEngineId = ref<EngineWire>(DEFAULT_ENGINE_WIRE)
   /** 浏览器 dev 环境标记：界面显示 mock 提示条（PRD R3） */
   const browserMode = ref(!isTauri())
+
+  /** 当前聚焦引擎的检测结果（向后兼容原单结果消费点） */
+  const detectResult = computed<DetectResult | null>(
+    () => detectResults.value[activeEngineId.value] ?? null,
+  )
 
   // ---- 配置缓存 ----
   /** opencode.jsonc 原文（补丁基于它生成） */
@@ -98,17 +108,19 @@ export const useAgentStore = defineStore('agent', () => {
   })
 
   /** 执行检测并顺带加载配置与环境变量（进入 Agent 管理页时调用）。
-   * 重入保护：检测进行中直接返回（quality-guidelines 规则 7）。 */
-  async function detect(): Promise<void> {
+   * 重入保护：检测进行中直接返回（quality-guidelines 规则 7）。
+   * engineId 缺省用当前聚焦引擎。 */
+  async function detect(engineId?: EngineWire): Promise<void> {
+    const target = engineId ?? activeEngineId.value
     if (detecting.value) return
     detecting.value = true
     try {
-      const result = await opencodeService.detect()
-      detectResult.value = result
+      const result = await opencodeService.detect(target)
+      detectResults.value = { ...detectResults.value, [target]: result }
       if (result.installed && result.configExists) {
         // 配置读取失败不应让整个检测崩溃：记录错误，UI 走引导分支
         try {
-          await loadConfig()
+          await loadConfig(target)
         } catch (e) {
           configError.value = e instanceof Error ? e.message : '配置读取失败'
           configText.value = null
@@ -131,10 +143,10 @@ export const useAgentStore = defineStore('agent', () => {
     }
   }
 
-  /** 读 opencode.jsonc 原文 + mtime 并缓存 */
-  async function loadConfig(): Promise<void> {
+  /** 读引擎配置文件原文 + mtime 并缓存（engineId 缺省当前聚焦引擎） */
+  async function loadConfig(engineId?: EngineWire): Promise<void> {
     configError.value = null
-    const result = await opencodeService.readConfig()
+    const result = await opencodeService.readConfig(engineId ?? activeEngineId.value)
     configText.value = result.text
     configMtime.value = result.mtimeMs
     configPath.value = result.path
@@ -162,7 +174,7 @@ export const useAgentStore = defineStore('agent', () => {
     writing.value = true
     try {
       const newText = patchConfig(configText.value, edits)
-      const result = await opencodeService.writeConfig(newText, configMtime.value)
+      const result = await opencodeService.writeConfig(newText, configMtime.value, activeEngineId.value)
       configText.value = newText
       configMtime.value = result.mtimeMs
       return null
@@ -257,6 +269,8 @@ export const useAgentStore = defineStore('agent', () => {
   return {
     detecting,
     detectResult,
+    detectResults,
+    activeEngineId,
     browserMode,
     configText,
     configMtime,

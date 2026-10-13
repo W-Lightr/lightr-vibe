@@ -17,6 +17,8 @@ import type {
   AcpUpdateEvent,
 } from '../types/acp'
 import type { MessageErrorKind, ToolCall } from '../types/session'
+import type { EngineWire } from '../types/engine'
+import { DEFAULT_ENGINE_WIRE } from '../types/engine'
 import { acpService } from '../services/acpService'
 import { onUpdate, onStatus } from '../services/acpEvents'
 import { useSessionStore } from '../stores/session'
@@ -135,34 +137,35 @@ export function useAcpHealth() {
   }
 }
 
-// ── 模型列表缓存（按 agent 键；本项目实际单 agent=opencode，键位预留扩展） ──
+// ── 模型列表缓存（按引擎 wire 键；会话绑定引擎决定键位） ──
 // 语义对齐 codeg 的 per-agent selectors cache：进程内缓存探针结果，
 // 会话打开即可渲染真实模型列表，无需等首次发送。
-const MODEL_AGENT_KEY = 'opencode'
 const modelOptionsCache = new Map<string, AcpConfigOption[]>()
 /** 并发探针守卫：连点「重新获取模型」不扇出多个子进程 */
 let probeInFlight: Promise<AcpConfigOption[] | null> | null = null
 
-/** 读取已缓存的配置项（无则 null） */
-export function getCachedModelOptions(): AcpConfigOption[] | null {
-  return modelOptionsCache.get(MODEL_AGENT_KEY) ?? null
+/** 读取指定引擎已缓存的配置项（无则 null） */
+export function getCachedModelOptions(engineId: string): AcpConfigOption[] | null {
+  return modelOptionsCache.get(engineId) ?? null
 }
 
 /**
- * 真实探针刷新模型列表：调 acp_probe_options（或 mock）→ 写缓存；
+ * 真实探针刷新模型列表：调 acp_probe_options（或 mock）→ 按引擎键写缓存；
  * 传入 sessionId 时同步应用到该会话的 configOptions（下拉即时更新）。
  * 并发调用共享同一 in-flight promise。
  */
 export async function refreshModelOptions(
   sessionId?: string,
 ): Promise<AcpConfigOption[] | null> {
+  // 会话绑定的引擎决定探针目标与缓存键；无会话时回退默认引擎（含探针自身回退）
+  const session = sessionId ? useSessionStore().get(sessionId) : null
+  const engineId = session?.engineId ?? DEFAULT_ENGINE_WIRE
   if (!probeInFlight) {
     probeInFlight = (async () => {
       try {
-        const session = sessionId ? useSessionStore().get(sessionId) : null
-        const options = await acpService.probeOptions(session?.cwd)
+        const options = await acpService.probeOptions(session?.cwd, engineId)
         if (options && options.length) {
-          modelOptionsCache.set(MODEL_AGENT_KEY, options)
+          modelOptionsCache.set(engineId, options)
           return options
         }
         return null
@@ -172,14 +175,11 @@ export async function refreshModelOptions(
     })()
   }
   const options = await probeInFlight
-  if (options && sessionId) {
-    const session = useSessionStore().get(sessionId)
-    if (session) {
-      session.configOptions = options
-      // 同步 session.model 到探针返回的模型 currentValue（下拉显示一致）
-      const modelOpt = options.find((o) => o.id === 'model' || o.category === 'model')
-      if (typeof modelOpt?.currentValue === 'string') session.model = modelOpt.currentValue
-    }
+  if (options && sessionId && session) {
+    session.configOptions = options
+    // 同步 session.model 到探针返回的模型 currentValue（下拉显示一致）
+    const modelOpt = options.find((o) => o.id === 'model' || o.category === 'model')
+    if (typeof modelOpt?.currentValue === 'string') session.model = modelOpt.currentValue
   }
   return options
 }
@@ -195,7 +195,7 @@ export async function ensureModelOptions(sessionId: string): Promise<void> {
     (o) => o.id === 'model' || o.category === 'model',
   )
   if (hasModel) return
-  const cached = getCachedModelOptions()
+  const cached = getCachedModelOptions(session.engineId)
   if (cached) {
     session.configOptions = cached
     const modelOpt = cached.find((o) => o.id === 'model' || o.category === 'model')
@@ -244,8 +244,8 @@ function summarizeRawInput(rawInput: unknown): string {
   }
 }
 
-/** Rust 错误串 → 错误卡类别（acp.rs 约定前缀） */
-export function classifyAcpError(err: unknown): { kind: MessageErrorKind; text: string } {
+/** Rust 错误串 → 错误卡类别（acp.rs 约定前缀）。authText 为按引擎定制的引导文案。 */
+export function classifyAcpError(err: unknown, authText?: string): { kind: MessageErrorKind; text: string } {
   const text = err instanceof Error ? err.message : String(err)
   if (text.includes('acp-dead')) {
     return { kind: 'dead', text: 'Agent 进程已退出，请重新启动后继续对话' }
@@ -254,9 +254,32 @@ export function classifyAcpError(err: unknown): { kind: MessageErrorKind; text: 
     return { kind: 'timeout', text: `Agent 响应超时（${text}），请稍后重试` }
   }
   if (text.includes('acp:-32000') || text.includes('Authentication required')) {
-    return { kind: 'auth', text: '当前模型需要凭据：请在终端运行 `opencode auth login` 后重试' }
+    return {
+      kind: 'auth',
+      text: authText ?? '当前模型需要凭据：请先完成引擎认证后重试',
+    }
   }
   return { kind: 'generic', text: `生成失败：${text}` }
+}
+
+/** 按引擎 wire 给出认证引导文案（R6：不写死 opencode auth login）。 */
+function authHintFor(engineId: string): string {
+  switch (engineId) {
+    case 'open_code':
+      return '当前模型需要凭据：请在终端运行 `opencode auth login` 后重试'
+    default:
+      return '当前模型需要凭据：请先完成引擎认证后重试'
+  }
+}
+
+/** 按引擎 wire 给出显示名（用于门禁提示）。 */
+function engineDisplayName(engineId: string): string {
+  switch (engineId) {
+    case 'open_code':
+      return 'OpenCode'
+    default:
+      return engineId
+  }
 }
 
 let updateSubscribed = false
@@ -425,8 +448,8 @@ async function ensureAcpSessionInner(sessionId: string): Promise<string> {
   const session = sessionStore.get(sessionId)
   if (!session) throw new Error('acp-dead: 会话不存在')
 
-  // 为该会话 spawn 独立进程并 initialize（幂等，design §8.1）
-  await acpService.connect(sessionId)
+  // 为该会话 spawn 独立进程并 initialize（幂等，design §8.1）；引擎随会话绑定
+  await acpService.connect(sessionId, session.engineId)
   const cwd = session.cwd ?? tmpSessionDirSync()
 
   if (liveAcpSessions.has(sessionId)) {
@@ -508,26 +531,28 @@ export function useConversation() {
 
   ensureSubscribed()
 
-  /** 发送门禁（Q1）：Tauri 环境要求 installed && acpOk，否则引导跳设置页且不产生消息 */
-  async function passGate(): Promise<boolean> {
+  /** 发送门禁（Q1）：Tauri 环境要求 installed && acpOk，否则引导跳设置页且不产生消息。
+   * 检测按会话绑定的引擎执行（engineId）。 */
+  async function passGate(engineId: string): Promise<boolean> {
     if (!isTauri()) return true
-    if (!agentStore.detectResult) {
+    if (!agentStore.detectResults[engineId]) {
       try {
-        await agentStore.detect()
+        await agentStore.detect(engineId as EngineWire)
       } catch {
         // 检测失败按不可用处理
       }
     }
-    const d = agentStore.detectResult
+    const d = agentStore.detectResults[engineId]
     if (d && d.installed && d.acpOk) return true
-    message.warning('未检测到可用 Agent，请先到设置页完成 OpenCode 配置')
+    message.warning(`未检测到可用的 ${engineDisplayName(engineId)}，请先到设置页完成配置`)
     void router.push('/settings')
     return false
   }
 
   async function send(sessionId: string, content: string) {
     if (!content.trim() || workspace.isGenerating(sessionId)) return
-    if (!(await passGate())) return
+    const engineId = sessionStore.get(sessionId)?.engineId ?? DEFAULT_ENGINE_WIRE
+    if (!(await passGate(engineId))) return
 
     // 懒加载兜底：索引恢复的会话首次发送前确保消息已读入（避免落盘覆盖丢历史）
     await sessionStore.ensureMessages(sessionId)
@@ -572,7 +597,7 @@ export function useConversation() {
       // turn 结束落盘（D4：流式期间不写）
       void sessionStore.persistMessages(sessionId)
     } catch (err) {
-      const { kind, text } = classifyAcpError(err)
+      const { kind, text } = classifyAcpError(err, authHintFor(engineId))
       if (kind === 'dead') {
         liveAcpSessions.delete(sessionId)
         syncLiveSessions()
@@ -662,7 +687,7 @@ export function useConversation() {
    * 模型 value 形如 `provider/modelId`，modelId 自身可能含 `/`（如 magpie/workbuddy/xxx），
    * 故仅按第一个 `/` 切分。set_config_option 回包不含 limit.context，须本地查 config/catalog。 */
   async function refreshContextWindow(
-    session: { tokenUsage: { contextWindow: number } },
+    session: { tokenUsage: { contextWindow: number }; engineId: string },
     modelValue: string,
   ): Promise<void> {
     const slash = modelValue.indexOf('/')
@@ -670,7 +695,7 @@ export function useConversation() {
     const provider = modelValue.slice(0, slash)
     const model = modelValue.slice(slash + 1)
     try {
-      const win = await acpService.modelContextWindow(provider, model)
+      const win = await acpService.modelContextWindow(provider, model, session.engineId)
       if (typeof win === 'number' && win > 0) session.tokenUsage.contextWindow = win
     } catch {
       // 静默：查不到就保持既有分母（usage_update.size 仍会覆盖）

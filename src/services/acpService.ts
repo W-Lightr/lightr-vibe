@@ -59,10 +59,10 @@ export function disposeAcpListeners(): void {
 
 export const acpService = {
   /** 建立/复用某会话的 ACP 连接（幂等）：为该 connId(本地会话 id) spawn 独立进程 +
-   *  initialize 握手（design §8.1 每会话一进程）。 */
-  async connect(sessionId: string): Promise<AcpStartResult> {
-    if (!isTauri()) return acpMock.connect(sessionId)
-    return invoke<AcpStartResult>('acp_connect', { sessionId })
+   *  initialize 握手（design §8.1 每会话一进程）。engineId 为该会话绑定的引擎 wire。 */
+  async connect(sessionId: string, engineId: string): Promise<AcpStartResult> {
+    if (!isTauri()) return acpMock.connect(sessionId, engineId)
+    return invoke<AcpStartResult>('acp_connect', { sessionId, engineId })
   },
 
   /** 断开某会话连接（杀该会话进程）：关标签/删除会话时调用；幂等（不存在 no-op） */
@@ -84,11 +84,12 @@ export const acpService = {
   },
 
   /** 一次性探针：throwaway 进程跑 initialize + session/new 取 configOptions
-   * （模型列表），供会话打开/手动刷新时填充模型缓存。失败不影响会话。 */
-  async probeOptions(cwd?: string): Promise<AcpConfigOption[] | null> {
+   * （模型列表），供会话打开/手动刷新时填充模型缓存。失败不影响会话。
+   * engineId 缺省由 Rust 侧回退 opencode。 */
+  async probeOptions(cwd?: string, engineId?: string): Promise<AcpConfigOption[] | null> {
     const raw = !isTauri()
-      ? await acpMock.probeOptions(cwd)
-      : await invoke('acp_probe_options', { cwd })
+      ? await acpMock.probeOptions(cwd, engineId)
+      : await invoke('acp_probe_options', { cwd, engineId })
     return extractConfigOptions(raw)
   },
 
@@ -141,10 +142,10 @@ export const acpService = {
     await invoke('acp_respond_permission', { connId, requestId, optionId })
   },
 
-  /** 按 provider/model 解析上下文窗口（limit.context）：用户 opencode 配置 → models.dev
-   * 缓存目录。查不到返回 null（调用方保持既有分母，不臆造）。纯文件读取，不涉 ACP 进程。 */
-  async modelContextWindow(provider: string, model: string): Promise<number | null> {
-    if (!isTauri()) return acpMock.modelContextWindow(provider, model)
-    return invoke<number | null>('agent_model_context_window', { provider, model })
+  /** 按 provider/model 解析上下文窗口（limit.context），策略来自引擎声明。查不到返回 null
+   * （调用方保持既有分母，不臆造）。纯文件读取，不涉 ACP 进程。engineId 缺省回退 opencode。 */
+  async modelContextWindow(provider: string, model: string, engineId?: string): Promise<number | null> {
+    if (!isTauri()) return acpMock.modelContextWindow(provider, model, engineId)
+    return invoke<number | null>('agent_model_context_window', { provider, model, engineId })
   },
 }
