@@ -22,6 +22,7 @@ import { useSessionStore } from '../../../stores/session'
 import { useProjectStore } from '../../../stores/project'
 import { getAppWindow } from '../../../utils/window'
 import type { EngineWire } from '../../../types/engine'
+import type { NewSessionTarget } from '../../../types/session'
 
 defineEmits<{ 'toggle-terminal': [] }>()
 
@@ -34,19 +35,27 @@ const appWindow = getAppWindow()
 const message = useMessage()
 
 function newSession() {
-  // 新会话：先弹窗选引擎（PRD R5），确认后挂到最近打开的项目
+  // 新会话：弹窗选引擎 + 文件夹（PRD R2），确认后创建草稿
   newDialogOpen.value = true
 }
 
-/** 弹窗确认：以所选引擎创建文件夹会话（engineId 写入 Session） */
+/** 弹窗确认：按所选引擎 + 目标创建草稿会话（延迟入列，PRD D3） */
 const newDialogOpen = ref(false)
-function onDialogConfirm(engineId: EngineWire) {
-  const projectId = projectStore.recentProjects[0]?.id
-  const session = sessionStore.createSession(workspace.selectedModel, {
+function onDialogConfirm(payload: { engineId: EngineWire; target: NewSessionTarget }) {
+  if (payload.target.kind === 'tmp') {
+    const session = sessionStore.createDraft(workspace.selectedModel, {
+      kind: 'tmp',
+      engineId: payload.engineId,
+    })
+    workspace.openSession(session.id)
+    return
+  }
+  const project = projectStore.get(payload.target.projectId)
+  const session = sessionStore.createDraft(workspace.selectedModel, {
     kind: 'folder',
-    projectId,
-    cwd: projectStore.get(projectId)?.rootPath,
-    engineId,
+    projectId: payload.target.projectId,
+    cwd: project?.rootPath,
+    engineId: payload.engineId,
   })
   workspace.openSession(session.id)
 }

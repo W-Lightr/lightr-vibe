@@ -49,6 +49,10 @@ export interface Message {
 
 export type SessionKind = 'folder' | 'tmp'
 
+/** 新建会话的目标：绑定已有文件夹 / 临时会话（延迟入列，PRD R2/D5）。
+ * 来源 = 新建弹窗的文件夹下拉；文件夹内新建不走弹窗，直接构造 folder target。 */
+export type NewSessionTarget = { kind: 'folder'; projectId: string } | { kind: 'tmp' }
+
 export interface Session {
   id: string
   title: string

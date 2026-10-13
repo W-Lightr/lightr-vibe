@@ -144,6 +144,11 @@ export const useSessionStore = defineStore('session', () => {
    * 且发送前的 await 能等到真正完成，避免落盘覆盖未读入的历史） */
   const messageLoads = new Map<string, Promise<void>>()
 
+  /** 草稿暂存区（延迟入列，PRD R3）：新建未发送的会话对象。
+   * 不进 sessions（侧栏不显示）、不落盘（索引无此 id）；首次发送 promoteDraft 才入库。
+   * 用非响应式 Map（同 messageLoads 风格）：会话对象本身按 id 取，草稿量极小。 */
+  const drafts = new Map<string, Session>()
+
   const byId = computed(() => {
     const map = new Map<string, Session>()
     for (const s of sessions.value) map.set(s.id, s)
@@ -151,7 +156,8 @@ export const useSessionStore = defineStore('session', () => {
   })
 
   function get(id: string | null | undefined): Session | null {
-    return id ? (byId.value.get(id) ?? null) : null
+    if (!id) return null
+    return byId.value.get(id) ?? drafts.get(id) ?? null
   }
 
   // ---- 持久化 ----
@@ -249,6 +255,52 @@ export const useSessionStore = defineStore('session', () => {
     return session
   }
 
+  /**
+   * 新建草稿会话（延迟入列，PRD R3/D3）：**不 unshift、不 schedulePersistIndex**。
+   * 标题统一占位「新会话」（不用列表长度编号：草稿不计入列表，编号会与列表错位）；
+   * 首发时 applyAutoTitle 按首条消息截断 20 字替换。
+   */
+  function createDraft(
+    model: string,
+    opts: {
+      kind: Session['kind']
+      projectId?: string
+      cwd?: string
+      engineId?: EngineWire
+    },
+  ): Session {
+    const session = conversationService.createSession('新会话', model, {
+      ...opts,
+      engineId: opts.engineId ?? DEFAULT_ENGINE_WIRE,
+    })
+    session.messagesLoaded = true
+    // 会话 cwd：文件夹会话绑项目 rootPath（调用方传入）；无项目 → tmpsession 目录
+    session.cwd = opts.cwd ?? tmpSessionDirSync()
+    // 临时会话落盘路径：~/.lightr-vibe/lightr-vibe/tmpsession/<id>
+    if (session.kind === 'tmp') session.storagePath = `${tmpSessionDirSync()}/${session.id}`
+    drafts.set(session.id, session)
+    return session
+  }
+
+  /** 首次发送：草稿正式入库（草稿 → sessions + 触发索引落盘，PRD R4） */
+  function promoteDraft(id: string): void {
+    const s = drafts.get(id)
+    if (!s) return
+    drafts.delete(id)
+    sessions.value.unshift(s)
+    schedulePersistIndex()
+  }
+
+  /** 丢弃草稿（未入库才生效，幂等）：关标签 / 空草稿切走时调用（PRD R5） */
+  function discardDraft(id: string): void {
+    drafts.delete(id)
+  }
+
+  /** 该会话是否仍在草稿区（未发送 = 未入库，PRD R5 定义） */
+  function isDraft(id: string | null | undefined): boolean {
+    return id ? drafts.has(id) : false
+  }
+
   function renameSession(id: string, title: string) {
     const s = get(id)
     if (!s) return
@@ -316,6 +368,8 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function deleteSession(id: string) {
+    // 防御：草稿也可能被删除流程触及（虽正常丢弃走 discardDraft）
+    drafts.delete(id)
     const idx = sessions.value.findIndex((s) => s.id === id)
     if (idx !== -1) sessions.value.splice(idx, 1)
     schedulePersistIndex()
@@ -423,6 +477,10 @@ export const useSessionStore = defineStore('session', () => {
     load,
     ensureMessages,
     createSession,
+    createDraft,
+    promoteDraft,
+    discardDraft,
+    isDraft,
     renameSession,
     applyAutoTitle,
     forkSession,

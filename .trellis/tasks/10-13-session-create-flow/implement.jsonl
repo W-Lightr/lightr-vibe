@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "草稿区（drafts Map）加入 session store、get() 双查、promote/discard action——必须遵循 setup store 约定与「派生/查找 helper 接受 string|null|undefined」边界。"}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "draftInputs 模块级 Map（跨挂载持久）照 useConversationScroll 的 positions/controllers 模式；useConversation.send 插入 promoteDraft 的顺序与取消语义。"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "NewSessionDialog 新增文件夹下拉、MessageComposer watch(sessionId) 丢弃逻辑、SessionTabs 关标签丢弃——type-only props/emits、script setup、kebab-case 事件。"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "NewSessionDialog 文件夹下拉与「临时会话」选项的视觉须符合 neutral/rounded-md/text-[13px]/blue；与已有引擎下拉一致。"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "NewSessionTarget 判别联合、emits 类型、草稿相关字段无 any/!；Session/SessionIndexEntry 不变。"}

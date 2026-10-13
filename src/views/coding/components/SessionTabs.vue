@@ -2,7 +2,7 @@
 import { X, FileCode2, FileText, File } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
-import { useConversation } from '../../../composables/useConversation'
+import { useConversation, clearDraftInput } from '../../../composables/useConversation'
 import { fileIconKind } from '../../../utils/file'
 
 const workspace = useWorkspaceStore()
@@ -16,7 +16,15 @@ function closeTab(tabId: string) {
   const tab = workspace.tabs.find((t) => t.id === tabId)
   const sessionId = tab?.kind === 'session' ? tab.sessionId : null
   workspace.closeTab(tabId)
-  if (sessionId) void closeConnection(sessionId)
+  if (sessionId) {
+    // 延迟入列（PRD R5）：草稿关标签**无条件丢弃**（不落盘、不列表、清输入暂存）
+    if (sessionStore.isDraft(sessionId)) {
+      sessionStore.discardDraft(sessionId)
+      clearDraftInput(sessionId)
+    }
+    // 已入库会话保持现状：仅杀进程，不删记录
+    void closeConnection(sessionId)
+  }
 }
 
 function tabTitle(tabId: string): string {

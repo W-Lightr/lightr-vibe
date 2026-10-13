@@ -84,7 +84,8 @@ Conventions inside a setup store:
 ## Lookup helpers
 
 Stores expose **`get`-style accessors** rather than making consumers filter
-arrays. `session.ts` builds an index for O(1) lookups:
+arrays. `session.ts` builds an index for O(1) lookups (and, since the
+new-session-flow task, also consults the draft staging area — see below):
 
 ```ts
 const byId = computed(() => {
@@ -93,7 +94,7 @@ const byId = computed(() => {
   return map
 })
 function get(id: string | null | undefined): Session | null {
-  return id ? (byId.value.get(id) ?? null) : null
+  return id ? (byId.value.get(id) ?? drafts.get(id) ?? null) : null
 }
 ```
 
@@ -102,6 +103,46 @@ function get(id: string | null | undefined): Session | null {
 - Granular mutators instead of "replace whole object":
   `pushMessage`, `appendContent`, `patchMessage(sessionId, messageId, Partial<Message>)`,
   `patchToolCall(sessionId, messageId, toolCallId, Partial<ToolCall>)`.
+
+---
+
+## Draft staging (new sessions, task 10-13-session-create-flow)
+
+`useSessionStore` separates **persisted sessions** from **unsent drafts**:
+
+| Member | Meaning |
+|---|---|
+| `sessions: ref<Session[]>` | The listed/persisted array. **Only** source for the sidebar (`folderGroups` / `tmpSessions` / count) and for `persistIndex` (index JSON). |
+| `drafts: Map<string, Session>` | Module-in-store staging for new sessions that have not been sent yet. NOT reactive-listed, NEVER serialized. |
+
+Rules:
+
+- **`createDraft(model, opts)`** builds the session (title placeholder exactly
+  `'新会话'` — NOT length-numbered, so multiple drafts don't collide), sets
+  `messagesLoaded`, cwd/storagePath fallbacks, and `drafts.set`. It must **not**
+  `sessions.value.unshift` and must **not** `schedulePersistIndex`.
+- **`get(id)`** consults `sessions` then `drafts` (see snippet above), so the UI
+  (tab / composer / conversation view) can render a draft by id.
+- **`promoteDraft(id)`** = `drafts.delete` + `sessions.value.unshift` +
+  `schedulePersistIndex`. Called by `useConversation.send()` **before**
+  `pushMessage`, so 「首次发送 = 入列 + 落盘」. `applyAutoTitle` then runs and
+  matches the `'新会话'` placeholder.
+- **`discardDraft(id)`** = `drafts.delete(id)` (idempotent). Triggered
+  unconditionally on **tab close** (`SessionTabs`) and on **switch-away** only
+  when the composer input was empty (`MessageComposer` watch). Discarding a draft
+  must also `closeConnection(id)` (kill the ACP process opened by
+  auto-connect) and clear its draft-input entry.
+- **Draft input memory** lives in a module-level `Map<sessionId, string>` in
+  `useConversation.ts` (exported `getDraftInput/setDraftInput/clearDraftInput`),
+  following the cross-mount pattern; both the composer and tab-close clear it.
+- `forkSession` / `seedFolderSession` keep using the original eager
+  `createSession` (they are not drafts). `SessionIndexEntry` schema is unchanged —
+  drafts simply never persist.
+
+> **Why**: a brand-new session must not appear in the list or on disk until the
+> user actually sends a message; an abandoned draft vanishes on tab close. Keeping
+> drafts out of `sessions` makes both the list and persistence "not see" them for
+> free; `get()` is the single seam that lets the UI resolve a draft by id.
 
 ---
 

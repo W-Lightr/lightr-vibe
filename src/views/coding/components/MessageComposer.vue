@@ -32,6 +32,9 @@ import {
   ensureModelOptions,
   refreshModelOptions,
   useAcpHealth,
+  getDraftInput,
+  setDraftInput,
+  clearDraftInput,
 } from '../../../composables/useConversation'
 import type { AcpConfigOption, AcpConfigOptionGroup, AcpConfigOptionValue } from '../../../types/acp'
 import { formatTokens } from '../../../utils/time'
@@ -42,12 +45,13 @@ const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
 const engineStore = useEngineStore()
 const projectStore = useProjectStore()
-const { send, stop, setModel, setConfigOption, reconnect, reconnecting, ensureConnected } =
+const { send, stop, setModel, setConfigOption, reconnect, reconnecting, ensureConnected, closeConnection } =
   useConversation()
 const { healthOf, acpConnectingSessionIds, acpLiveSessionIds, refreshAcpStatus } = useAcpHealth()
 const message = useMessage()
 
-const draft = ref('')
+// 草稿输入从模块级暂存恢复（跨会话切换保留未发送文字，延迟入列 PRD R5）
+const draft = ref(getDraftInput(props.sessionId))
 const attachments = ref<string[]>([])
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
@@ -312,14 +316,29 @@ function autoResize() {
   el.style.height = `${Math.min(el.scrollHeight, 200)}px`
 }
 
-watch(draft, () => nextTick(autoResize))
+// 输入变化写回模块级暂存（草稿有未发送文字时切走可恢复，延迟入列 PRD R5）
+watch(draft, () => {
+  setDraftInput(props.sessionId, draft.value)
+  nextTick(autoResize)
+})
 
 // 切换会话时清空草稿与附件，并复位悬浮菜单（组件跨会话复用，避免残留
 // 上一次会话的下钻面板/搜索词），但不抢占焦点
 watch(
   () => props.sessionId,
-  () => {
-    draft.value = ''
+  (newId, oldId) => {
+    // 延迟入列（PRD R5）：切走时若旧会话仍是草稿且输入为空 → 丢弃草稿 + 杀进程。
+    // 先读旧 draft 判空，再切换到新会话输入，避免误判。
+    const oldWasEmpty = draft.value.trim() === ''
+    if (oldId) {
+      setDraftInput(oldId, draft.value)
+      if (oldWasEmpty && sessionStore.isDraft(oldId)) {
+        sessionStore.discardDraft(oldId)
+        void closeConnection(oldId)
+        clearDraftInput(oldId)
+      }
+    }
+    draft.value = getDraftInput(newId)
     attachments.value = []
     popoverOpen.value = false
     panel.value = 'root'

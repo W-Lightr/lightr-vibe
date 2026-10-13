@@ -21,7 +21,8 @@
   "children": [
     "10-08-real-folder-projects",
     "10-08-opencode-acp-chat",
-    "10-13-acp-multi-engine"
+    "10-13-acp-multi-engine",
+    "10-13-session-create-flow"
   ],
   "parent": null,
   "relatedFiles": [],

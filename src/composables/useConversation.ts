@@ -53,6 +53,30 @@ const turns = new Map<string, { turnId: string }>()
 /** 关闭连接进行中的会话（防重入，避免重复 acp_disconnect） */
 const closingConnections = new Set<string>()
 
+// ── 草稿输入暂存（延迟入列，PRD R5/D4） ──
+// Composer 的 draft 是组件本地 state，会话切换即重置。模块级 Map 让「有未发送文字的
+// 草稿」跨挂载保留（照 useConversationScroll 的 cross-mount 模式）：
+// - 切走时按此判定草稿是否为空（空 → 丢弃，非空 → 保留）；
+// - 切回时 Composer 由此恢复输入文字；
+// - 关标签 / 丢弃草稿时清除对应项。
+const draftInputs = new Map<string, string>()
+
+/** 读取某会话的未发送输入（无记录返回空串） */
+export function getDraftInput(sessionId: string): string {
+  return draftInputs.get(sessionId) ?? ''
+}
+
+/** 记录某会话的未发送输入 */
+export function setDraftInput(sessionId: string, text: string): void {
+  draftInputs.set(sessionId, text)
+}
+
+/** 清除某会话的未发送输入（丢弃草稿时调用） */
+export function clearDraftInput(sessionId: string): void {
+  draftInputs.delete(sessionId)
+}
+
+
 // ── ACP 连接健康（每会话独立进程，design §8.3） ──
 // 参考 codeg 的 composer 连接健康芯片：连接状态 ready/dead/stopped → 心形图标 + 弹层。
 // 模块级 map（key = connId = 本地会话 id）：每连接独立，界面一次看一条会话。
@@ -553,6 +577,10 @@ export function useConversation() {
     if (!content.trim() || workspace.isGenerating(sessionId)) return
     const engineId = sessionStore.get(sessionId)?.engineId ?? DEFAULT_ENGINE_WIRE
     if (!(await passGate(engineId))) return
+
+    // 首次发送：草稿正式入库（延迟入列，PRD R4）。顺序必须在 ensureMessages /
+    // pushMessage / applyAutoTitle 之前，保证「发送 = 入列表 + 落盘」
+    if (sessionStore.isDraft(sessionId)) sessionStore.promoteDraft(sessionId)
 
     // 懒加载兜底：索引恢复的会话首次发送前确保消息已读入（避免落盘覆盖丢历史）
     await sessionStore.ensureMessages(sessionId)
