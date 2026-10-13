@@ -18,7 +18,6 @@ import {
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
 import { useProjectStore } from '../../../stores/project'
-import { useEngineStore } from '../../../stores/engine'
 import { useConversation } from '../../../composables/useConversation'
 import { canPickFolder, fsService, projectNameFromPath } from '../../../services/fsService'
 import { formatRelativeTime } from '../../../utils/time'
@@ -30,7 +29,6 @@ import type { EngineWire } from '../../../types/engine'
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
-const engineStore = useEngineStore()
 const { closeConnection } = useConversation()
 const message = useMessage()
 
@@ -101,17 +99,28 @@ function commitRename() {
 function createSession() {
   // 新会话：先弹窗选引擎（PRD R5）；确认后挂到最近打开的项目（无项目则无工作区）
   newDialogKind.value = 'folder'
+  dialogProjectId.value = null
   dialogOpen.value = true
 }
 
 function createTmpSession() {
   newDialogKind.value = 'tmp'
+  dialogProjectId.value = null
+  dialogOpen.value = true
+}
+
+/** 某文件夹行内的「新建会话」：弹窗选引擎后挂到该文件夹（projectId） */
+function createSessionInProject(projectId: string) {
+  newDialogKind.value = 'folder'
+  dialogProjectId.value = projectId
   dialogOpen.value = true
 }
 
 /** 新建会话弹窗：选择引擎后落地会话（engineId 写入 Session，PRD R5/R8） */
 const dialogOpen = ref(false)
 const newDialogKind = ref<'folder' | 'tmp'>('folder')
+/** 弹窗目标项目：null = 最近项目（通用新建）；非 null = 指定文件夹行内新建 */
+const dialogProjectId = ref<string | null>(null)
 
 function onDialogConfirm(engineId: EngineWire) {
   if (newDialogKind.value === 'tmp') {
@@ -120,7 +129,7 @@ function onDialogConfirm(engineId: EngineWire) {
     activeNav.value = 'chat'
     return
   }
-  const projectId = projectStore.recentProjects[0]?.id
+  const projectId = dialogProjectId.value ?? projectStore.recentProjects[0]?.id
   const session = sessionStore.createSession(workspace.selectedModel, {
     kind: 'folder',
     projectId,
@@ -167,23 +176,10 @@ const tmpSessions = computed(() =>
 const recentProjects = computed(() => projectStore.recentProjects)
 const recentOpen = ref(false)
 
-/** 点击最近项目：更新 lastOpenedAt，并打开其最新会话（无会话则新建），文件树随即浏览该项目 */
+/** 点击文件夹行：仅激活项目（刷新 lastOpenedAt 供「最近」排序），
+ * 不自动打开/新建会话——打开具体会话需点击会话项本身（用户诉求 2026-10）。 */
 function openProject(projectId: string) {
   projectStore.touchProject(projectId)
-  const sessions = sessionStore.sessions
-    .filter((s) => s.projectId === projectId)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-  if (sessions[0]) {
-    workspace.openSession(sessions[0].id)
-  } else {
-    const session = sessionStore.createSession(workspace.selectedModel, {
-      kind: 'folder',
-      projectId,
-      cwd: projectStore.get(projectId)?.rootPath,
-      engineId: engineStore.defaultEngineId,
-    })
-    workspace.openSession(session.id)
-  }
   activeNav.value = 'chat'
 }
 </script>
@@ -296,6 +292,14 @@ function openProject(projectId: string) {
           <FolderOpen class="h-4 w-4 shrink-0 text-neutral-500" />
           <span class="min-w-0 flex-1 truncate">{{ group.project.name }}</span>
           <span class="flex w-4 justify-end text-[10px] text-neutral-400 group-hover/proj:hidden">{{ group.sessions.length }}</span>
+          <!-- 悬浮操作：在该文件夹下新建会话（弹窗选引擎后挂到本项目） -->
+          <button
+            class="hidden h-4.5 w-4.5 shrink-0 cursor-pointer items-center justify-center rounded text-neutral-400 hover:bg-neutral-300/60 hover:text-neutral-700 group-hover/proj:flex"
+            title="在此文件夹新建会话"
+            @click.stop="createSessionInProject(group.project.id)"
+          >
+            <SquarePen class="h-3 w-3" />
+          </button>
           <!-- 悬浮操作：移除项目（仅删索引，不删磁盘文件） -->
           <NPopconfirm @positive-click="removeProject(group.project.id)">
             <template #trigger>
