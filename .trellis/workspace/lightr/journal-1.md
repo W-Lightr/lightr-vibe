@@ -49,3 +49,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 3: 新建会话流程：绑定文件夹 + 延迟入列 + 引擎/文件夹弹窗
+<!-- trellis-session: v=2 fp=0aa6509c0cf2da90 -->
+
+**Date**: 2026-10-13
+**Task**: 新建会话流程：绑定文件夹 + 延迟入列 + 引擎/文件夹弹窗
+**Branch**: `main`
+
+### Summary
+
+重构新建会话生命周期（纯前端）。文件夹行内新建直绑该文件夹、无弹窗直建草稿；标签栏/菜单新建弹窗选引擎+已有文件夹（保留临时会话选项）。session store 新增草稿区 drafts Map + createDraft/promoteDraft/discardDraft/isDraft，get() 双查；草稿不入 sessions/不落盘。首次发送 promoteDraft 正式入列+落盘；未发送草稿关标签无条件丢弃、切走仅当输入框为空丢弃（有未发送文字保留，输入存模块级 Map 切回恢复）。fork/seed 走原 createSession 不变，SessionIndexEntry 无 schema 变更。trellis-check 9 项不变量 PASS，自修 1 处过期注释。vue-tsc 全绿。遗留（非阻塞）：切到文件标签时空草稿不即时丢弃（Composer 卸载不触发 watch，关标签/重启仍会清）；tmp 入口现经弹窗默认最近项目。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1283edd` | feat(workspace): 新建会话流程 — 绑定文件夹 + 延迟入列 + 引擎/文件夹弹窗 |
+
+### Status
+
+[OK] **Completed**
