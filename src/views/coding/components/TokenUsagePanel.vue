@@ -24,7 +24,8 @@ const barColor = computed(() => {
   <div>
     <div class="grid grid-cols-3 gap-2">
       <div class="rounded-md border border-neutral-200 bg-neutral-50/60 px-2.5 py-2">
-        <div class="text-[11px] text-neutral-400">Token 总量</div>
+        <!-- total 的语义是当前上下文占用（usage_update.used），不是四项 token 之和 -->
+        <div class="text-[11px] text-neutral-400">上下文占用</div>
         <div class="mt-0.5 text-sm font-medium text-neutral-800">{{ formatTokens(usage.total) }}</div>
       </div>
       <div class="rounded-md border border-neutral-200 bg-neutral-50/60 px-2.5 py-2">

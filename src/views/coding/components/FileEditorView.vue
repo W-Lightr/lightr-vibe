@@ -198,7 +198,24 @@ watch(
       theme="vs"
       height="100%"
       width="100%"
-      :options="{ minimap: { enabled: false }, fontSize: 13, tabSize: 2, wordWrap: 'on' }"
+      :options="{
+        minimap: { enabled: false },
+        fontSize: 13,
+        tabSize: 2,
+        wordWrap: 'on',
+        // 迷你灰色滚动条：窄、无阴影、半透明滑块
+        scrollbar: {
+          verticalScrollbarSize: 8,
+          horizontalScrollbarSize: 8,
+          useShadows: false,
+          verticalSliderSize: 8,
+          horizontalSliderSize: 8,
+          alwaysConsumeMouseWheel: false,
+        },
+        overviewRulerLanes: 0,
+        hideCursorInOverviewRuler: true,
+        overviewRulerBorder: false,
+      }"
       @change="onChange"
     />
   </div>

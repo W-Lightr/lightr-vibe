@@ -144,6 +144,10 @@ export interface AcpPromptResult {
     inputTokens?: number
     outputTokens?: number
     totalTokens?: number
+    /** opencode 扩展：缓存读取 token（可能缺省，容忍缺失） */
+    cachedReadTokens?: number
+    /** opencode 扩展：缓存写入 token（可能缺省，容忍缺失） */
+    cachedWriteTokens?: number
   } | null
 }
 

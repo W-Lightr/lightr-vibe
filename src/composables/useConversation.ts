@@ -38,6 +38,80 @@ const toolCallHosts = new Map<string, { sessionId: string; hostId: string }>()
 /** 当前 turn 的会话级状态（turnId 用于消息分组与停止标记） */
 const turns = new Map<string, { turnId: string }>()
 
+// ── 模型列表缓存（按 agent 键；本项目实际单 agent=opencode，键位预留扩展） ──
+// 语义对齐 codeg 的 per-agent selectors cache：进程内缓存探针结果，
+// 会话打开即可渲染真实模型列表，无需等首次发送。
+const MODEL_AGENT_KEY = 'opencode'
+const modelOptionsCache = new Map<string, AcpConfigOption[]>()
+/** 并发探针守卫：连点「重新获取模型」不扇出多个子进程 */
+let probeInFlight: Promise<AcpConfigOption[] | null> | null = null
+
+/** 读取已缓存的配置项（无则 null） */
+export function getCachedModelOptions(): AcpConfigOption[] | null {
+  return modelOptionsCache.get(MODEL_AGENT_KEY) ?? null
+}
+
+/**
+ * 真实探针刷新模型列表：调 acp_probe_options（或 mock）→ 写缓存；
+ * 传入 sessionId 时同步应用到该会话的 configOptions（下拉即时更新）。
+ * 并发调用共享同一 in-flight promise。
+ */
+export async function refreshModelOptions(
+  sessionId?: string,
+): Promise<AcpConfigOption[] | null> {
+  if (!probeInFlight) {
+    probeInFlight = (async () => {
+      try {
+        const session = sessionId ? useSessionStore().get(sessionId) : null
+        const options = await acpService.probeOptions(session?.cwd)
+        if (options && options.length) {
+          modelOptionsCache.set(MODEL_AGENT_KEY, options)
+          return options
+        }
+        return null
+      } finally {
+        probeInFlight = null
+      }
+    })()
+  }
+  const options = await probeInFlight
+  if (options && sessionId) {
+    const session = useSessionStore().get(sessionId)
+    if (session) {
+      session.configOptions = options
+      // 同步 session.model 到探针返回的模型 currentValue（下拉显示一致）
+      const modelOpt = options.find((o) => o.id === 'model' || o.category === 'model')
+      if (typeof modelOpt?.currentValue === 'string') session.model = modelOpt.currentValue
+    }
+  }
+  return options
+}
+
+/**
+ * 会话打开时的后台便利探针：缓存/会话尚无模型项时才跑，失败静默（不产错误卡，
+ * 不阻塞 UI）。缓存命中时即时把缓存灌入会话，使下拉立即有真值。
+ */
+export async function ensureModelOptions(sessionId: string): Promise<void> {
+  const session = useSessionStore().get(sessionId)
+  if (!session) return
+  const hasModel = session.configOptions?.some(
+    (o) => o.id === 'model' || o.category === 'model',
+  )
+  if (hasModel) return
+  const cached = getCachedModelOptions()
+  if (cached) {
+    session.configOptions = cached
+    const modelOpt = cached.find((o) => o.id === 'model' || o.category === 'model')
+    if (typeof modelOpt?.currentValue === 'string') session.model = modelOpt.currentValue
+    return
+  }
+  try {
+    await refreshModelOptions(sessionId)
+  } catch {
+    // 后台便利探针：失败静默（模型下拉继续用 MODELS 兜底）
+  }
+}
+
 function mapToolStatus(status?: AcpToolCallStatus): ToolCall['status'] {
   switch (status) {
     case 'completed':
@@ -347,11 +421,13 @@ export function useConversation() {
           turnId,
         })
       }
-      // prompt response 的 usage（opencode 扩展：inputTokens/outputTokens）
+      // prompt response 的 usage（opencode 扩展：inputTokens/outputTokens，缓存量可能缺省）
       if (result.usage) {
         sessionStore.addUsage(sessionId, {
           input: result.usage.inputTokens ?? 0,
           output: result.usage.outputTokens ?? 0,
+          cachedRead: result.usage.cachedReadTokens ?? 0,
+          cachedWrite: result.usage.cachedWriteTokens ?? 0,
         })
       }
       // turn 结束落盘（D4：流式期间不写）
@@ -403,32 +479,98 @@ export function useConversation() {
     }
   }
 
-  /** 切换会话模型：set_config_option 生效并更新会话态（PRD R2）；
-   * 失败（如需凭据模型 -32602）→ 回退下拉到 agent 实际模型 + 错误卡而非静默（AC7） */
-  async function setModel(sessionId: string, modelValue: string): Promise<void> {
-    const session = sessionStore.get(sessionId)
-    if (!session?.acpSessionId || !liveAcpSessions.has(session.acpSessionId)) return
+  /** 就地写某个 configOption 的 currentValue（乐观 UI；ACP 回包未含该 option 时的兜底） */
+  function applyOptionValue(
+    session: { configOptions?: AcpConfigOption[] },
+    configId: string,
+    value: string,
+  ) {
+    const opt = session.configOptions?.find((o) => o.id === configId)
+    if (opt) opt.currentValue = value
+  }
+
+  /** 按 provider/model 解析并写入上下文窗口分母（best-effort，失败静默）。
+   * 模型 value 形如 `provider/modelId`，modelId 自身可能含 `/`（如 magpie/workbuddy/xxx），
+   * 故仅按第一个 `/` 切分。set_config_option 回包不含 limit.context，须本地查 config/catalog。 */
+  async function refreshContextWindow(
+    session: { tokenUsage: { contextWindow: number } },
+    modelValue: string,
+  ): Promise<void> {
+    const slash = modelValue.indexOf('/')
+    if (slash <= 0 || slash === modelValue.length - 1) return
+    const provider = modelValue.slice(0, slash)
+    const model = modelValue.slice(slash + 1)
     try {
-      const opts = await acpService.setConfig(session.acpSessionId, 'model', modelValue)
-      session.model = modelValue
-      if (opts) session.configOptions = opts
+      const win = await acpService.modelContextWindow(provider, model)
+      if (typeof win === 'number' && win > 0) session.tokenUsage.contextWindow = win
+    } catch {
+      // 静默：查不到就保持既有分母（usage_update.size 仍会覆盖）
+    }
+  }
+
+  /** 通用会话配置切换（set_config_option）：model / effort 等 select 项共用。
+   * 乐观更新：先写 in-memory currentValue（chip/标签即时反馈），成功后用 ACP 回包
+   * 覆盖；失败（如需凭据模型 -32602）→ 回退旧值 + 错误卡而非静默（AC7）。
+   * 未建 ACP 会话时仅做本地写入（首个 prompt 建连后 acp_set_config 才可用）。 */
+  async function setConfigOption(
+    sessionId: string,
+    configId: string,
+    value: string,
+  ): Promise<void> {
+    const session = sessionStore.get(sessionId)
+    if (!session) return
+    const opt = session.configOptions?.find((o) => o.id === configId)
+    const prevValue = opt?.currentValue
+    // 乐观写入（model 额外同步 session.model 字段）
+    applyOptionValue(session, configId, value)
+    if (configId === 'model') session.model = value
+
+    // 切换模型即刷新上下文窗口分母（不等下一条 usage_update；best-effort 不阻塞）
+    if (configId === 'model') void refreshContextWindow(session, value)
+
+    if (!session.acpSessionId || !liveAcpSessions.has(session.acpSessionId)) {
+      // 未建连：本地生效即可（首个 prompt 走 session/new 时再以 configOptions 为准）
+      sessionStore.touch(sessionId)
+      return
+    }
+    try {
+      const opts = await acpService.setConfig(session.acpSessionId, configId, value)
+      if (configId === 'model') session.model = value
+      if (opts) {
+        session.configOptions = opts
+      } else {
+        // 回包未含 options：保留乐观值
+        applyOptionValue(session, configId, value)
+      }
       sessionStore.touch(sessionId)
     } catch (err) {
-      // 下拉 setter 已乐观写入 session.model：失败时回退到 agent 实际生效值
-      // （configOptions.currentValue 仅在 setConfig 成功时才被更新）
-      const modelOpt = session.configOptions?.find((o) => o.id === 'model' || o.category === 'model')
-      if (typeof modelOpt?.currentValue === 'string') session.model = modelOpt.currentValue
+      // 失败：回退到旧值（model 同步回退 session.model）
+      if (typeof prevValue === 'string') {
+        applyOptionValue(session, configId, prevValue)
+        if (configId === 'model') session.model = prevValue
+      }
       const { kind, text } = classifyAcpError(err)
       const raw = err instanceof Error ? err.message : String(err)
       sessionStore.pushMessage(sessionId, {
         role: 'assistant',
         type: 'error',
-        // generic 分支的 text 自带「生成失败：」前缀，模型切换场景改用原始错误串
-        content: kind === 'generic' ? `切换模型失败：${raw}` : text,
+        // generic 分支的 text 自带「生成失败：」前缀，配置切换场景改用原始错误串
+        content: kind === 'generic' ? `切换失败：${raw}` : text,
         status: 'error',
         errorKind: kind,
       })
     }
+  }
+
+  /** 切换会话模型：set_config_option('model') 的薄封装（保留既有调用方） */
+  async function setModel(sessionId: string, modelValue: string): Promise<void> {
+    return setConfigOption(sessionId, 'model', modelValue)
+  }
+
+  /** 从此分叉：委托 session store 复制历史到新会话（不调 ACP，acpSessionId 懒建）。
+   * 返回新会话供调用方打开标签；源会话不存在时返回 null。 */
+  function fork(sessionId: string, messageId: string) {
+    return sessionStore.forkSession(sessionId, messageId)
   }
 
   /** 重新生成：移除该回合全部消息（含用户消息，send 会重新入库避免重复气泡），重发 */
@@ -442,7 +584,7 @@ export function useConversation() {
     if (userMsg) void send(sessionId, userMsg.content)
   }
 
-  return { send, stop, regenerate, setModel }
+  return { send, stop, regenerate, setModel, setConfigOption, fork }
 }
 
 /** ACP update 类型收窄辅助（组件/测试可复用） */

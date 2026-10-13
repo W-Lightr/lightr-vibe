@@ -25,7 +25,22 @@ export { greet }
       theme="vs"
       height="100%"
       width="100%"
-      :options="{ renderSideBySide: false, readOnly: false, minimap: { enabled: false } }"
+      :options="{
+        renderSideBySide: false,
+        readOnly: false,
+        minimap: { enabled: false },
+        scrollbar: {
+          verticalScrollbarSize: 8,
+          horizontalScrollbarSize: 8,
+          useShadows: false,
+          verticalSliderSize: 8,
+          horizontalSliderSize: 8,
+          alwaysConsumeMouseWheel: false,
+        },
+        overviewRulerLanes: 0,
+        hideCursorInOverviewRuler: true,
+        overviewRulerBorder: false,
+      }"
     />
   </div>
 </template>

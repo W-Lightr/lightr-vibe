@@ -30,6 +30,8 @@ pub fn run() {
             fs::fs_write_text,
             acp::acp_start,
             acp::acp_status,
+            acp::acp_probe_options,
+            acp::agent_model_context_window,
             acp::acp_session_new,
             acp::acp_session_load,
             acp::acp_prompt,

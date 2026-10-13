@@ -82,7 +82,7 @@ export const conversationService = {
       updatedAt: now,
       gitBranch: opts.kind === 'folder' ? 'main' : '—',
       extensionId: createId('ext'),
-      tokenUsage: { input: 0, output: 0, total: 0, contextWindow: 128_000 },
+      tokenUsage: { input: 0, output: 0, total: 0, contextWindow: 128_000, cachedRead: 0, cachedWrite: 0 },
       messages: [],
       kind: opts.kind,
       projectId: opts.projectId,

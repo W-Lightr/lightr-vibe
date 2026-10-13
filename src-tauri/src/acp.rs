@@ -158,6 +158,35 @@ fn resolve_spawn() -> SpawnSpec {
     SpawnSpec::CmdFallback
 }
 
+/// 构造 `opencode acp` 子进程 Command（stdin/stdout/stderr 管道 + Windows 无窗口）。
+/// 剔除父进程（本 app 自身可能从某个正在运行的 opencode 实例继承的）server 鉴权环境变量：
+/// `OPENCODE_SERVER_USERNAME` / `OPENCODE_SERVER_PASSWORD` 是「另一个 opencode 实例」
+/// 的 server 凭据，泄漏给子进程会让 Zen 免费通道上游鉴权失败
+/// （`-32603 ... Invalid credential`）。剔除后回到「无 server 凭据」干净态，
+/// 与 codeg 独立启动 `opencode acp` 等价。用户 provider 的 apiKey 在 config 文件里，不受影响。
+fn build_acp_command() -> Command {
+    let mut cmd = match resolve_spawn() {
+        SpawnSpec::Exe(path) => {
+            let mut c = Command::new(path);
+            c.arg("acp");
+            c
+        }
+        SpawnSpec::CmdFallback => {
+            let mut c = Command::new("cmd");
+            c.arg("/C").arg("opencode").arg("acp");
+            c
+        }
+    };
+    cmd.env_remove("OPENCODE_SERVER_USERNAME");
+    cmd.env_remove("OPENCODE_SERVER_PASSWORD");
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
 // ---------- 连接对象 ----------
 
 struct AcpConn {
@@ -455,6 +484,13 @@ pub struct SessionResult {
     pub config_options: Value,
 }
 
+/// 一次性探针结果（acp_probe_options）：仅回配置项，无会话 id
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeResult {
+    pub config_options: Value,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptResult {
@@ -488,23 +524,7 @@ fn start_inner(app: AppHandle) -> Result<StartResult, String> {
     }
     *dead_reason_slot().lock().unwrap() = None;
 
-    let mut cmd = match resolve_spawn() {
-        SpawnSpec::Exe(path) => {
-            let mut c = Command::new(path);
-            c.arg("acp");
-            c
-        }
-        SpawnSpec::CmdFallback => {
-            let mut c = Command::new("cmd");
-            c.arg("/C").arg("opencode").arg("acp");
-            c
-        }
-    };
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    let mut cmd = build_acp_command();
     // ACP 自身 cwd 与会话 cwd 无关（session/new 传 cwd），无需 --cwd
 
     let mut child = cmd
@@ -600,6 +620,367 @@ pub fn shutdown() {
     }
 }
 
+// ---------- 一次性探针（acp_probe_options） ----------
+//
+// 独立 throwaway 子进程：不触碰 conn_slot、不 emit 事件、不动 reader_loop/mark_dead。
+// 用途：会话打开时提前把 session/new 的 configOptions（模型列表）灌满前端缓存，
+// 使模型下拉不必等到首次发送后才有真值（probe §2：模型列表只来自 session/new）。
+
+/// 探针专用请求发送（单写者，无 pending map）
+fn probe_send(writer: &mut BufWriter<ChildStdin>, value: &Value) -> Result<(), String> {
+    writeln!(writer, "{}", value).map_err(|e| format!("acp-dead: 探针写入 stdin 失败: {}", e))?;
+    writer
+        .flush()
+        .map_err(|e| format!("acp-dead: 探针 flush stdin 失败: {}", e))
+}
+
+/// 探针 stdout 行读取线程：逐行 parse 成 Value 后经 channel 转发。
+/// 读线程在 stdout EOF（进程退出）时自然结束；行内容为任意字符串，解析放在
+/// 消费侧，保证 EOF 与「收到行」可用同一 channel 区分（None = EOF）。
+fn probe_spawn_reader(stdout: std::process::ChildStdout) -> Receiver<Value> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // probe §5：非 JSON 行静默忽略
+            if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                if tx.send(v).is_err() {
+                    break;
+                }
+            }
+        }
+        // 读线程结束（EOF/错误）→ tx drop，消费侧 recv_timeout 得到 Disconnected
+    });
+    rx
+}
+
+/// 从已 parse 的消息流中取指定 id 的响应；忽略通知（无 id）与意外到的 client request。
+/// 超时：真实 `recv_timeout`（与 rpc_call 同语义），避免 Agent 挂死但仍持 stdout
+/// 时无限阻塞——这同时保证 ProbeChild::drop 一定能收尸，不让前端刷新卡死。
+/// 超时/EOF 错误串统一为 `timeout:<秒>s <method>`（对外词汇一致性）。
+fn probe_read_response(
+    rx: &Receiver<Value>,
+    expected_id: u64,
+    method: &str,
+) -> Result<Value, String> {
+    let timeout = timeout_for(method);
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("timeout:{}s {}", timeout.as_secs(), method));
+        }
+        let msg = match rx.recv_timeout(remaining) {
+            Ok(v) => v,
+            // EOF（进程退出）/ 读线程异常：与超时同词汇
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(format!("timeout:{}s {}", timeout.as_secs(), method))
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(format!("timeout:{}s {}", timeout.as_secs(), method))
+            }
+        };
+        // 只认「有 id 且无 method」的响应（同 reader_loop 的 Route 规则）；
+        // notification（无 id）/ 其它 id / client request（有 method，即便 id 撞号）一律忽略
+        if msg.get("method").is_some()
+            || msg.get("id").and_then(Value::as_u64) != Some(expected_id)
+        {
+            continue;
+        }
+        if let Some(err) = msg.get("error") {
+            return Err(rpc_error_string(err));
+        }
+        return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
+    }
+}
+
+/// 探针子进程句柄：Drop 时关 stdin → 短宽限等待退出 → kill 兜底，保证不泄漏
+struct ProbeChild {
+    child: Child,
+    stdin: Option<BufWriter<ChildStdin>>,
+}
+
+impl ProbeChild {
+    /// 显式清理（Ok/Err 两路都走）：关 stdin 触发 <1s 干净退出，超宽限再 kill
+    fn cleanup(&mut self) {
+        // 关 stdin（drop writer）→ opencode 实测 <1s rc=0 干净退出
+        self.stdin = None;
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = self.child.kill();
+                        // 收尸，避免僵尸
+                        let _ = self.child.wait();
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => return,
+            }
+        }
+    }
+}
+
+impl Drop for ProbeChild {
+    fn drop(&mut self) {
+        // 保底：即使某条路径漏掉显式 cleanup，Drop 也会收尸
+        self.cleanup();
+    }
+}
+
+/// 探针主体（阻塞，必须在 spawn_blocking 内跑）：
+/// resolve_spawn → initialize → session/new → 取 configOptions → 清理子进程。
+fn probe_options_inner(cwd: Option<String>) -> Result<ProbeResult, String> {
+    // cwd 必须为存在的绝对路径（协议 §9），否则 session/new 回 -32602
+    let work_dir: PathBuf = match cwd {
+        Some(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
+        _ => std::env::temp_dir().join("lightr-vibe-acp-probe"),
+    };
+    std::fs::create_dir_all(&work_dir).map_err(|e| format!("创建探针目录失败: {}", e))?;
+    let cwd_str = work_dir.to_string_lossy().into_owned();
+
+    let mut cmd = build_acp_command();
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("启动 opencode acp 失败: {}（未安装或 PATH 异常）", e))?;
+    let stdin = child.stdin.take().ok_or("无法获取探针子进程 stdin")?;
+    let stdout = child.stdout.take().ok_or("无法获取探针子进程 stdout")?;
+    let stderr = child.stderr.take().ok_or("无法获取探针子进程 stderr")?;
+
+    // stderr 独立线程 drain（防管道满死锁，tauri-bridge spec §4）；探针丢弃内容
+    std::thread::spawn(move || {
+        for _ in BufReader::new(stderr).lines().flatten() {}
+    });
+
+    // ProbeChild::drop 保证任何提前 return 都收尸；stdout 行经独立线程 + channel 转发，
+    // 使 recv_timeout 成为真实超时（Agent 挂死时不再无限阻塞）
+    let mut probe = ProbeChild {
+        child,
+        stdin: Some(BufWriter::new(stdin)),
+    };
+    let rx = probe_spawn_reader(stdout);
+
+    // 探针 id 从 1 起（与长驻连接 id 空间无关，独立进程）
+    let init_id: u64 = 1;
+    let init_msg = json!({
+        "jsonrpc": "2.0", "id": init_id, "method": "initialize",
+        "params": {
+            "protocolVersion": 1,
+            "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false } },
+            "clientInfo": { "name": "lightr-vibe", "version": "0.1.0" }
+        }
+    });
+    {
+        let writer = probe.stdin.as_mut().ok_or("探针 stdin 已关闭")?;
+        probe_send(writer, &init_msg)?;
+    }
+    let _init_result = probe_read_response(&rx, init_id, "initialize")?;
+
+    // session/new：首调 7.6-8.9s（probe §2），timeout_for 给 30s
+    let new_id: u64 = 2;
+    let new_msg = json!({
+        "jsonrpc": "2.0", "id": new_id, "method": "session/new",
+        "params": { "cwd": cwd_str, "mcpServers": [] }
+    });
+    {
+        let writer = probe.stdin.as_mut().ok_or("探针 stdin 已关闭")?;
+        probe_send(writer, &new_msg)?;
+    }
+    let result = probe_read_response(&rx, new_id, "session/new")?;
+
+    // 取 configOptions（缺失 → Null，前端按 null 处理）
+    let config_options = result.get("configOptions").cloned().unwrap_or(Value::Null);
+
+    probe.cleanup(); // 显式收尸（Drop 亦会执行，幂等）
+    Ok(ProbeResult { config_options })
+}
+
+// ---------- 模型上下文窗口解析（对齐 codeg parse/opencode_context_window） ----------
+
+/// `~/.config/opencode`（XDG 语义）：`$XDG_CONFIG_HOME/opencode`，否则 `$HOME/.config/opencode`。
+/// Windows 上 opencode 1.x 同样用 `~/.config/opencode`（本机实测存在）。
+fn opencode_config_dir() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.trim().is_empty() {
+            return Some(PathBuf::from(xdg).join("opencode"));
+        }
+    }
+    std::env::var("HOME")
+        .ok()
+        .filter(|h| !h.trim().is_empty())
+        .map(|h| PathBuf::from(h).join(".config").join("opencode"))
+}
+
+/// 剥离 JSONC 注释与尾逗号（轻量版；不做字符串转义的完整处理，仅用于容错解析配置）。
+/// opencode 默认写 `opencode.jsonc`，带 `//` / `/* */` 注释与尾逗号。
+fn strip_jsonc(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    let mut open_comma: Option<usize> = None;
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                open_comma = None;
+                out.push(c);
+                while let Some(c2) = chars.next() {
+                    out.push(c2);
+                    match c2 {
+                        '\\' => {
+                            if let Some(esc) = chars.next() {
+                                out.push(esc);
+                            }
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                for c2 in chars.by_ref() {
+                    if c2 == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = '\0';
+                for c2 in chars.by_ref() {
+                    if prev == '*' && c2 == '/' {
+                        break;
+                    }
+                    prev = c2;
+                }
+                out.push(' ');
+            }
+            ',' => {
+                open_comma = Some(out.len());
+                out.push(c);
+            }
+            '}' | ']' => {
+                if let Some(at) = open_comma.take() {
+                    out.replace_range(at..at + 1, " ");
+                }
+                out.push(c);
+            }
+            c if c.is_whitespace() => out.push(c),
+            c => {
+                open_comma = None;
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// 读取并解析一个 JSON/JSONC 文件为 Value（BOM/注释/尾逗号容错）
+fn read_jsonc(path: &Path) -> Option<Value> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .or_else(|| serde_json::from_str::<Value>(&strip_jsonc(raw)).ok())
+}
+
+/// 从 `limit.context` 取值（int/float 均可，>0 才有效）
+fn context_from_limit(entry: &Value) -> Option<u64> {
+    let v = entry.get("limit")?.get("context")?;
+    let n = v
+        .as_u64()
+        .or_else(|| v.as_f64().filter(|f| f.is_finite() && *f >= 1.0).map(|f| f as u64))?;
+    (n > 0).then_some(n)
+}
+
+/// 在 config 里按 provider/model 查 `limit.context`：
+/// `provider|providers.<pid>.models.<mid>.limit.context`
+fn lookup_in_config(config: &Value, provider: &str, model: &str) -> Option<u64> {
+    for root_key in ["provider", "providers"] {
+        let entry = config
+            .get(root_key)
+            .and_then(|p| p.get(provider))
+            .and_then(|p| p.get("models"))
+            .and_then(|m| m.get(model));
+        if let Some(ctx) = entry.and_then(context_from_limit) {
+            return Some(ctx);
+        }
+    }
+    None
+}
+
+/// 在 opencode 缓存的 models.dev 目录里查：`{ pid: { models: { mid: { limit: { context } } } } }`
+fn lookup_in_catalog(catalog: &Value, provider: &str, model: &str) -> Option<u64> {
+    let entry = catalog
+        .get(provider)
+        .and_then(|p| p.get("models"))
+        .and_then(|m| m.get(model))?;
+    context_from_limit(entry)
+}
+
+/// opencode 缓存的 models.dev 目录路径：`$OPENCODE_MODELS_PATH` →
+/// `$XDG_CACHE_HOME/opencode/models.json` → `$HOME/.cache/opencode/models.json`
+fn opencode_catalog_path() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("OPENCODE_MODELS_PATH") {
+        if !p.trim().is_empty() {
+            return Some(PathBuf::from(p));
+        }
+    }
+    let cache_root = std::env::var("XDG_CACHE_HOME")
+        .ok()
+        .filter(|c| !c.trim().is_empty())
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .filter(|h| !h.trim().is_empty())
+                .map(|h| format!("{}/.cache", h))
+        })?;
+    Some(PathBuf::from(cache_root).join("opencode").join("models.json"))
+}
+
+/// 解析模型上下文窗口（优先级对齐 codeg）：用户 opencode 配置 → models.dev 缓存目录。
+/// 查不到返回 None（前端保持既有分母，不臆造）。
+fn model_context_window_inner(provider: &str, model: &str) -> Option<u64> {
+    if provider.trim().is_empty() || model.trim().is_empty() {
+        return None;
+    }
+    // 1) 用户配置：$OPENCODE_CONFIG → config.json → opencode.json → opencode.jsonc
+    let mut config_files: Vec<PathBuf> = Vec::new();
+    if let Ok(cfg) = std::env::var("OPENCODE_CONFIG") {
+        if !cfg.trim().is_empty() {
+            config_files.push(PathBuf::from(cfg));
+        }
+    }
+    if let Some(dir) = opencode_config_dir() {
+        for name in ["config.json", "opencode.json", "opencode.jsonc"] {
+            config_files.push(dir.join(name));
+        }
+    }
+    for path in config_files {
+        if let Some(config) = read_jsonc(&path) {
+            if let Some(ctx) = lookup_in_config(&config, provider, model) {
+                return Some(ctx);
+            }
+        }
+    }
+    // 2) models.dev 缓存目录
+    if let Some(catalog_path) = opencode_catalog_path() {
+        if let Some(catalog) = read_jsonc(&catalog_path) {
+            if let Some(ctx) = lookup_in_catalog(&catalog, provider, model) {
+                return Some(ctx);
+            }
+        }
+    }
+    None
+}
+
 // ---------- Tauri commands ----------
 
 /// 启动（幂等）：解析真身路径 → spawn → initialize 握手 → ready
@@ -628,6 +1009,30 @@ pub fn acp_status() -> StatusResult {
         reason,
         agent_info: None,
     }
+}
+
+/// 一次性探针：spawn throwaway `opencode acp` → initialize → session/new →
+/// 取 configOptions（模型列表）→ 关 stdin 收尸。
+/// 不触碰长驻连接（conn_slot），不 emit 事件；供前端会话打开/手动刷新时填充模型缓存。
+/// cwd 缺省用临时目录（协议要求存在的绝对 cwd）。
+#[tauri::command]
+pub async fn acp_probe_options(cwd: Option<String>) -> Result<ProbeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || probe_options_inner(cwd))
+        .await
+        .map_err(|e| format!("acp 任务执行失败: {}", e))?
+}
+
+/// 按 provider/model 解析模型上下文窗口（limit.context）：用户 opencode 配置 →
+/// opencode 缓存的 models.dev 目录（对齐 codeg）。查不到返回 None（前端保持既有分母）。
+/// 纯文件读取，不触碰 ACP 进程/长驻连接。
+#[tauri::command]
+pub async fn agent_model_context_window(
+    provider: String,
+    model: String,
+) -> Result<Option<u64>, String> {
+    tauri::async_runtime::spawn_blocking(move || model_context_window_inner(&provider, &model))
+        .await
+        .map_err(|e| format!("acp 任务执行失败: {}", e))
 }
 
 fn parse_session_result(result: &Value, fallback_id: Option<String>) -> Result<SessionResult, String> {

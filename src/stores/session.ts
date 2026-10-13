@@ -114,7 +114,9 @@ function sessionFromEntry(entry: SessionIndexEntry): Session {
     updatedAt: now,
     gitBranch: entry.kind === 'folder' ? 'main' : '—',
     extensionId: createId('ext'),
-    tokenUsage: { input: 0, output: 0, total: 0, contextWindow: 128_000 },
+    // 上下文容量权威值来自 usage_update.size（setContextUsage 覆盖）；128k 仅为
+    // 收到第一次 usage_update 前的兜底占位，不代表任何具体模型的真实窗口
+    tokenUsage: { input: 0, output: 0, total: 0, contextWindow: 128_000, cachedRead: 0, cachedWrite: 0 },
     messages: [],
     messagesLoaded: false,
     kind: entry.kind,
@@ -257,6 +259,53 @@ export const useSessionStore = defineStore('session', () => {
     schedulePersistIndex()
   }
 
+  /**
+   * 「从此分叉」：以源会话同 projectId/cwd/kind 新建本地会话，复制从首条到
+   * upToMessageId（含）的全部消息，之后独立延续。分叉会话不继承 acpSessionId
+   * （不复制 ACP 连接：首次发送时按懒建路径 session/new），也不调 ACP。
+   * 复制消息重分配 id 并归一化为完成态（去 streaming / 运行中工具态），
+   * 保留 turnId 以维持轮次分组。落盘索引与消息，重启后可见。
+   */
+  function forkSession(sourceSessionId: string, upToMessageId: string): Session | null {
+    const source = get(sourceSessionId)
+    if (!source) return null
+    const endIdx = source.messages.findIndex((m) => m.id === upToMessageId)
+    // 锚点定位失败（消息已被重新生成抹掉等）：不复刻整段历史，按空历史分叉。
+    // 静默复制全部会在调用方已指定截断点时产生最大意外（要求截到第 3 条却拿到全部）
+    const upTo = endIdx === -1 ? [] : source.messages.slice(0, endIdx + 1)
+
+    const forked = conversationService.createSession(`${source.title} · 分叉`, source.model, {
+      kind: source.kind,
+      projectId: source.projectId,
+    })
+    forked.cwd = source.cwd
+    forked.mode = source.mode
+    // configOptions 复用同一内容但不共享数组容器：分叉后 agent 侧 config_option_update
+    // 是整体重赋值，浅拷贝即可隔离，避免未来就地 push 串改源会话
+    forked.configOptions = source.configOptions ? [...source.configOptions] : undefined
+    // 临时会话落盘路径按本会话 id 派生（与 createSession 同约定），
+    // 不能沿用源会话路径，否则两个会话指向同一 per-session 目录
+    if (source.kind === 'tmp') forked.storagePath = `${tmpSessionDirSync()}/${forked.id}`
+    forked.messagesLoaded = true
+    forked.messages = upTo.map((m) => ({
+      ...m,
+      // 重新分配消息 id（源会话后续变更不串扰）；工具调用 id 同样重分配
+      id: createId('msg'),
+      sessionId: forked.id,
+      // 归一化为完成态：分叉的是已完成的对话，不携带流式/运行中残留
+      status: m.status === 'error' ? 'error' : 'done',
+      toolCalls: m.toolCalls?.map((tc) => ({
+        ...tc,
+        id: createId('tool'),
+        status: tc.status === 'running' ? 'done' : tc.status,
+      })),
+    }))
+    sessions.value.unshift(forked)
+    schedulePersistIndex()
+    void persistMessages(forked.id)
+    return forked
+  }
+
   function deleteSession(id: string) {
     const idx = sessions.value.findIndex((s) => s.id === id)
     if (idx !== -1) sessions.value.splice(idx, 1)
@@ -326,28 +375,31 @@ export const useSessionStore = defineStore('session', () => {
 
   // ---- Token 统计 ----
 
-  /** prompt response 的 turn 级用量（inputTokens/outputTokens）；
-   * total 以 usage_update 的上下文占用为准（gauge 语义），仅在未收到过时兜底 */
-  function addUsage(sessionId: string, usage: { input: number; output: number }) {
+  /** prompt response 的最近一次回复用量明细（inputTokens/outputTokens + 可选
+   * 缓存量）：只写 input/output/cachedRead/cachedWrite，不动上下文占用 total
+   * （total 由 setContextUsage 的 usage_update 拥有）。缓存量为响应绝对值，
+   * 缺省按 0（不臆造），与 input/output 同为覆盖语义 */
+  function addUsage(
+    sessionId: string,
+    usage: { input: number; output: number; cachedRead?: number; cachedWrite?: number },
+  ) {
     const s = get(sessionId)
     if (!s) return
     s.tokenUsage.input = usage.input
     s.tokenUsage.output = usage.output
-    if (s.tokenUsage.total === 0) {
-      s.tokenUsage.total = usage.input + usage.output
-    }
+    s.tokenUsage.cachedRead = usage.cachedRead ?? 0
+    s.tokenUsage.cachedWrite = usage.cachedWrite ?? 0
   }
 
-  /** usage_update（probe §3：used=当前上下文占用总量、size=窗口容量；opencode
-   * 每 turn 推送全量上下文占用）：input/output 覆盖为最新一次 turn 的口径，
-   * total=context 占用（TokenUsagePanel 进度条语义） */
+  /** usage_update（probe §3：used=当前上下文占用、size=窗口容量；opencode 每 turn
+   * 推送全量占用）：只更新上下文用量环的分子/分母——total=used（占用）、
+   * contextWindow=size（容量，缺失时保留既有值）。不覆盖 input/output 明细
+   * （那是最近一次回复的口径，见 addUsage） */
   function setContextUsage(sessionId: string, used: number, size?: number) {
     const s = get(sessionId)
     if (!s) return
     if (size && size > 0) s.tokenUsage.contextWindow = size
     s.tokenUsage.total = used
-    s.tokenUsage.input = used
-    s.tokenUsage.output = 0
   }
 
   function setStatus(sessionId: string, status: Session['status']) {
@@ -365,6 +417,7 @@ export const useSessionStore = defineStore('session', () => {
     createSession,
     renameSession,
     applyAutoTitle,
+    forkSession,
     deleteSession,
     orphanSessionsOf,
     touch,

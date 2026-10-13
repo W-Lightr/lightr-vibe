@@ -48,7 +48,7 @@ const generating = computed(() => workspace.isGenerating(props.session.id))
 
 <template>
   <div class="relative min-h-0 flex-1">
-    <div ref="listRef" class="h-full overflow-y-auto" @scroll="onScroll">
+    <div ref="listRef" class="no-scrollbar h-full overflow-y-auto" @scroll="onScroll">
       <div class="mx-auto max-w-3xl px-6 py-6">
         <!-- confirm 模式权限审批卡（PRD R2：对话内审批） -->
         <PermissionCard v-for="req in permissionQueue" :key="req.requestId" :event="req" />

@@ -30,6 +30,20 @@ function mockConfigOptions(): AcpConfigOption[] {
       ],
     },
     {
+      id: 'effort',
+      name: 'Reasoning Effort',
+      category: 'effort',
+      type: 'select',
+      currentValue: 'medium',
+      options: [
+        { value: 'none', name: 'None' },
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'high', name: 'High' },
+        { value: 'max', name: 'Max' },
+      ],
+    },
+    {
       id: 'mode',
       name: 'Session Mode',
       category: 'mode',
@@ -94,6 +108,11 @@ export const acpMock = {
 
   async sessionLoad(acpSessionId: string, _cwd: string): Promise<AcpSessionResult> {
     return { sessionId: acpSessionId, configOptions: mockConfigOptions() }
+  },
+
+  /** 一次性探针（浏览器）：复用 mock 配置项生成器，形状与 acp_probe_options 一致 */
+  async probeOptions(_cwd?: string): Promise<{ configOptions: AcpConfigOption[] }> {
+    return { configOptions: mockConfigOptions() }
   },
 
   /**
@@ -201,8 +220,10 @@ export const acpMock = {
                 sessionId,
                 update: {
                   sessionUpdate: 'usage_update',
-                  used: event.usage.input + event.usage.output,
-                  size: 128_000,
+                  // mock：used=上下文占用（≈本次输入的 prompt token，不含 output）；
+                  // size=窗口容量。真实 opencode 的 used=input+cache.read+cache.write
+                  used: event.usage.input,
+                  size: 200_000,
                 },
               })
               break
@@ -247,5 +268,16 @@ export const acpMock = {
 
   async respondPermission(requestId: string, _optionId: string | null): Promise<void> {
     pendingPermissions.get(requestId)?.()
+  },
+
+  /** 浏览器 mock：固定的模型上下文窗口表；未命中返回 null */
+  modelContextWindow(provider: string, model: string): number | null {
+    const key = `${provider}/${model}`
+    const map: Record<string, number> = {
+      'mock/gpt-mini': 128_000,
+      'mock/gpt-pro': 200_000,
+      'mock/claude-lite': 200_000,
+    }
+    return map[key] ?? null
   },
 }

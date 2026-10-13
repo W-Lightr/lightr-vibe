@@ -1,26 +1,42 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { NSelect } from 'naive-ui'
+import { NPopover, NSelect, useMessage } from 'naive-ui'
 import {
   Plus,
   ArrowUp,
   Square,
   Paperclip,
   X,
-  BookOpen,
+  Shield,
+  ChevronDown,
+  ChevronRight,
+  ChevronLeft,
+  Search,
+  Check,
+  Cpu,
   Gauge,
+  Folder,
+  GitBranch,
+  RefreshCw,
 } from 'lucide-vue-next'
 import { MODELS, EXECUTION_MODES, useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
-import { useConversation } from '../../../composables/useConversation'
+import { useProjectStore } from '../../../stores/project'
+import {
+  useConversation,
+  ensureModelOptions,
+  refreshModelOptions,
+} from '../../../composables/useConversation'
+import type { AcpConfigOption, AcpConfigOptionGroup, AcpConfigOptionValue } from '../../../types/acp'
 import { formatTokens } from '../../../utils/time'
-import type { AcpConfigOptionGroup, AcpConfigOptionValue } from '../../../types/acp'
 
 const props = defineProps<{ sessionId: string }>()
 
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
-const { send, stop, setModel } = useConversation()
+const projectStore = useProjectStore()
+const { send, stop, setModel, setConfigOption } = useConversation()
+const message = useMessage()
 
 const draft = ref('')
 const attachments = ref<string[]>([])
@@ -31,41 +47,208 @@ const generating = computed(() => workspace.isGenerating(props.sessionId))
 const canSend = computed(() => draft.value.trim().length > 0 && !generating.value)
 const session = computed(() => sessionStore.get(props.sessionId))
 
-/** 会话级模型下拉（design §3）：session/new configOptions 优先，
- * workspace.MODELS 静态数组兜底（浏览器 mock / 未建连时） */
-const modelOptions = computed(() => {
-  const config = session.value?.configOptions?.find(
-    (o) => o.id === 'model' || o.category === 'model',
-  )
-  if (config?.options?.length) {
-    const flat: { label: string; value: string }[] = []
-    for (const opt of config.options) {
-      if ('value' in opt) {
-        const v = opt as AcpConfigOptionValue
-        flat.push({ label: v.name ?? v.value, value: v.value })
-      } else {
-        const g = opt as AcpConfigOptionGroup
-        for (const sub of g.options ?? []) {
-          flat.push({ label: g.group ? `${g.group} / ${sub.name ?? sub.value}` : (sub.name ?? sub.value), value: sub.value })
-        }
+/** 模型配置项（session/new configOptions）——无则用 MODELS 静态兜底 */
+const modelConfig = computed<AcpConfigOption | null>(() => {
+  return session.value?.configOptions?.find((o) => o.id === 'model' || o.category === 'model') ?? null
+})
+
+/** 思考强度配置项（仅推理模型暴露 effort，probe §2） */
+const effortConfig = computed<AcpConfigOption | null>(() => {
+  return session.value?.configOptions?.find((o) => o.id === 'effort' || o.category === 'effort') ?? null
+})
+
+interface FlatOption {
+  label: string
+  value: string
+}
+
+/** configOptions.select 展开（扁平与分组两种形态，协议 §8） */
+function flattenOptions(config: AcpConfigOption | null): FlatOption[] {
+  const flat: FlatOption[] = []
+  for (const opt of config?.options ?? []) {
+    if ('value' in opt) {
+      const v = opt as AcpConfigOptionValue
+      flat.push({ label: v.name ?? v.value, value: v.value })
+    } else {
+      const g = opt as AcpConfigOptionGroup
+      for (const sub of g.options ?? []) {
+        flat.push({
+          label: g.group ? `${g.group} / ${sub.name ?? sub.value}` : (sub.name ?? sub.value),
+          value: sub.value,
+        })
       }
     }
-    if (flat.length) return flat
   }
+  return flat
+}
+
+/** 模型列表：configOptions 优先，MODELS 静态数组兜底（浏览器 mock / 未建连） */
+const modelOptions = computed<FlatOption[]>(() => {
+  const flat = flattenOptions(modelConfig.value)
+  if (flat.length) return flat
   return MODELS.map((m) => ({ label: m, value: m }))
 })
 
-/** 下拉当前值：会话已建连用 session.model（ACP currentValue），否则用全局默认 */
-const currentModel = computed({
-  get: () => session.value?.model ?? workspace.selectedModel,
-  set: (v: string) => {
-    workspace.selectedModel = v
-    if (session.value) session.value.model = v
-    void setModel(props.sessionId, v)
-  },
+/** 思考强度列表（扁平取 name/value） */
+const effortOptions = computed<FlatOption[]>(() => flattenOptions(effortConfig.value))
+
+/** 模型短名：取 value 末段（去掉 provider 前缀），无则原样 */
+function shortName(value: string): string {
+  const idx = value.lastIndexOf('/')
+  return idx >= 0 ? value.slice(idx + 1) : value
+}
+
+/** 模型品牌图标：按名称/值关键字匹配 public/logos/<brand>.svg（LobeHub 图标集），
+ * 全部未命中返回 null（回退 lucide 通用图标）。关键字顺序即优先级。 */
+const LOGO_RULES: { keys: string[]; file: string }[] = [
+  { keys: ['claude', 'anthropic'], file: 'anthropic' },
+  { keys: ['qwen', 'qwq', 'tongyi', '通义'], file: 'qwen' },
+  { keys: ['gemini', 'gemma', 'google', 'gemma'], file: 'google' },
+  { keys: ['deepseek'], file: 'deepseek' },
+  { keys: ['moonshot', 'kimi'], file: 'moonshotai' },
+  { keys: ['mistral', 'mixtral'], file: 'mistralai' },
+  { keys: ['grok', 'xai'], file: 'xai' },
+  { keys: ['nvidia'], file: 'nvidia' },
+  { keys: ['perplexity'], file: 'perplexity' },
+  { keys: ['zhipu', 'glm', 'chatglm'], file: 'zhipu' },
+  { keys: ['ollama'], file: 'ollama' },
+  { keys: ['llama', 'meta'], file: 'meta' },
+  { keys: ['gpt', 'openai', 'o1', 'o3', 'o4', 'chatgpt'], file: 'openai' },
+]
+
+/** 命中品牌 → `/logos/<file>.svg`；未命中 → null */
+function modelLogo(value: string, label?: string): string | null {
+  const key = `${value} ${label ?? ''}`.toLowerCase()
+  for (const rule of LOGO_RULES) {
+    if (rule.keys.some((k) => key.includes(k))) return `/logos/${rule.file}.svg`
+  }
+  return null
+}
+
+/** 当前模型值：会话已建连用 session.model，否则用全局默认 */
+const currentModel = computed(() => session.value?.model ?? workspace.selectedModel)
+const currentModelLabel = computed(() => {
+  const hit = modelOptions.value.find((m) => m.value === currentModel.value)
+  return shortName(hit?.label ?? currentModel.value)
 })
 
+/** chip 图标：按当前模型名关键字匹配品牌 logo */
+const currentModelLogo = computed(() => {
+  const hit = modelOptions.value.find((m) => m.value === currentModel.value)
+  return modelLogo(currentModel.value, hit?.label)
+})
+
+/** 当前思考强度值/标签（来自 effort 配置项 currentValue） */
+const currentEffort = computed<string | null>(() => {
+  const v = effortConfig.value?.currentValue
+  return typeof v === 'string' ? v : null
+})
+const currentEffortLabel = computed(() => {
+  const v = currentEffort.value
+  if (v === null) return ''
+  return effortOptions.value.find((o) => o.value === v)?.label ?? v
+})
+
+// ── 悬浮菜单（chip + 下钻） ─────────────────────────────
+const popoverOpen = ref(false)
+const panel = ref<'root' | 'model' | 'effort'>('root')
+const modelSearch = ref('')
+
+// 上下文用量弹层独立于模型 chip 弹层，互不影响
+const usageOpen = ref(false)
+
+/** 过滤后的模型列表（按 value/name 大小写不敏感搜索） */
+const filteredModels = computed(() => {
+  const q = modelSearch.value.trim().toLowerCase()
+  if (!q) return modelOptions.value
+  return modelOptions.value.filter(
+    (m) => m.value.toLowerCase().includes(q) || m.label.toLowerCase().includes(q),
+  )
+})
+
+/** 渲染行：预解析每项的品牌 logo 路径（避免模板内重复匹配） */
+const modelRows = computed(() =>
+  filteredModels.value.map((m) => ({ ...m, logo: modelLogo(m.value, m.label) })),
+)
+
+// 悬浮菜单每次打开都复位到根面板：状态复位走 show 变化监听而非 trigger 的
+// @click，避免与 NPopover 自身的 click 切换叠加导致重复置真/无法关闭
+watch(popoverOpen, (open) => {
+  if (!open) return
+  panel.value = 'root'
+  modelSearch.value = ''
+})
+
+/** 选择模型：写 workspace/session 乐观值 + set_config_option('model') */
+function selectModel(value: string) {
+  workspace.selectedModel = value
+  if (session.value) session.value.model = value
+  void setModel(props.sessionId, value)
+  popoverOpen.value = false
+}
+
+/** 选择思考强度：set_config_option(effort) */
+function selectEffort(value: string) {
+  void setConfigOption(props.sessionId, effortConfig.value?.id ?? 'effort', value)
+  popoverOpen.value = false
+}
+
+/** 「重新获取模型」进行中（小内联 spinner；探针 8-13s，不阻塞输入） */
+const refreshingModels = ref(false)
+/** 手动触发真实探针刷新模型列表：成功列表原地更新，失败 toast（不产错误卡） */
+async function onRefreshModels() {
+  if (refreshingModels.value) return
+  refreshingModels.value = true
+  try {
+    const options = await refreshModelOptions(props.sessionId)
+    if (!options || !options.length) message.error('获取模型列表失败')
+  } catch {
+    message.error('获取模型列表失败')
+  } finally {
+    refreshingModels.value = false
+  }
+}
+
 const modeOptions = EXECUTION_MODES.map((m) => ({ label: m.label, value: m.value }))
+
+/** 上下文用量百分比（tokenUsage.total 占 contextWindow 的比例，0 时显示 0%）
+ * —— total=usage_update.used（上下文占用）；状态栏环取整、弹层内一位小数 */
+const contextPct = computed(() => Math.round(contextPercent.value))
+
+/** 精确上下文占比（弹层展示用，一位小数）：total=上下文占用（usage_update.used） */
+const contextPercent = computed(() => {
+  const t = session.value?.tokenUsage
+  if (!t || !t.contextWindow) return 0
+  return Math.min(100, (t.total / t.contextWindow) * 100)
+})
+
+/** 弹层 token 明细：input/output/cached* 为最近一次回复的口径（prompt response），
+ * 总计 = 该次回复四项之和（不等于上下文占用 total，后者用于上下文环） */
+const usageDetail = computed(() => {
+  const t = session.value?.tokenUsage
+  const input = t?.input ?? 0
+  const output = t?.output ?? 0
+  const cachedRead = t?.cachedRead ?? 0
+  const cachedWrite = t?.cachedWrite ?? 0
+  return {
+    input,
+    output,
+    cachedRead,
+    cachedWrite,
+    total: input + output + cachedRead + cachedWrite,
+    used: t?.total ?? 0,
+    contextWindow: t?.contextWindow ?? 0,
+  }
+})
+
+/** 状态栏：当前会话所属项目名（临时会话回退「临时会话」） */
+const projectName = computed(() => {
+  const p = projectStore.get(session.value?.projectId)
+  return p?.name ?? '临时会话'
+})
+
+/** 状态栏：当前分支（无则显示「无分支」） */
+const branchName = computed(() => session.value?.gitBranch || '无分支')
 
 function autoResize() {
   const el = textareaEl.value
@@ -76,13 +259,19 @@ function autoResize() {
 
 watch(draft, () => nextTick(autoResize))
 
-// 切换会话时清空草稿与附件，但不抢占焦点
+// 切换会话时清空草稿与附件，并复位悬浮菜单（组件跨会话复用，避免残留
+// 上一次会话的下钻面板/搜索词），但不抢占焦点
 watch(
   () => props.sessionId,
   () => {
     draft.value = ''
     attachments.value = []
+    popoverOpen.value = false
+    panel.value = 'root'
+    modelSearch.value = ''
     nextTick(autoResize)
+    // 后台便利探针：会话无模型项时补齐真实列表（失败静默，不阻塞 UI）
+    void ensureModelOptions(props.sessionId)
   },
 )
 
@@ -91,6 +280,8 @@ onMounted(() => {
   const active = document.activeElement
   if (!active || active === document.body) textareaEl.value?.focus()
   autoResize()
+  // 打开会话即预取真实模型列表（缓存命中则零成本）
+  void ensureModelOptions(props.sessionId)
 })
 
 function submit() {
@@ -119,12 +310,12 @@ function pickFiles(e: Event) {
 <template>
   <div class="shrink-0 px-6 pb-3">
     <div class="mx-auto max-w-3xl">
-      <!-- 输入容器 -->
+      <!-- 输入容器：Codex 风格单卡片布局 -->
       <div
-        class="rounded-xl border border-neutral-200 bg-white transition-colors focus-within:border-neutral-400"
+        class="rounded-2xl border border-neutral-200 bg-white shadow-sm transition-colors focus-within:border-neutral-300"
       >
         <!-- 附件 chips -->
-        <div v-if="attachments.length" class="flex flex-wrap gap-1.5 px-3 pt-2.5">
+        <div v-if="attachments.length" class="flex flex-wrap gap-1.5 px-4 pt-3">
           <span
             v-for="(name, i) in attachments"
             :key="`${name}-${i}`"
@@ -141,48 +332,261 @@ function pickFiles(e: Event) {
           </span>
         </div>
 
-        <!-- 第一层：多行输入 -->
+        <!-- 多行输入 -->
         <textarea
           ref="textareaEl"
           v-model="draft"
           rows="1"
-          placeholder="发送消息，Enter 发送，Shift+Enter 换行"
-          class="block max-h-[200px] w-full resize-none bg-transparent px-4 pt-3 pb-1 text-[13.5px] leading-6 text-neutral-800 outline-none placeholder:text-neutral-400"
+          placeholder="与 OpenCode 协作"
+          class="block max-h-[200px] min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[13.5px] leading-6 text-neutral-800 outline-none placeholder:text-neutral-400"
           @keydown="onKeydown"
         />
 
-        <!-- 第二层：操作工具栏 -->
-        <div class="flex items-center gap-1.5 px-2.5 pb-2">
+        <!-- 底部工具栏 -->
+        <div class="flex items-center gap-2 px-3 pb-2.5 pt-1">
           <input ref="fileInputEl" type="file" multiple class="hidden" @change="pickFiles" />
+          <!-- 添加附件 -->
           <button
-            class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
+            class="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
             title="添加附件"
             @click="fileInputEl?.click()"
           >
             <Plus class="h-4 w-4" />
           </button>
 
-          <NSelect
-            v-model:value="currentModel"
-            :options="modelOptions"
-            size="small"
-            :consistent-menu-width="false"
-            :disabled="generating"
-            class="!w-56"
-          />
-          <NSelect
-            v-model:value="workspace.executionMode"
-            :options="modeOptions"
-            size="small"
-            :consistent-menu-width="false"
-            class="!w-24"
-          />
+          <!-- 执行模式（盾牌 + 下拉） -->
+          <div class="flex shrink-0 items-center">
+            <Shield class="h-3.5 w-3.5 text-neutral-500" />
+            <NSelect
+              v-model:value="workspace.executionMode"
+              :options="modeOptions"
+              size="small"
+              :consistent-menu-width="false"
+              :bordered="false"
+              class="mode-select !w-auto"
+            >
+              <template #arrow>
+                <ChevronDown class="h-3.5 w-3.5 text-neutral-400" />
+              </template>
+            </NSelect>
+          </div>
 
           <div class="flex-1" />
 
+          <!-- 上下文用量：chip 触发用量明细弹层（不随 generating 禁用，用量随时可看） -->
+          <NPopover
+            v-model:show="usageOpen"
+            trigger="click"
+            placement="top-end"
+            :show-arrow="false"
+            raw
+            class="usage-popover"
+          >
+            <template #trigger>
+              <button
+                class="flex shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-[11px] tabular-nums text-neutral-400 transition-colors hover:bg-neutral-100"
+                title="上下文用量"
+              >
+                <span
+                  class="inline-block h-2.5 w-2.5 rounded-full border border-neutral-300"
+                  :style="{
+                    background: `conic-gradient(#60a5fa ${contextPct}%, transparent ${contextPct}%)`,
+                  }"
+                />
+                CH {{ contextPct }}%
+              </button>
+            </template>
+
+            <div class="w-[240px] overflow-hidden rounded-lg border border-neutral-200 bg-white p-3 shadow-sm">
+              <!-- 上下文窗口 -->
+              <div class="flex items-baseline justify-between">
+                <span class="text-xs text-neutral-600">上下文窗口</span>
+                <span class="font-medium text-neutral-700 tabular-nums">
+                  {{ contextPercent.toFixed(1) }}%
+                </span>
+              </div>
+              <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-neutral-200">
+                <div
+                  class="h-full rounded-full bg-blue-400"
+                  :style="{ width: `${contextPercent > 0 ? Math.max(1, contextPercent) : 0}%` }"
+                />
+              </div>
+              <div class="mt-1.5 flex items-center justify-between text-[11px]">
+                <span class="text-neutral-400">已用 / 上限</span>
+                <span class="text-neutral-500 tabular-nums">
+                  {{ formatTokens(usageDetail.used) }} / {{ formatTokens(usageDetail.contextWindow) }}
+                </span>
+              </div>
+
+              <div class="my-2 h-px bg-neutral-200" />
+
+              <!-- Token 用量 -->
+              <div class="mb-1.5 text-xs font-medium text-neutral-600">Token 用量</div>
+              <div class="flex flex-col gap-1">
+                <div class="flex justify-between text-[11px]">
+                  <span class="text-neutral-500">输入</span>
+                  <span class="text-neutral-500 tabular-nums">{{ formatTokens(usageDetail.input) }}</span>
+                </div>
+                <div class="flex justify-between text-[11px]">
+                  <span class="text-neutral-500">输出</span>
+                  <span class="text-neutral-500 tabular-nums">{{ formatTokens(usageDetail.output) }}</span>
+                </div>
+                <div class="flex justify-between text-[11px]">
+                  <span class="text-neutral-500">缓存读取</span>
+                  <span class="text-neutral-500 tabular-nums">{{ formatTokens(usageDetail.cachedRead) }}</span>
+                </div>
+                <div class="flex justify-between text-[11px]">
+                  <span class="text-neutral-500">缓存写入</span>
+                  <span class="text-neutral-500 tabular-nums">{{ formatTokens(usageDetail.cachedWrite) }}</span>
+                </div>
+                <div class="flex justify-between text-[11px]">
+                  <span class="text-neutral-700">总计</span>
+                  <span class="font-medium text-neutral-700 tabular-nums">{{ formatTokens(usageDetail.total) }}</span>
+                </div>
+              </div>
+            </div>
+          </NPopover>
+
+          <!-- 模型 + 思考强度：Codex 风格 chip + 下钻浮层 -->
+          <NPopover
+            v-model:show="popoverOpen"
+            trigger="click"
+            placement="top-start"
+            :show-arrow="false"
+            :disabled="generating"
+            raw
+            class="model-popover"
+          >
+            <template #trigger>
+              <button
+                class="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs text-neutral-600 transition-colors hover:bg-neutral-100"
+                :class="generating ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'"
+                title="模型与思考强度"
+              >
+                <img
+                  v-if="currentModelLogo"
+                  :src="currentModelLogo"
+                  alt=""
+                  class="h-3.5 w-3.5 shrink-0 object-contain"
+                />
+                <Cpu v-else class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+                <span class="max-w-[140px] truncate">{{ currentModelLabel }}</span>
+                <template v-if="effortConfig">
+                  <span class="text-neutral-300">|</span>
+                  <Gauge class="h-3.5 w-3.5 text-neutral-400" />
+                  <span>{{ currentEffortLabel }}</span>
+                </template>
+                <ChevronDown class="h-3.5 w-3.5 text-neutral-400" />
+              </button>
+            </template>
+
+            <div class="w-[280px] overflow-hidden rounded-lg border border-neutral-200 bg-white p-1 shadow-sm">
+              <!-- root：下钻入口 -->
+              <template v-if="panel === 'root'">
+                <button
+                  class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-neutral-600 hover:bg-neutral-100"
+                  @click="panel = 'model'"
+                >
+                  <span class="flex-1">模型</span>
+                  <span class="max-w-[150px] truncate text-xs text-neutral-400">{{ currentModelLabel }}</span>
+                  <ChevronRight class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+                </button>
+                <button
+                  v-if="effortConfig"
+                  class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-neutral-600 hover:bg-neutral-100"
+                  @click="panel = 'effort'"
+                >
+                  <span class="flex-1">思考强度</span>
+                  <span class="text-xs text-neutral-400">{{ currentEffortLabel }}</span>
+                  <ChevronRight class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+                </button>
+              </template>
+
+              <!-- model 面板 -->
+              <template v-else-if="panel === 'model'">
+                <button
+                  class="flex w-full cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-neutral-700 hover:bg-neutral-100"
+                  @click="panel = 'root'"
+                >
+                  <ChevronLeft class="h-3.5 w-3.5 text-neutral-500" />
+                  <span>选择模型</span>
+                </button>
+                <div class="relative px-1 pb-1">
+                  <Search class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" />
+                  <input
+                    v-model="modelSearch"
+                    type="text"
+                    placeholder="搜索模型"
+                    class="w-full rounded-md border border-neutral-200 bg-neutral-50 py-1.5 pl-7 pr-2 text-xs text-neutral-700 outline-none placeholder:text-neutral-400 focus:border-neutral-300"
+                  />
+                </div>
+                <div class="max-h-[280px] overflow-y-auto px-0.5">
+                  <button
+                    v-for="m in modelRows"
+                    :key="m.value"
+                    class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-neutral-100"
+                    @click="selectModel(m.value)"
+                  >
+                    <img
+                      v-if="m.logo"
+                      :src="m.logo"
+                      alt=""
+                      class="h-4 w-4 shrink-0 object-contain"
+                    />
+                    <Cpu v-else class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+                    <span class="min-w-0 flex-1 truncate" :class="m.value === currentModel ? 'text-blue-500' : 'text-neutral-600'">
+                      {{ m.label }}
+                    </span>
+                    <Check v-if="m.value === currentModel" class="h-3.5 w-3.5 shrink-0 text-blue-500" />
+                  </button>
+                  <div v-if="!filteredModels.length" class="px-2 py-3 text-center text-xs text-neutral-400">
+                    无匹配模型
+                  </div>
+                </div>
+                <!-- 底部：重新获取模型（真实探针刷新） -->
+                <div class="mt-0.5 border-t border-neutral-200 px-0.5 pt-1">
+                  <button
+                    class="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    :disabled="refreshingModels"
+                    title="从 Agent 重新获取模型列表"
+                    @click="onRefreshModels"
+                  >
+                    <RefreshCw class="h-3.5 w-3.5" :class="refreshingModels ? 'animate-spin' : ''" />
+                    <span>{{ refreshingModels ? '获取中…' : '重新获取模型' }}</span>
+                  </button>
+                </div>
+              </template>
+
+              <!-- effort 面板 -->
+              <template v-else>
+                <button
+                  class="flex w-full cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-neutral-700 hover:bg-neutral-100"
+                  @click="panel = 'root'"
+                >
+                  <ChevronLeft class="h-3.5 w-3.5 text-neutral-500" />
+                  <span>思考强度</span>
+                </button>
+                <div class="px-0.5 pb-0.5">
+                  <button
+                    v-for="o in effortOptions"
+                    :key="o.value"
+                    class="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-neutral-100"
+                    @click="selectEffort(o.value)"
+                  >
+                    <span class="min-w-0 flex-1 truncate" :class="o.value === currentEffort ? 'text-blue-500' : 'text-neutral-600'">
+                      {{ o.label }}
+                    </span>
+                    <Check v-if="o.value === currentEffort" class="h-3.5 w-3.5 shrink-0 text-blue-500" />
+                  </button>
+                </div>
+              </template>
+            </div>
+          </NPopover>
+
+          <!-- 发送 / 停止 -->
           <button
             v-if="generating"
-            class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-neutral-300 text-neutral-600 hover:bg-neutral-100"
+            class="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-neutral-900 text-white hover:bg-neutral-700"
             title="停止生成"
             @click="stop(sessionId)"
           >
@@ -190,8 +594,8 @@ function pickFiles(e: Event) {
           </button>
           <button
             v-else
-            class="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
-            :class="canSend ? 'cursor-pointer bg-blue-500 text-white hover:bg-blue-600' : 'cursor-not-allowed bg-neutral-100 text-neutral-300'"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors"
+            :class="canSend ? 'cursor-pointer bg-neutral-900 text-white hover:bg-neutral-700' : 'cursor-not-allowed bg-neutral-100 text-neutral-300'"
             :disabled="!canSend"
             title="发送"
             @click="submit"
@@ -201,19 +605,46 @@ function pickFiles(e: Event) {
         </div>
       </div>
 
-      <!-- 输入框下方轻量状态 -->
-      <div class="mt-1.5 flex items-center justify-between text-[11px] text-neutral-400">
-        <span class="flex items-center gap-1">
-          <BookOpen class="h-3 w-3" />
-          聊天模式
-          <span class="mx-1 text-neutral-300">·</span>
-          <Gauge class="h-3 w-3" />
-          {{ EXECUTION_MODES.find((m) => m.value === workspace.executionMode)?.label }}
+      <!-- 状态栏：项目 / 分支 … 上下文用量 -->
+      <div class="mt-1.5 flex items-center gap-3 px-1 text-[11px] text-neutral-400">
+        <span class="flex min-w-0 items-center gap-1">
+          <Folder class="h-3 w-3 shrink-0" />
+          <span class="truncate">{{ projectName }}</span>
         </span>
-        <span v-if="session && session.tokenUsage.total > 0">
-          Token {{ formatTokens(session.tokenUsage.total) }}
+        <span class="flex min-w-0 items-center gap-1">
+          <GitBranch class="h-3 w-3 shrink-0" />
+          <span class="truncate">{{ branchName }}</span>
+        </span>
+
+        <div class="flex-1" />
+
+        <span class="flex shrink-0 items-center gap-1 tabular-nums">
+          <span
+            class="inline-block h-2.5 w-2.5 rounded-full border border-neutral-300"
+            :style="{
+              background: `conic-gradient(#60a5fa ${contextPct}%, transparent ${contextPct}%)`,
+            }"
+          />
+          {{ contextPct }}%
         </span>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 无边框下拉：仅显示文字 + 自定义箭头，贴合 Codex 风格工具栏 */
+.mode-select :deep(.n-base-selection) {
+  --n-border: 0 !important;
+  --n-border-hover: 0 !important;
+  --n-border-focus: 0 !important;
+  --n-box-shadow-focus: none !important;
+  --n-color: transparent !important;
+  --n-color-active: transparent !important;
+  padding-left: 0;
+}
+.mode-select :deep(.n-base-selection-input__content) {
+  color: #525252;
+  font-size: 12px;
+}
+</style>

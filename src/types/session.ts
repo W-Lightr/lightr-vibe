@@ -25,6 +25,10 @@ export interface TokenUsage {
   total: number
   /** 上下文窗口容量（token） */
   contextWindow: number
+  /** 缓存读取 token（opencode usage.cachedReadTokens，缺省 0） */
+  cachedRead: number
+  /** 缓存写入 token（opencode usage.cachedWriteTokens，缺省 0） */
+  cachedWrite: number
 }
 
 export interface Message {

@@ -200,6 +200,52 @@ Other ACP behaviors worth keeping:
 - Always `create_dir_all(cwd)` before `session/new` — the protocol requires an
   existing absolute cwd.
 
+### Process spawn (`build_acp_command`)
+
+Both the long-lived connection (`start_inner`) and the one-shot probe
+(`probe_options_inner`) build the child through **one** helper,
+`build_acp_command()` (`resolve_spawn()` → real exe or `cmd /C opencode acp`,
+piped stdio, `CREATE_NO_WINDOW` on Windows). It **removes
+`OPENCODE_SERVER_USERNAME` / `OPENCODE_SERVER_PASSWORD`** from the child env.
+
+> **Gotcha**: those two vars are exported by *another* running opencode instance
+> and leak into our spawned `opencode acp`. With them present, opencode's free
+> Zen models fail upstream with `acp:-32603 ... Invalid credential`. Removing
+> them restores the clean, credential-less state codeg gets by launching
+> `opencode acp` independently. Only these two are stripped; `OPENCODE`,
+> `OPENCODE_PID` and user-provider keys must pass through.
+
+### One-shot model probe (`acp_probe_options`)
+
+`acp_probe_options(cwd?)` spawns a **throwaway** `opencode acp`, runs
+`initialize` → `session/new`, returns `configOptions`, then closes stdin and
+reaps the child. It never touches the global `conn_slot`, never emits `acp://*`,
+and must reap on **every** path (a real timeout via a reader thread + `mpsc`,
+not a blocking `read_line`). The frontend caches the result per agent and calls
+it on session open / manual refresh so the model dropdown has real values before
+the first prompt. The one-shot reader must match a response by **id AND absence
+of `method`** (an agent→client request can collide on id).
+
+### Model context window (`agent_model_context_window`)
+
+`session/set_config_option` returns only `configOptions`, **never** the model's
+`limit.context` (the context-window denominator). So the composer resolves it
+locally, mirroring codeg's precedence:
+
+1. **User config** — `$OPENCODE_CONFIG`, then `$XDG_CONFIG_HOME/opencode` else
+   `$HOME/.config/opencode`, reading `config.json` / `opencode.json` /
+   `opencode.jsonc` (JSONC tolerated): `provider|providers.<pid>.models.<mid>.limit.context`.
+2. **models.dev cache** — `$OPENCODE_MODELS_PATH` else
+   `$XDG_CACHE_HOME|$HOME/.cache` + `/opencode/models.json`:
+   `<pid>.models.<mid>.limit.context`.
+
+`limit.context` accepts int or float (>0 else absent). Returns `Ok(None)` for
+everything not found — never errors the UI. The model value is `provider/modelId`
+split on the **first** `/` only (the modelId itself may contain `/`, e.g.
+`magpie/workbuddy-ai/deepseek-v4.1-flash`). On model switch the composer writes
+the resolved window to `tokenUsage.contextWindow` immediately (best-effort,
+never blocks); the live `usage_update.size` still refines it per turn.
+
 ## Gotchas
 
 > **Warning**: `getCurrentWindow()` throws in a plain browser dev server.

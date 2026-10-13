@@ -6,7 +6,7 @@ defineProps<{ session: Session | null }>()
 </script>
 
 <template>
-  <div class="flex h-9 shrink-0 items-center border-b border-neutral-200 bg-white px-4">
+  <div data-drag-region class="flex h-9 shrink-0 items-center border-b border-neutral-200 bg-white px-4">
     <!-- 面包屑 -->
     <div class="flex min-w-0 items-center gap-1 text-xs text-neutral-500">
       <span class="shrink-0">聊天模式</span>

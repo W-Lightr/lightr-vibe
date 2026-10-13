@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ChevronRight,
@@ -7,6 +7,7 @@ import {
   Copy,
   Check,
   RefreshCw,
+  GitBranch,
   AlertCircle,
   Square,
   Settings,
@@ -21,16 +22,22 @@ const props = defineProps<{ message: Message }>()
 
 const workspace = useWorkspaceStore()
 const router = useRouter()
-const { regenerate, stop } = useConversation()
+const { regenerate, stop, fork } = useConversation()
 
 const copied = ref(false)
-const thinkingExpanded = ref(false)
-
 const isUser = computed(() => props.message.role === 'user')
 const isThinking = computed(() => props.message.type === 'thinking')
 const isError = computed(() => props.message.type === 'error')
 const isStreaming = computed(() => props.message.status === 'streaming')
 const generating = computed(() => workspace.isGenerating(props.message.sessionId))
+
+// 思考块折叠态：流式中的思考块默认展开以展示实时推理；其余默认折叠。
+// 仅单向自动展开（不因流结束而收起），避免打断用户正在阅读的内容。
+const thinkingExpanded = ref(isStreaming.value)
+watch(isStreaming, (streaming) => {
+  if (streaming) thinkingExpanded.value = true
+})
+
 /** 错误卡「去设置」按钮：dead（进程/未安装）与 auth（凭据）两类错误引导跳设置页（PRD R4） */
 const showSettingsLink = computed(
   () => props.message.errorKind === 'dead' || props.message.errorKind === 'auth',
@@ -45,6 +52,12 @@ async function copy() {
     /* 剪贴板不可用时静默忽略 */
   }
 }
+
+/** 从此分叉：复制源会话截至本条助手回复（含）的历史到新会话并打开 */
+function onFork() {
+  const forked = fork(props.message.sessionId, props.message.id)
+  if (forked) workspace.openSession(forked.id)
+}
 </script>
 
 <template>
@@ -57,19 +70,19 @@ async function copy() {
     </div>
   </div>
 
-  <!-- 思考 / 执行过程：可折叠 -->
+  <!-- 思考：紧凑头部行（图标 + 状态标签），点击展开轻量正文 -->
   <div v-else-if="isThinking" class="mb-3">
     <button
-      class="flex cursor-pointer items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-700"
+      class="flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700"
       @click="thinkingExpanded = !thinkingExpanded"
     >
       <ChevronRight class="h-3.5 w-3.5 transition-transform" :class="thinkingExpanded && 'rotate-90'" />
       <Brain class="h-3.5 w-3.5" />
-      <span>{{ isStreaming ? '思考中…' : '思考过程' }}</span>
+      <span>{{ isStreaming ? '思考中…' : '思考完毕' }}</span>
     </button>
     <div
       v-if="thinkingExpanded"
-      class="mt-1.5 ml-5 whitespace-pre-wrap break-words border-l-2 border-neutral-200 pl-3 text-xs leading-5 text-neutral-500"
+      class="mt-1 ml-5 whitespace-pre-wrap break-words border-l-2 border-neutral-200 pl-3 text-xs leading-5 text-neutral-500"
     >
       {{ message.content }}
     </div>
@@ -119,6 +132,14 @@ async function copy() {
       >
         <RefreshCw class="h-3.5 w-3.5" />
         重新生成
+      </button>
+      <button
+        class="flex h-7 cursor-pointer items-center gap-1 rounded-md px-1.5 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
+        title="从此分叉"
+        @click="onFork"
+      >
+        <GitBranch class="h-3.5 w-3.5" />
+        从此分叉
       </button>
       <button
         v-if="generating"

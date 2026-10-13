@@ -76,6 +76,15 @@ export const acpService = {
     return invoke<AcpSessionResult>('acp_session_new', { cwd })
   },
 
+  /** 一次性探针：throwaway 进程跑 initialize + session/new 取 configOptions
+   * （模型列表），供会话打开/手动刷新时填充模型缓存。失败不影响会话。 */
+  async probeOptions(cwd?: string): Promise<AcpConfigOption[] | null> {
+    const raw = !isTauri()
+      ? await acpMock.probeOptions(cwd)
+      : await invoke('acp_probe_options', { cwd })
+    return extractConfigOptions(raw)
+  },
+
   /** 重载 ACP 会话（load 失败由调用方走「新建+已重连」路径，design §4） */
   async sessionLoad(acpSessionId: string, cwd: string): Promise<AcpSessionResult> {
     if (!isTauri()) return acpMock.sessionLoad(acpSessionId, cwd)
@@ -110,5 +119,12 @@ export const acpService = {
   async respondPermission(requestId: string, optionId: string | null): Promise<void> {
     if (!isTauri()) return acpMock.respondPermission(requestId, optionId)
     await invoke('acp_respond_permission', { requestId, optionId })
+  },
+
+  /** 按 provider/model 解析上下文窗口（limit.context）：用户 opencode 配置 → models.dev
+   * 缓存目录。查不到返回 null（调用方保持既有分母，不臆造）。纯文件读取，不涉 ACP 进程。 */
+  async modelContextWindow(provider: string, model: string): Promise<number | null> {
+    if (!isTauri()) return acpMock.modelContextWindow(provider, model)
+    return invoke<number | null>('agent_model_context_window', { provider, model })
   },
 }
