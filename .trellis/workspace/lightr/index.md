@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 1
+- **Total Sessions**: 2
 - **Last Active**: 2026-10-13
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~29 | Active |
+| `journal-1.md` | ~51 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 2 | 2026-10-13 | 多引擎 ACP 抽象 + 新建会话选引擎（照 codeg 裁剪） | `5a7782a` | `main` |
 | 1 | 2026-10-13 | ACP 每会话一进程 + 空闲断连（per-session 架构） | `573d2f2` | `main` |
 <!-- @@@/auto:session-history -->
 
