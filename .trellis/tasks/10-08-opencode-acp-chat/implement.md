@@ -63,3 +63,46 @@ pnpm dev         # AC8
 - [ ] implement.jsonl/check.jsonl 已填
 - [ ] 父任务决策并入（Q1/Q2/权限 UX）
 - [ ] 用户批准最终摘要
+
+---
+
+## 追加：每会话一进程 + 空闲断连（design §8，后续迭代）
+
+> 顺序：先改 Rust 进程仓库，再改 service/前端，最后接空闲 sweep 与关标签杀进程。
+
+### F. Rust：单进程 → 每会话一进程（`src-tauri/src/acp.rs`）
+1. `CONNS: Mutex<HashMap<String, Arc<AcpConn>>>` 替换 `conn_slot()`；`AcpConn` 加
+   `last_activity_at`。`current_conn`/`require_conn` → 改为按 connId 取
+   （`get_conn(connId)` / `require_conn(connId)`）。
+2. `acp_connect(session_id)`：per-session 启动锁（Map<sessionId, Mutex>），幂等；
+   spawn（`build_acp_command`）+ initialize 握手；事件 emit 带 `connId`。
+3. 读线程/`reader_loop`/`mark_dead`/`handle_incoming`：全部改为 per-conn（emit 带
+   connId；dead 只清该 conn）。
+4. 命令面签名加 connId：`acp_session_new/load/prompt/cancel/set_config/
+   respond_permission/session_close`；新增 `acp_disconnect(session_id)`（关 stdin→等2s→kill）。
+5. 事件 payload 加 `connId`：`acp://update`/`acp://permission`/`acp://status`。
+6. `shutdown()` 遍历 CONNS 全部关闭。
+7. `lib.rs` 更新 handler 注册（含 `acp_connect`/`acp_disconnect`）。
+8. `cargo check` + 用 probes 脚本抽查握手/new/prompt/cancel。
+
+### G. 空闲断连（Rust）
+9. `LIGHTR_ACP_IDLE_TIMEOUT_SECS`（默认 180，0 关闭）；后台定时线程每 ~15s 扫描，
+   断连「connected && 非 generating && 无 pending permission && 空闲超时」的 conn
+   （`acp_disconnect`）。活动刷新 `last_activity_at`（prompt/update/permission）。
+
+### H. 前端（`src/services/*`、`src/composables/useConversation.ts`）
+10. `acpService`：`connect(sessionId)`、`disconnect(sessionId)`；其余命令加 connId
+    （浏览器 mock 同步改造，形状一致）。
+11. `useConversation`：`liveAcpSessions` 改以**本地会话 id** 为键；事件订阅改为按
+    分发的 `connId` 路由；`ensureConnected` → `acpService.connect`；`closeConnection`
+    → `acp_disconnect`（关标签即杀进程）；生成中先 cancel。
+12. 健康芯片：`sessionConnected` = 本地会话 id ∈ live（每会话独立）；沿用连接中/绿/异常/未连。
+
+### I. 验证
+13. `pnpm build` + `cargo check`。
+14. Tauri：打开两个会话 → 任务管理器见两个 opencode 进程；关其一出、另一个不受影响；
+    空闲 180s 后进程自动退出；重开/发送时自动重连（load 恢复）。
+15. 浏览器 mock AC8 不回归。
+
+### 回滚
+- `acp.rs` 还原单例 `conn_slot`；service/前端签名同步还原。

@@ -6,6 +6,8 @@
 export type AcpProcessStatus = 'ready' | 'dead' | 'stopped'
 
 export interface AcpStatusEvent {
+  /** 连接 id = 本地会话 id（ses-xxxxxxxx）；每会话独立进程（design §8.1） */
+  connId: string
   status: AcpProcessStatus
   reason?: string | null
 }
@@ -78,6 +80,9 @@ export type AcpUpdate =
   | AcpIgnoredEvent
 
 export interface AcpUpdateEvent {
+  /** 连接 id = 本地会话 id（ses-xxxxxxxx）：事件按此路由到本地会话（design §8.1） */
+  connId: string
+  /** ACP 侧 sessionId（opencode ses_xxx）：消息归属用 */
   sessionId: string
   update: AcpUpdate
 }
@@ -113,6 +118,8 @@ export interface AcpPermissionOption {
 }
 
 export interface AcpPermissionEvent {
+  /** 连接 id = 本地会话 id：答复时精确定位该会话进程（design §8.1） */
+  connId: string
   requestId: string
   sessionId: string
   toolCall: AcpToolCallUpdate

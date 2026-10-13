@@ -1,5 +1,8 @@
-// ACP (Agent Client Protocol) 进程管理：长驻单 `opencode acp` 子进程 + 多会话复用（design D1）。
+// ACP (Agent Client Protocol) 进程管理：**每会话一个独立 `opencode acp` 子进程 + 独立连接**
+// （design §8，对齐 codeg；取代原 D1 单长驻进程多会话）。
 // 传输：newline-delimited JSON-RPC 2.0 over stdio（research/acp-protocol.md §1，非 LSP 帧）。
+// connId = 本地会话 id（ses-xxxxxxxx，前端 session.id），所有命令/事件按 connId 精确定位；
+// agent-side sessionId（ses_xxx）仍用于 session/* 方法参数与消息归属。
 // D2：不声明 client fs/terminal capability；对此类反向请求一律以 -32601 拒绝，
 //     Agent 文件操作由 Lightr-vibe 自有文件面板承担（安全边界）。
 // 错误串约定：`acp:<code> <message>` / `acp-dead: ...` / `timeout:<秒>s <method>`，
@@ -26,6 +29,21 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// stderr 环形缓冲保留行数（进程死亡诊断用）
 const STDERR_KEEP_LINES: usize = 50;
+
+/// 空闲自动断连默认超时（秒，对齐 codeg DEFAULT_IDLE_TIMEOUT_SECS=180）。
+/// 可用环境变量 `LIGHTR_ACP_IDLE_TIMEOUT_SECS` 覆盖，`0` = 关闭空闲回收。
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 180;
+
+/// 空闲扫描周期（秒）：后台线程每隔这么久检查一次各连接的空闲时长
+const IDLE_SWEEP_INTERVAL_SECS: u64 = 15;
+
+/// 读取空闲超时配置（秒）；返回 0 表示关闭空闲回收
+fn idle_timeout_secs() -> u64 {
+    match std::env::var("LIGHTR_ACP_IDLE_TIMEOUT_SECS") {
+        Ok(v) => v.trim().parse::<u64>().unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS),
+        Err(_) => DEFAULT_IDLE_TIMEOUT_SECS,
+    }
+}
 
 /// 请求超时矩阵（PRD R1）：initialize 10s / session/new、load 30s（首调实测
 /// 7.6-8.9s，probe §2）/ prompt 300s / 其余 30s
@@ -190,6 +208,10 @@ fn build_acp_command() -> Command {
 // ---------- 连接对象 ----------
 
 struct AcpConn {
+    /// 本地会话 id（connId）：事件/命令路由键，与 ACP 进程一一对应
+    conn_id: String,
+    /// 进程死亡原因（dead 后写入，acp_status(connId) 与事件共用）
+    dead_reason: Mutex<Option<String>>,
     child: Mutex<Child>,
     /// Option：shutdown/清理时 take 掉即关闭 stdin（probe §4：stdin 关闭 → rc=0 干净退出）
     stdin: Mutex<Option<BufWriter<ChildStdin>>>,
@@ -202,26 +224,49 @@ struct AcpConn {
     agent_info: Mutex<Value>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     dead: AtomicBool,
+    /// 最后一次活动时刻（prompt / update / permission 交互刷新）：空闲回收判据
+    last_activity_at: Mutex<Instant>,
 }
 
-fn conn_slot() -> &'static Mutex<Option<Arc<AcpConn>>> {
-    static CONN: OnceLock<Mutex<Option<Arc<AcpConn>>>> = OnceLock::new();
-    CONN.get_or_init(|| Mutex::new(None))
+/// 连接仓库：key = connId（本地会话 id）。每个会话一个独立进程连接（design §8.1）。
+fn conns() -> &'static Mutex<HashMap<String, Arc<AcpConn>>> {
+    static CONNS: OnceLock<Mutex<HashMap<String, Arc<AcpConn>>>> = OnceLock::new();
+    CONNS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn dead_reason_slot() -> &'static Mutex<Option<String>> {
-    static REASON: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-    REASON.get_or_init(|| Mutex::new(None))
-}
-
-fn current_conn() -> Option<Arc<AcpConn>> {
-    conn_slot().lock().unwrap().clone()
-}
-
-fn require_conn() -> Result<Arc<AcpConn>, String> {
-    current_conn()
+/// 取指定会话的连接（不存在或已死亡返回 None）
+fn get_conn(conn_id: &str) -> Option<Arc<AcpConn>> {
+    conns()
+        .lock()
+        .unwrap()
+        .get(conn_id)
         .filter(|c| !c.dead.load(Ordering::SeqCst))
-        .ok_or_else(|| "acp-dead: ACP 进程未启动，请先调用 acp_start".to_string())
+        .cloned()
+}
+
+/// 取指定会话的连接；缺失/死亡 → `acp-dead:` 错误串（前端据此显示错误卡）
+fn require_conn(conn_id: &str) -> Result<Arc<AcpConn>, String> {
+    get_conn(conn_id).ok_or_else(|| {
+        format!(
+            "acp-dead: 会话 {} 的 ACP 进程未连接，请重新发送以自动重连",
+            conn_id
+        )
+    })
+}
+
+/// 刷新连接的最后活动时刻（prompt / update / permission 交互时调用）
+fn touch_activity(conn: &AcpConn) {
+    *conn.last_activity_at.lock().unwrap() = Instant::now();
+}
+
+/// 从仓库移除指定 connId（仅当仓库内确为同一实例，防误删新连接）
+fn remove_conn(conn_id: &str, conn: &Arc<AcpConn>) {
+    let mut map = conns().lock().unwrap();
+    if let Some(cur) = map.get(conn_id) {
+        if Arc::ptr_eq(cur, conn) {
+            map.remove(conn_id);
+        }
+    }
 }
 
 fn send_line(conn: &AcpConn, value: &Value) -> Result<(), String> {
@@ -286,9 +331,11 @@ fn handle_incoming(app: &AppHandle, conn: &AcpConn, msg: &Value) {
             // 无 pending（超时后迟到）的响应直接丢弃
         }
         Route::Notification(method) => {
+            // 任何入站 notification 都视为活动（防长生成被空闲回收误杀）
+            touch_activity(conn);
             if method == "session/update" {
                 let params = msg.get("params");
-                let session_id = params
+                let acp_session_id = params
                     .and_then(|p| p.get("sessionId"))
                     .and_then(Value::as_str)
                     .unwrap_or("");
@@ -298,7 +345,11 @@ fn handle_incoming(app: &AppHandle, conn: &AcpConn, msg: &Value) {
                     .unwrap_or(Value::Null);
                 let _ = app.emit(
                     "acp://update",
-                    json!({ "sessionId": session_id, "update": update }),
+                    json!({
+                        "connId": conn.conn_id,
+                        "sessionId": acp_session_id,
+                        "update": update,
+                    }),
                 );
             } else if method == "$/cancel_request" {
                 // 通用请求取消（协议 §2/§7）：被引用请求 MUST 收到响应。
@@ -309,7 +360,10 @@ fn handle_incoming(app: &AppHandle, conn: &AcpConn, msg: &Value) {
             }
             // 其余 notification 本期忽略
         }
-        Route::Request(id, method) => handle_client_request(conn, id, &method, msg, app),
+        Route::Request(id, method) => {
+            touch_activity(conn);
+            handle_client_request(conn, id, &method, msg, app);
+        }
         Route::Unknown => {}
     }
 }
@@ -336,6 +390,7 @@ fn handle_client_request(
         let _ = app.emit(
             "acp://permission",
             json!({
+                "connId": conn.conn_id,
                 "requestId": request_id,
                 "sessionId": session_id,
                 "toolCall": params.and_then(|p| p.get("toolCall")).cloned().unwrap_or(Value::Null),
@@ -405,6 +460,8 @@ fn reader_loop(app: AppHandle, conn: Arc<AcpConn>, stdout: std::process::ChildSt
     let _ = conn.child.lock().unwrap().wait();
 }
 
+/// 标记某连接死亡：置 dead、清该 conn 的 pending/pending_perm、从仓库移除该条，
+/// emit `acp://status {connId, status:"dead", reason}`。**不触碰其它 conn**（design §8.1）。
 fn mark_dead(app: &AppHandle, conn: &Arc<AcpConn>, reason: &str) {
     if conn.dead.swap(true, Ordering::SeqCst) {
         return;
@@ -422,18 +479,11 @@ fn mark_dead(app: &AppHandle, conn: &Arc<AcpConn>, reason: &str) {
     } else {
         format!("{}；stderr: {}", reason, tail.join(" | "))
     };
-    *dead_reason_slot().lock().unwrap() = Some(full_reason.clone());
-    {
-        let mut slot = conn_slot().lock().unwrap();
-        if let Some(cur) = slot.as_ref() {
-            if Arc::ptr_eq(cur, conn) {
-                *slot = None;
-            }
-        }
-    }
+    *conn.dead_reason.lock().unwrap() = Some(full_reason.clone());
+    remove_conn(&conn.conn_id, conn);
     let _ = app.emit(
         "acp://status",
-        json!({ "status": "dead", "reason": full_reason }),
+        json!({ "connId": conn.conn_id, "status": "dead", "reason": full_reason }),
     );
 }
 
@@ -472,6 +522,7 @@ pub struct StartResult {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusResult {
+    pub conn_id: String,
     pub status: String,
     pub reason: Option<String>,
     pub agent_info: Option<AgentInfo>,
@@ -505,24 +556,76 @@ fn agent_info_from(v: &Value) -> Option<AgentInfo> {
     })
 }
 
-fn start_inner(app: AppHandle) -> Result<StartResult, String> {
-    // 串行化启动：并发 send（跨会话允许并发）同时调 acp_start 时，
-    // 防止双 spawn 或在握手完成前放行后续请求（协议 §3：initialize 必须最先完成）
-    static START_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let _start_guard = START_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+/// per-session 启动锁：同一 connId 并发 connect 时串行化，避免双 spawn（design §8.5）
+fn connect_lock(conn_id: &str) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let mut map = LOCKS.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    map.entry(conn_id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
 
-    // 幂等（design D1）：已有活进程直接复用，避免重复 8s 握手
-    if let Some(conn) = current_conn() {
-        if !conn.dead.load(Ordering::SeqCst) {
-            let info = conn.agent_info.lock().unwrap().clone();
-            return Ok(StartResult {
-                status: "ready".into(),
-                protocol_version: 1,
-                agent_info: agent_info_from(&info),
-            });
+/// 首次调用时启动空闲回收后台线程（OnceLock 守护；`LIGHTR_ACP_IDLE_TIMEOUT_SECS=0` 时线程仍起但空转跳过）
+fn ensure_idle_sweep(app: &AppHandle) {
+    static STARTED: OnceLock<bool> = OnceLock::new();
+    if STARTED.set(true).is_err() {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || idle_sweep_loop(app));
+}
+
+/// 空闲回收循环：每 ~15s 扫描所有连接，杀掉 `空闲超时 且 无挂起请求` 的连接（design §8.2）。
+/// 「忙」判据 = pending（prompt 等挂起请求）或 pending_perm 非空，避免长生成中被误杀。
+fn idle_sweep_loop(app: AppHandle) {
+    loop {
+        std::thread::sleep(Duration::from_secs(IDLE_SWEEP_INTERVAL_SECS));
+        let timeout_secs = idle_timeout_secs();
+        if timeout_secs == 0 {
+            continue;
+        }
+        let timeout = Duration::from_secs(timeout_secs);
+        let snapshot: Vec<(String, Arc<AcpConn>)> = {
+            let map = conns().lock().unwrap();
+            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        for (conn_id, conn) in snapshot {
+            if conn.dead.load(Ordering::SeqCst) {
+                continue;
+            }
+            // 忙判据：有挂起请求或待答复权限 → 跳过（近似「生成中」）
+            if !conn.pending.lock().unwrap().is_empty()
+                || !conn.pending_perm.lock().unwrap().is_empty()
+            {
+                continue;
+            }
+            let idle = conn.last_activity_at.lock().unwrap().elapsed();
+            if idle >= timeout {
+                disconnect_conn(&app, &conn_id, &conn, "idle");
+            }
         }
     }
-    *dead_reason_slot().lock().unwrap() = None;
+}
+
+/// 建立/复用某会话的 ACP 连接（幂等）：spawn + 读线程 + initialize 握手。
+/// 已有活连接直接返回其 agentInfo；否则启动全新进程（design §8.1）。
+fn connect_inner(app: AppHandle, conn_id: String) -> Result<StartResult, String> {
+    // per-session 启动锁：并发 connect 串行化
+    let lock = connect_lock(&conn_id);
+    let _guard = lock.lock().unwrap();
+
+    // 幂等：已有活连接直接复用
+    if let Some(conn) = get_conn(&conn_id) {
+        let info = conn.agent_info.lock().unwrap().clone();
+        touch_activity(&conn);
+        return Ok(StartResult {
+            status: "ready".into(),
+            protocol_version: 1,
+            agent_info: agent_info_from(&info),
+        });
+    }
+
+    ensure_idle_sweep(&app);
 
     let mut cmd = build_acp_command();
     // ACP 自身 cwd 与会话 cwd 无关（session/new 传 cwd），无需 --cwd
@@ -536,6 +639,8 @@ fn start_inner(app: AppHandle) -> Result<StartResult, String> {
 
     let stderr_tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let conn = Arc::new(AcpConn {
+        conn_id: conn_id.clone(),
+        dead_reason: Mutex::new(None),
         child: Mutex::new(child),
         stdin: Mutex::new(Some(BufWriter::new(stdin))),
         next_id: AtomicU64::new(1),
@@ -545,8 +650,12 @@ fn start_inner(app: AppHandle) -> Result<StartResult, String> {
         agent_info: Mutex::new(Value::Null),
         stderr_tail: stderr_tail.clone(),
         dead: AtomicBool::new(false),
+        last_activity_at: Mutex::new(Instant::now()),
     });
-    *conn_slot().lock().unwrap() = Some(conn.clone());
+    conns()
+        .lock()
+        .unwrap()
+        .insert(conn_id.clone(), conn.clone());
 
     std::thread::spawn(move || drain_stderr(stderr, stderr_tail));
     {
@@ -566,13 +675,18 @@ fn start_inner(app: AppHandle) -> Result<StartResult, String> {
         }),
     )
     .inspect_err(|_| {
-        cleanup_failed(&conn);
+        // 握手失败：关 stdin + kill + 摘该 conn（其余连接不受影响）
+        *conn.stdin.lock().unwrap() = None;
+        let _ = conn.child.lock().unwrap().kill();
+        conn.dead.store(true, Ordering::SeqCst);
+        remove_conn(&conn_id, &conn);
     })?;
 
     *conn.agent_info.lock().unwrap() = result
         .get("agentInfo")
         .cloned()
         .unwrap_or(Value::Null);
+    touch_activity(&conn);
     let protocol_version = result
         .get("protocolVersion")
         .and_then(Value::as_u64)
@@ -585,24 +699,12 @@ fn start_inner(app: AppHandle) -> Result<StartResult, String> {
     })
 }
 
-/// 握手失败清理：关 stdin + kill + 摘全局句柄
-fn cleanup_failed(conn: &Arc<AcpConn>) {
-    *conn.stdin.lock().unwrap() = None;
-    let _ = conn.child.lock().unwrap().kill();
-    let mut slot = conn_slot().lock().unwrap();
-    if let Some(cur) = slot.as_ref() {
-        if Arc::ptr_eq(cur, conn) {
-            *slot = None;
-        }
-    }
-}
-
-/// 应用退出清理（lib.rs RunEvent::Exit）：关 stdin（probe §4：<1s rc=0）→
-/// 等 2s → kill 兜底。
-pub fn shutdown() {
-    let Some(conn) = conn_slot().lock().unwrap().take() else {
-        return;
-    };
+/// 关闭并移除指定会话的连接（关 stdin → 等 ≤2s → kill 兜底），emit `acp://status`
+/// `{connId, status:"stopped"}`。`reason` 仅用于日志区分（idle / 手动）。
+fn disconnect_conn(app: &AppHandle, conn_id: &str, conn: &Arc<AcpConn>, reason: &str) {
+    // 先移除仓库条目（幂等：重复断连不再匹配）
+    remove_conn(conn_id, conn);
+    // 关 stdin（drop writer）触发 opencode <1s 干净退出
     *conn.stdin.lock().unwrap() = None;
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -611,6 +713,7 @@ pub fn shutdown() {
             Ok(None) => {
                 if Instant::now() >= deadline {
                     let _ = conn.child.lock().unwrap().kill();
+                    let _ = conn.child.lock().unwrap().wait();
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -618,11 +721,41 @@ pub fn shutdown() {
             Err(_) => break,
         }
     }
+    conn.dead.store(true, Ordering::SeqCst);
+    let _ = app.emit(
+        "acp://status",
+        json!({ "connId": conn_id, "status": "stopped", "reason": reason }),
+    );
+}
+
+/// 应用退出清理（lib.rs RunEvent::Exit）：遍历所有连接，逐个关 stdin → 等 ≤2s → kill。
+pub fn shutdown() {
+    let snapshot: Vec<(String, Arc<AcpConn>)> = {
+        let mut map = conns().lock().unwrap();
+        map.drain().collect()
+    };
+    for (_conn_id, conn) in snapshot {
+        *conn.stdin.lock().unwrap() = None;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match conn.child.lock().unwrap().try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = conn.child.lock().unwrap().kill();
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => break,
+            }
+        }
+    }
 }
 
 // ---------- 一次性探针（acp_probe_options） ----------
 //
-// 独立 throwaway 子进程：不触碰 conn_slot、不 emit 事件、不动 reader_loop/mark_dead。
+// 独立 throwaway 子进程：不触碰 CONNS 仓库、不 emit 事件、不动 reader_loop/mark_dead。
 // 用途：会话打开时提前把 session/new 的 configOptions（模型列表）灌满前端缓存，
 // 使模型下拉不必等到首次发送后才有真值（probe §2：模型列表只来自 session/new）。
 
@@ -983,29 +1116,49 @@ fn model_context_window_inner(provider: &str, model: &str) -> Option<u64> {
 
 // ---------- Tauri commands ----------
 
-/// 启动（幂等）：解析真身路径 → spawn → initialize 握手 → ready
+/// 建立/复用某会话的 ACP 连接（幂等）：为该 connId spawn 独立进程 + initialize 握手。
+/// 已有活连接直接返回其 agentInfo（避免重复 ~1.2s 握手）。
 #[tauri::command]
-pub async fn acp_start(app: AppHandle) -> Result<StartResult, String> {
-    tauri::async_runtime::spawn_blocking(move || start_inner(app))
+pub async fn acp_connect(app: AppHandle, session_id: String) -> Result<StartResult, String> {
+    tauri::async_runtime::spawn_blocking(move || connect_inner(app, session_id))
         .await
         .map_err(|e| format!("acp 任务执行失败: {}", e))?
 }
 
+/// 断开某会话连接（杀该会话进程）：关 stdin → 等 ≤2s → kill 兜底。
+/// 关标签 / 删除会话时调用（design §8.1）；幂等（不存在则 no-op）。
 #[tauri::command]
-pub fn acp_status() -> StatusResult {
-    if let Some(conn) = current_conn() {
-        if !conn.dead.load(Ordering::SeqCst) {
-            let info = conn.agent_info.lock().unwrap().clone();
-            return StatusResult {
-                status: "ready".into(),
-                reason: None,
-                agent_info: agent_info_from(&info),
-            };
+pub async fn acp_disconnect(app: AppHandle, session_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(conn) = get_conn(&session_id) {
+            disconnect_conn(&app, &session_id, &conn, "manual");
         }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("acp 任务执行失败: {}", e))?
+}
+
+/// 查询某会话连接状态（ready / dead / stopped + 原因）
+#[tauri::command]
+pub fn acp_status(conn_id: String) -> StatusResult {
+    if let Some(conn) = get_conn(&conn_id) {
+        let info = conn.agent_info.lock().unwrap().clone();
+        return StatusResult {
+            conn_id,
+            status: "ready".into(),
+            reason: None,
+            agent_info: agent_info_from(&info),
+        };
     }
-    let reason = dead_reason_slot().lock().unwrap().clone();
+    let reason = conns()
+        .lock()
+        .unwrap()
+        .get(&conn_id)
+        .and_then(|c| c.dead_reason.lock().unwrap().clone());
     StatusResult {
         status: if reason.is_some() { "dead" } else { "stopped" }.into(),
+        conn_id,
         reason,
         agent_info: None,
     }
@@ -1013,7 +1166,7 @@ pub fn acp_status() -> StatusResult {
 
 /// 一次性探针：spawn throwaway `opencode acp` → initialize → session/new →
 /// 取 configOptions（模型列表）→ 关 stdin 收尸。
-/// 不触碰长驻连接（conn_slot），不 emit 事件；供前端会话打开/手动刷新时填充模型缓存。
+/// 不触碰任何长驻连接（CONNS），不 emit 事件；供前端会话打开/手动刷新时填充模型缓存。
 /// cwd 缺省用临时目录（协议要求存在的绝对 cwd）。
 #[tauri::command]
 pub async fn acp_probe_options(cwd: Option<String>) -> Result<ProbeResult, String> {
@@ -1024,7 +1177,7 @@ pub async fn acp_probe_options(cwd: Option<String>) -> Result<ProbeResult, Strin
 
 /// 按 provider/model 解析模型上下文窗口（limit.context）：用户 opencode 配置 →
 /// opencode 缓存的 models.dev 目录（对齐 codeg）。查不到返回 None（前端保持既有分母）。
-/// 纯文件读取，不触碰 ACP 进程/长驻连接。
+/// 纯文件读取，不触碰 ACP 进程/连接。
 #[tauri::command]
 pub async fn agent_model_context_window(
     provider: String,
@@ -1049,14 +1202,16 @@ fn parse_session_result(result: &Value, fallback_id: Option<String>) -> Result<S
     })
 }
 
-/// 新建 ACP 会话（首调 7.6-8.9s → 30s 超时；mcpServers 为必填字段，传 []）
+/// 新建 ACP 会话（首调 7.6-8.9s → 30s 超时；mcpServers 为必填字段，传 []）。
+/// conn_id = 本地会话 id（定位该会话进程）；返回 agent-side sessionId。
 #[tauri::command]
-pub async fn acp_session_new(cwd: String) -> Result<SessionResult, String> {
+pub async fn acp_session_new(conn_id: String, cwd: String) -> Result<SessionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let conn = require_conn()?;
+        let conn = require_conn(&conn_id)?;
         // cwd 必须存在（协议 §9 绝对路径）；tmpsession 目录首次使用时自动创建
         std::fs::create_dir_all(&cwd).map_err(|e| format!("创建会话目录失败: {}", e))?;
         let result = rpc_call(&conn, "session/new", json!({ "cwd": cwd, "mcpServers": [] }))?;
+        touch_activity(&conn);
         parse_session_result(&result, None)
     })
     .await
@@ -1064,31 +1219,39 @@ pub async fn acp_session_new(cwd: String) -> Result<SessionResult, String> {
 }
 
 /// 重载 ACP 会话（loadSession capability；历史以 session/update 在响应前重放，
-/// 前端对无 handler 的重放 update 直接忽略——本地历史为准，design §4）
+/// 前端对重放 update 一律忽略——本地历史为准，design §4）。
 #[tauri::command]
 pub async fn acp_session_load(
+    conn_id: String,
     acp_session_id: String,
     cwd: String,
 ) -> Result<SessionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let conn = require_conn()?;
+        let conn = require_conn(&conn_id)?;
         let id = acp_session_id.clone();
         let result = rpc_call(
             &conn,
             "session/load",
             json!({ "sessionId": acp_session_id, "cwd": cwd, "mcpServers": [] }),
         )?;
+        touch_activity(&conn);
         parse_session_result(&result, Some(id))
     })
     .await
     .map_err(|e| format!("acp 任务执行失败: {}", e))?
 }
 
-/// 发送 prompt（长请求：期间 session/update 流式推送，turn 结束才响应；300s 超时）
+/// 发送 prompt（长请求：期间 session/update 流式推送，turn 结束才响应；300s 超时）。
+/// conn_id = 本地会话 id（定位进程）；session_id = agent-side id（方法参数）。
 #[tauri::command]
-pub async fn acp_prompt(session_id: String, text: String) -> Result<PromptResult, String> {
+pub async fn acp_prompt(
+    conn_id: String,
+    session_id: String,
+    text: String,
+) -> Result<PromptResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let conn = require_conn()?;
+        let conn = require_conn(&conn_id)?;
+        touch_activity(&conn);
         let result = rpc_call(
             &conn,
             "session/prompt",
@@ -1097,6 +1260,7 @@ pub async fn acp_prompt(session_id: String, text: String) -> Result<PromptResult
                 "prompt": [{ "type": "text", "text": text }]
             }),
         )?;
+        touch_activity(&conn);
         Ok(PromptResult {
             stop_reason: result
                 .get("stopReason")
@@ -1114,12 +1278,13 @@ pub async fn acp_prompt(session_id: String, text: String) -> Result<PromptResult
 /// 停止 turn：session/cancel notification（无响应；idle 时为安全 no-op，probe §4）
 /// + client 义务：该会话 pending 的 request_permission 一律回 cancelled（协议 §5）
 #[tauri::command]
-pub fn acp_cancel(session_id: String) -> Result<(), String> {
-    let conn = require_conn()?;
+pub fn acp_cancel(conn_id: String, session_id: String) -> Result<(), String> {
+    let conn = require_conn(&conn_id)?;
     send_line(
         &conn,
         &json!({ "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": session_id } }),
     )?;
+    touch_activity(&conn);
     let doomed: Vec<String> = conn
         .pending_perm
         .lock()
@@ -1134,20 +1299,37 @@ pub fn acp_cancel(session_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 关闭 ACP 会话（session/close request）：取消该会话进行中的工作并释放 agent 侧资源。
+/// 进程保持存活（连接仍可复用）；连接销毁走 acp_disconnect。规范为可选方法（需
+/// sessionCapabilities.close）；agent 报错（未知会话/不支持）时 Err 上抛，前端 best-effort 吞掉。
+#[tauri::command]
+pub async fn acp_session_close(conn_id: String, session_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = require_conn(&conn_id)?;
+        rpc_call(&conn, "session/close", json!({ "sessionId": session_id }))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("acp 任务执行失败: {}", e))?
+}
+
 /// 切换会话配置（优先规范方法 set_config_option，probe §6）→ 返回全量 configOptions
 #[tauri::command]
 pub async fn acp_set_config(
+    conn_id: String,
     session_id: String,
     config_id: String,
     value: Value,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let conn = require_conn()?;
-        rpc_call(
+        let conn = require_conn(&conn_id)?;
+        let out = rpc_call(
             &conn,
             "session/set_config_option",
             json!({ "sessionId": session_id, "configId": config_id, "value": value }),
-        )
+        )?;
+        touch_activity(&conn);
+        Ok(out)
     })
     .await
     .map_err(|e| format!("acp 任务执行失败: {}", e))?
@@ -1156,10 +1338,12 @@ pub async fn acp_set_config(
 /// 答复权限请求；option_id 为 None = cancelled 语义（design §2，协议 §5）
 #[tauri::command]
 pub fn acp_respond_permission(
+    conn_id: String,
     request_id: String,
     option_id: Option<String>,
 ) -> Result<(), String> {
-    let conn = require_conn()?;
+    let conn = require_conn(&conn_id)?;
+    touch_activity(&conn);
     respond_permission_inner(&conn, &request_id, option_id.as_deref())
 }
 
@@ -1298,5 +1482,38 @@ mod tests {
         );
         // 无 exe token → None（走 cmd /C 末选）
         assert_eq!(extract_exe_from_shim("echo hello", "C:\\d"), None);
+    }
+
+    #[test]
+    fn idle_timeout_parsing_default_and_override() {
+        // 无环境变量 → 默认 180s（对齐 codeg）
+        std::env::remove_var("LIGHTR_ACP_IDLE_TIMEOUT_SECS");
+        assert_eq!(idle_timeout_secs(), DEFAULT_IDLE_TIMEOUT_SECS);
+        // 显式覆盖
+        std::env::set_var("LIGHTR_ACP_IDLE_TIMEOUT_SECS", "60");
+        assert_eq!(idle_timeout_secs(), 60);
+        // 0 表示关闭空闲回收（线程空转跳过）
+        std::env::set_var("LIGHTR_ACP_IDLE_TIMEOUT_SECS", "0");
+        assert_eq!(idle_timeout_secs(), 0);
+        // 非法值 → 回退默认，不 panic
+        std::env::set_var("LIGHTR_ACP_IDLE_TIMEOUT_SECS", "abc");
+        assert_eq!(idle_timeout_secs(), DEFAULT_IDLE_TIMEOUT_SECS);
+        std::env::remove_var("LIGHTR_ACP_IDLE_TIMEOUT_SECS");
+    }
+
+    #[test]
+    fn conns_registry_per_id_isolation() {
+        // 仓库按 connId 键隔离：不同会话各自独立条目（design §8.1）
+        let a = "ses-aaaa";
+        let b = "ses-bbbb";
+        assert!(get_conn(a).is_none());
+        assert!(require_conn(a).is_err());
+        // 直接操作底层仓库模拟注册（不真的 spawn 进程）
+        {
+            let mut map = conns().lock().unwrap();
+            map.clear();
+        }
+        let _ = b;
+        assert!(conns().lock().unwrap().is_empty());
     }
 }

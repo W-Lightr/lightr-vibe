@@ -63,7 +63,7 @@ async function autoRespond(event: AcpPermissionEvent): Promise<boolean> {
   const workspace = useWorkspaceStore()
   const mode = workspace.executionMode
   const toolName = toolNameOf(event)
-  const allowed = alwaysAllowed.get(event.sessionId)?.has(toolName)
+  const allowed = alwaysAllowed.get(event.connId)?.has(toolName)
 
   let option: AcpPermissionOption | undefined
   if (allowed || mode === 'auto') {
@@ -73,7 +73,7 @@ async function autoRespond(event: AcpPermissionEvent): Promise<boolean> {
   }
   // confirm 且未命中总是允许 → 入队人工审批
   if (!option) return false
-  await acpService.respondPermission(event.requestId, option.optionId)
+  await acpService.respondPermission(event.connId, event.requestId, option.optionId)
   return true
 }
 
@@ -82,24 +82,24 @@ async function respond(event: AcpPermissionEvent, optionId: string | null, alway
   queue.value = queue.value.filter((e) => e.requestId !== event.requestId)
   if (always && optionId) {
     const toolName = toolNameOf(event)
-    let set = alwaysAllowed.get(event.sessionId)
+    let set = alwaysAllowed.get(event.connId)
     if (!set) {
       set = new Set()
-      alwaysAllowed.set(event.sessionId, set)
+      alwaysAllowed.set(event.connId, set)
     }
     set.add(toolName)
   }
   // 进程已死/请求已被 cancel 收敛时答复会失败：请求已出队，失败静默
   // （错误卡由 send() 的 catch 统一呈现），不向组件抛未处理 rejection
-  await acpService.respondPermission(event.requestId, optionId).catch(() => undefined)
+  await acpService.respondPermission(event.connId, event.requestId, optionId).catch(() => undefined)
 }
 
 /** 会话级取消：把该会话排队中的请求全部回 cancelled（协议 §5 client 义务） */
-function cancelQueued(sessionId: string): void {
-  const doomed = queue.value.filter((e) => e.sessionId === sessionId)
-  queue.value = queue.value.filter((e) => e.sessionId !== sessionId)
+function cancelQueued(connId: string): void {
+  const doomed = queue.value.filter((e) => e.connId === connId)
+  queue.value = queue.value.filter((e) => e.connId !== connId)
   for (const e of doomed) {
-    void acpService.respondPermission(e.requestId, null).catch(() => undefined)
+    void acpService.respondPermission(e.connId, e.requestId, null).catch(() => undefined)
   }
 }
 
@@ -109,28 +109,27 @@ let subscribed = false
 function ensureSubscribed(): void {
   if (subscribed) return
   subscribed = true
-  // 进程死亡：Rust 已清 pending_perm，排队中的审批卡直接失效，清 UI 队列
+  // 会话进程死亡/断连：Rust 已清 pending_perm，该会话排队中的审批卡直接失效，清出队列
   onStatus((event) => {
-    if (event.status === 'dead') queue.value = []
+    if (event.status === 'dead' || event.status === 'stopped') {
+      queue.value = queue.value.filter((e) => e.connId !== event.connId)
+    }
   })
   onPermission((event) => {
     void (async () => {
-      // 事件携带 ACP 侧 sessionId，映射回本地会话 id 供 ConversationView 过滤渲染；
-      // 映射不到（会话已删/索引缺失）→ 直接回 cancelled，避免请求悬挂且 UI 不可达
-      const local = useSessionStore().findByAcpSessionId(event.sessionId)
+      // 事件携带 connId = 本地会话 id（design §8.1）：直接定位本地会话；
+      // 会话已删/不存在 → 直接回 cancelled，避免请求悬挂且 UI 不可达
+      const local = useSessionStore().get(event.connId)
       if (!local) {
-        await acpService
-          .respondPermission(event.requestId, null)
-          .catch(() => undefined)
+        await acpService.respondPermission(event.connId, event.requestId, null).catch(() => undefined)
         return
       }
-      const scoped: AcpPermissionEvent = { ...event, sessionId: local.id }
       try {
-        if (await autoRespond(scoped)) return
+        if (await autoRespond(event)) return
       } catch {
         // 自动答复失败（进程 dead 等）：仍入队让用户看到，避免请求悬挂
       }
-      queue.value.push(scoped)
+      queue.value.push(event)
     })()
   })
 }

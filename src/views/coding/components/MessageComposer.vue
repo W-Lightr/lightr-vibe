@@ -18,6 +18,10 @@ import {
   Folder,
   GitBranch,
   RefreshCw,
+  HeartHandshake,
+  HeartCrack,
+  HeartOff,
+  HeartPulse,
 } from 'lucide-vue-next'
 import { MODELS, EXECUTION_MODES, useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
@@ -26,6 +30,7 @@ import {
   useConversation,
   ensureModelOptions,
   refreshModelOptions,
+  useAcpHealth,
 } from '../../../composables/useConversation'
 import type { AcpConfigOption, AcpConfigOptionGroup, AcpConfigOptionValue } from '../../../types/acp'
 import { formatTokens } from '../../../utils/time'
@@ -35,7 +40,9 @@ const props = defineProps<{ sessionId: string }>()
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
-const { send, stop, setModel, setConfigOption } = useConversation()
+const { send, stop, setModel, setConfigOption, reconnect, reconnecting, ensureConnected } =
+  useConversation()
+const { healthOf, acpConnectingSessionIds, acpLiveSessionIds, refreshAcpStatus } = useAcpHealth()
 const message = useMessage()
 
 const draft = ref('')
@@ -250,6 +257,50 @@ const projectName = computed(() => {
 /** 状态栏：当前分支（无则显示「无分支」） */
 const branchName = computed(() => session.value?.gitBranch || '无分支')
 
+// ── 连接健康（参考 codeg composer 连接健康芯片；每会话独立进程，design §8.3） ──
+/** 当前会话是否已建立 ACP 连接（本地会话 id 在 live 集合内） */
+const sessionConnected = computed(() => acpLiveSessionIds.value.includes(props.sessionId))
+/** 当前会话是否正在建连/重连在途（每连接独立，不吃其它会话的建连状态，design §8.3） */
+const sessionConnecting = computed(() =>
+  acpConnectingSessionIds.value.includes(props.sessionId),
+)
+/** 当前会话的连接健康条目（每会话独立进程，design §8.3） */
+const acpHealth = computed(() => healthOf(props.sessionId))
+/** 视觉态：connecting=建连中 / connected=已连接 / error=异常 / disconnected=未连接。
+ * 每会话独立进程（design §8.3）：acpHealth 反映「当前会话」的连接状态，
+ * sessionConnected 即本地会话 id ∈ live，sessionConnecting 仅当本会话在途。
+ * 优先级：本会话建连中 > 该会话异常 > 已连 > 未连。 */
+const healthState = computed<'connecting' | 'connected' | 'error' | 'disconnected'>(() => {
+  if (sessionConnecting.value) return 'connecting'
+  if (acpHealth.value?.status === 'dead') return 'error'
+  if (sessionConnected.value) return 'connected'
+  return 'disconnected'
+})
+const HEALTH_META = {
+  connecting: { icon: HeartPulse, label: '连接中…', cls: 'text-blue-500 animate-pulse' },
+  connected: { icon: HeartHandshake, label: '已连接', cls: 'text-green-600' },
+  error: { icon: HeartCrack, label: '连接异常', cls: 'text-red-500' },
+  disconnected: { icon: HeartOff, label: '未连接', cls: 'text-neutral-300' },
+} as const
+const healthIcon = computed(() => HEALTH_META[healthState.value].icon)
+const healthLabel = computed(() => HEALTH_META[healthState.value].label)
+const healthClass = computed(() => HEALTH_META[healthState.value].cls)
+/** 连接中：文字用与「正在生成…」同款 shimmer 动效 */
+const healthShimmer = computed(() => healthState.value === 'connecting')
+/** agent 名（无进程信息时用字面 OpenCode） */
+const agentName = computed(() => acpHealth.value?.agentInfo?.name ?? 'OpenCode')
+/** 弹层错误原因（仅异常态显示） */
+const healthReason = computed(() =>
+  healthState.value === 'error' ? (acpHealth.value?.reason ?? null) : null,
+)
+const healthOpen = ref(false)
+
+/** 重新连接：杀死该会话进程 + 全新 spawn + load-or-new */
+async function onReconnect() {
+  await reconnect(props.sessionId)
+  healthOpen.value = false
+}
+
 function autoResize() {
   const el = textareaEl.value
   if (!el) return
@@ -272,6 +323,10 @@ watch(
     nextTick(autoResize)
     // 后台便利探针：会话无模型项时补齐真实列表（失败静默，不阻塞 UI）
     void ensureModelOptions(props.sessionId)
+    // 刷新连接健康（该会话独立连接；切会话时同步一次）
+    void refreshAcpStatus(props.sessionId)
+    // 打开会话即自动建连（对齐 codeg：标签激活即 connect；best-effort 静默）
+    void ensureConnected(props.sessionId)
   },
 )
 
@@ -282,6 +337,10 @@ onMounted(() => {
   autoResize()
   // 打开会话即预取真实模型列表（缓存命中则零成本）
   void ensureModelOptions(props.sessionId)
+  // 刷新连接健康（打开即有值，不必等事件）
+  void refreshAcpStatus(props.sessionId)
+  // 打开会话即自动建连（不等发送；连上后 configOptions/模型列表即可用）
+  void ensureConnected(props.sessionId)
 })
 
 function submit() {
@@ -627,6 +686,73 @@ function pickFiles(e: Event) {
           />
           {{ contextPct }}%
         </span>
+
+        <!-- 连接健康：心形图标 + 弹层（进程状态 ready/dead/stopped） -->
+        <NPopover
+          v-model:show="healthOpen"
+          trigger="click"
+          placement="top-end"
+          :show-arrow="false"
+          raw
+          class="connection-popover"
+        >
+          <template #trigger>
+            <button
+              class="flex shrink-0 cursor-pointer items-center gap-1 rounded-md px-1 py-0.5 transition-colors hover:bg-neutral-100"
+              :title="`${agentName} · ${healthLabel}`"
+            >
+              <component :is="healthIcon" class="h-3.5 w-3.5" :class="healthClass" />
+            </button>
+          </template>
+
+          <div class="w-[248px] overflow-hidden rounded-lg border border-neutral-200 bg-white p-3 shadow-sm">
+            <!-- 头部：agent 名 + 状态 -->
+            <div class="flex items-center justify-between gap-2">
+              <span class="truncate text-xs font-medium text-neutral-700">{{ agentName }}</span>
+              <span class="flex shrink-0 items-center gap-1 text-[11px]">
+                <component :is="healthIcon" class="h-3 w-3" :class="healthClass" />
+                <span :class="healthShimmer ? 'shimmer' : 'text-neutral-400'">{{ healthLabel }}</span>
+              </span>
+            </div>
+
+            <!-- 错误原因（仅异常态） -->
+            <p
+              v-if="healthReason"
+              class="mt-2 max-h-24 overflow-auto rounded-md bg-red-50 px-2 py-1 text-[11px] leading-snug break-words text-red-600"
+            >
+              {{ healthReason }}
+            </p>
+
+            <!-- 详情：工作目录 / 会话 ID -->
+            <dl v-if="session?.cwd || session?.acpSessionId" class="mt-2 space-y-2">
+              <div v-if="session?.cwd" class="space-y-0.5">
+                <dt class="text-[11px] leading-none text-neutral-400">工作目录</dt>
+                <dd class="font-mono text-[11px] leading-snug break-all text-neutral-600" :title="session.cwd">
+                  {{ session.cwd }}
+                </dd>
+              </div>
+              <div v-if="session?.acpSessionId" class="space-y-0.5">
+                <dt class="text-[11px] leading-none text-neutral-400">会话 ID</dt>
+                <dd
+                  class="font-mono text-[11px] leading-snug break-all text-neutral-600"
+                  :title="session.acpSessionId"
+                >
+                  {{ session.acpSessionId }}
+                </dd>
+              </div>
+            </dl>
+
+            <!-- 重新连接 -->
+            <button
+              class="mt-2.5 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="reconnecting"
+              @click="onReconnect"
+            >
+              <RefreshCw class="h-3.5 w-3.5" :class="reconnecting && 'animate-spin'" />
+              {{ reconnecting ? '重连中…' : '重新连接' }}
+            </button>
+          </div>
+        </NPopover>
       </div>
     </div>
   </div>

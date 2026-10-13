@@ -2,10 +2,22 @@
 import { X, FileCode2, FileText, File } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
+import { useConversation } from '../../../composables/useConversation'
 import { fileIconKind } from '../../../utils/file'
 
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
+const { closeConnection } = useConversation()
+
+/** 关闭标签：会话标签额外销毁其 ACP 连接（生成中先 cancel，再 session/close + 杀进程，
+ * design §8.3「关标签 = 真正销毁该会话进程」）；
+ * 先读取 tab 的 sessionId 再关，关闭侧效用 fire-and-forget（best-effort） */
+function closeTab(tabId: string) {
+  const tab = workspace.tabs.find((t) => t.id === tabId)
+  const sessionId = tab?.kind === 'session' ? tab.sessionId : null
+  workspace.closeTab(tabId)
+  if (sessionId) void closeConnection(sessionId)
+}
 
 function tabTitle(tabId: string): string {
   const tab = workspace.tabs.find((t) => t.id === tabId)
@@ -79,7 +91,7 @@ function fileIcon(name: string) {
             : 'text-neutral-500 opacity-0 hover:bg-neutral-300/70 hover:text-neutral-800 group-hover:opacity-100 focus-visible:opacity-100'
         "
         title="关闭标签"
-        @click.stop="workspace.closeTab(tab.id)"
+        @click.stop="closeTab(tab.id)"
       >
         <X class="h-3.5 w-3.5" />
       </button>

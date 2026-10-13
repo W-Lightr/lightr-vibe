@@ -64,10 +64,10 @@ const generating = computed(() => workspace.isGenerating(props.session.id))
           </p>
         </div>
 
-        <!-- 生成中提示 -->
+        <!-- 生成中提示：脉冲蓝点 + 微光扫过文字（Shimmer） -->
         <div v-if="generating" class="mb-4 flex items-center gap-2 text-xs text-neutral-400">
           <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
-          正在生成…
+          <span class="shimmer font-medium">正在生成…</span>
         </div>
       </div>
     </div>

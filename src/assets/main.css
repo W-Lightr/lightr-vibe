@@ -73,3 +73,48 @@ body,
   box-shadow: none !important;
   padding: 0 !important;
 }
+
+/* 连接健康浮层：同 usage-popover 的 chrome 剥离策略 */
+.n-popover.connection-popover {
+  --n-color: transparent !important;
+  --n-border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+/* 文字微光扫过（参考 AI Elements Shimmer）：background-clip:text 的渐变扫光。
+ * 纯 CSS 实现（不引入 motion-v 依赖）。文字需为 text-transparent，底色由 --shimmer-base 提供。 */
+.shimmer {
+  --shimmer-base: var(--color-neutral-400, #a3a3a3);
+  --shimmer-hi: var(--color-neutral-600, #525252);
+  background-image: linear-gradient(
+    90deg,
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 35%,
+    var(--shimmer-hi) 50%,
+    var(--shimmer-base) 65%,
+    var(--shimmer-base) 100%
+  );
+  background-size: 250% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-sweep 2s linear infinite;
+}
+@keyframes shimmer-sweep {
+  from {
+    background-position: 100% center;
+  }
+  to {
+    background-position: 0% center;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+    color: var(--shimmer-base);
+    -webkit-text-fill-color: currentColor;
+  }
+}

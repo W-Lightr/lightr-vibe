@@ -28,7 +28,8 @@ pub fn run() {
             fs::fs_write_file,
             fs::fs_read_text,
             fs::fs_write_text,
-            acp::acp_start,
+            acp::acp_connect,
+            acp::acp_disconnect,
             acp::acp_status,
             acp::acp_probe_options,
             acp::agent_model_context_window,
@@ -36,6 +37,7 @@ pub fn run() {
             acp::acp_session_load,
             acp::acp_prompt,
             acp::acp_cancel,
+            acp::acp_session_close,
             acp::acp_set_config,
             acp::acp_respond_permission
         ])

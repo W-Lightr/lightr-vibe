@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ChevronRight,
@@ -31,12 +31,8 @@ const isError = computed(() => props.message.type === 'error')
 const isStreaming = computed(() => props.message.status === 'streaming')
 const generating = computed(() => workspace.isGenerating(props.message.sessionId))
 
-// 思考块折叠态：流式中的思考块默认展开以展示实时推理；其余默认折叠。
-// 仅单向自动展开（不因流结束而收起），避免打断用户正在阅读的内容。
-const thinkingExpanded = ref(isStreaming.value)
-watch(isStreaming, (streaming) => {
-  if (streaming) thinkingExpanded.value = true
-})
+// 思考块折叠态：默认折叠（含流式中），用户点击头部手动展开查看推理内容。
+const thinkingExpanded = ref(false)
 
 /** 错误卡「去设置」按钮：dead（进程/未安装）与 auth（凭据）两类错误引导跳设置页（PRD R4） */
 const showSettingsLink = computed(

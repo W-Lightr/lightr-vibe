@@ -57,12 +57,17 @@ function mockConfigOptions(): AcpConfigOption[] {
   ]
 }
 
+/** 已「连接」的 mock 会话（connId = 本地会话 id）：connect/disconnect 幂等（design §8.1） */
+const connectedSessions = new Set<string>()
+
+/** 每个 mock 会话的 AbortController（按 connId 键；每会话一进程语义） */
 const activeControllers = new Map<string, AbortController>()
 const pendingPermissions = new Map<string, () => void>()
 let permSeq = 0
 
 /** 模拟一次 tool_call 的权限请求（对应真实 session/request_permission） */
 function simulatePermission(
+  connId: string,
   sessionId: string,
   toolCallId: string,
   title: string,
@@ -70,6 +75,7 @@ function simulatePermission(
 ): void {
   const requestId = `mock-perm-${++permSeq}`
   const event: AcpPermissionEvent = {
+    connId,
     requestId,
     sessionId,
     toolCall: {
@@ -90,7 +96,8 @@ function simulatePermission(
 }
 
 export const acpMock = {
-  async start(): Promise<AcpStartResult> {
+  async connect(sessionId: string): Promise<AcpStartResult> {
+    connectedSessions.add(sessionId)
     return {
       status: 'ready',
       protocolVersion: 1,
@@ -98,15 +105,23 @@ export const acpMock = {
     }
   },
 
-  async status(): Promise<AcpStatusEvent & { agentInfo?: { name: string; version: string } | null }> {
-    return { status: 'ready', agentInfo: { name: 'OpenCode (mock)', version: 'mock' } }
+  async disconnect(sessionId: string): Promise<void> {
+    connectedSessions.delete(sessionId)
+    activeControllers.get(sessionId)?.abort()
   },
 
-  async sessionNew(_cwd: string): Promise<AcpSessionResult> {
+  async status(connId: string): Promise<AcpStatusEvent & { agentInfo?: { name: string; version: string } | null }> {
+    if (connectedSessions.has(connId)) {
+      return { connId, status: 'ready', agentInfo: { name: 'OpenCode (mock)', version: 'mock' } }
+    }
+    return { connId, status: 'stopped' }
+  },
+
+  async sessionNew(_connId: string, _cwd: string): Promise<AcpSessionResult> {
     return { sessionId: createId('ses-mock'), configOptions: mockConfigOptions() }
   },
 
-  async sessionLoad(acpSessionId: string, _cwd: string): Promise<AcpSessionResult> {
+  async sessionLoad(_connId: string, acpSessionId: string, _cwd: string): Promise<AcpSessionResult> {
     return { sessionId: acpSessionId, configOptions: mockConfigOptions() }
   },
 
@@ -121,10 +136,11 @@ export const acpMock = {
    * cancel() 通过 AbortController 中断，按真实语义返回 stopReason:'cancelled'（probe §4）。
    * 工具形态随输入：含「写」→ write_file（改写类，plan 模式会被拒绝），
    * 否则 read_file（只读，plan 模式放行）——保证浏览器 dev 可演示权限三模式（AC8）。
+   * connId = 本地会话 id（每会话一进程语义）；sessionId = agent-side id（消息归属）。
    */
-  async prompt(sessionId: string, text: string): Promise<AcpPromptResult> {
+  async prompt(connId: string, sessionId: string, text: string): Promise<AcpPromptResult> {
     const controller = new AbortController()
-    activeControllers.set(sessionId, controller)
+    activeControllers.set(connId, controller)
     let outputTokens = 0
     let permissionTriggered = false
     const isWrite = text.includes('写')
@@ -138,6 +154,7 @@ export const acpMock = {
         onDelta: (messageId, delta) => {
           outputTokens += delta.length
           dispatchUpdate({
+            connId,
             sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
@@ -150,6 +167,7 @@ export const acpMock = {
           switch (event.kind) {
             case 'thinking-start':
               dispatchUpdate({
+                connId,
                 sessionId,
                 update: {
                   sessionUpdate: 'agent_thought_chunk',
@@ -160,6 +178,7 @@ export const acpMock = {
               break
             case 'thinking-delta':
               dispatchUpdate({
+                connId,
                 sessionId,
                 update: {
                   sessionUpdate: 'agent_thought_chunk',
@@ -178,6 +197,7 @@ export const acpMock = {
               const name = isWrite ? 'write_file' : tc.name
               const kind = isWrite ? 'edit' : 'read'
               dispatchUpdate({
+                connId,
                 sessionId,
                 update: {
                   sessionUpdate: 'tool_call',
@@ -190,12 +210,13 @@ export const acpMock = {
               })
               if (!permissionTriggered) {
                 permissionTriggered = true
-                simulatePermission(sessionId, tc.id, name, kind)
+                simulatePermission(connId, sessionId, tc.id, name, kind)
               }
               break
             }
             case 'tool-end':
               dispatchUpdate({
+                connId,
                 sessionId,
                 update: {
                   sessionUpdate: 'tool_call_update',
@@ -207,6 +228,7 @@ export const acpMock = {
               break
             case 'reply-start':
               dispatchUpdate({
+                connId,
                 sessionId,
                 update: {
                   sessionUpdate: 'agent_message_chunk',
@@ -217,6 +239,7 @@ export const acpMock = {
               break
             case 'reply-end':
               dispatchUpdate({
+                connId,
                 sessionId,
                 update: {
                   sessionUpdate: 'usage_update',
@@ -246,27 +269,33 @@ export const acpMock = {
       }
       throw err
     } finally {
-      activeControllers.delete(sessionId)
+      activeControllers.delete(connId)
     }
   },
 
-  async cancel(sessionId: string): Promise<void> {
-    activeControllers.get(sessionId)?.abort()
+  async cancel(connId: string, _sessionId: string): Promise<void> {
+    activeControllers.get(connId)?.abort()
+  },
+
+  /** 关闭会话（session/close）：mock 无 agent 侧会话注册表，no-op */
+  async closeSession(_connId: string, _sessionId: string): Promise<void> {
+    // mock 通道无需释放任何资源
   },
 
   async setConfig(
+    _connId: string,
     _sessionId: string,
-    _configId: string,
+    configId: string,
     value: string,
   ): Promise<{ configOptions: AcpConfigOption[] }> {
     const options = mockConfigOptions()
     for (const opt of options) {
-      if (opt.id === _configId) opt.currentValue = value
+      if (opt.id === configId) opt.currentValue = value
     }
     return { configOptions: options }
   },
 
-  async respondPermission(requestId: string, _optionId: string | null): Promise<void> {
+  async respondPermission(_connId: string, requestId: string, _optionId: string | null): Promise<void> {
     pendingPermissions.get(requestId)?.()
   },
 

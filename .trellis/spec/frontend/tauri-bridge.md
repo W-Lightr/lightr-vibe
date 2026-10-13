@@ -167,6 +167,16 @@ cross-platform native dialog; do not re-implement picking in Rust.
 
 ## ACP session events (`src-tauri/src/acp.rs`, task 10-08-opencode-acp-chat)
 
+**Process model: one `opencode acp` process + one connection PER SESSION** (aligned
+with codeg; supersedes the earlier single long-lived process multi-session design).
+Rust keeps `static CONNS: Mutex<HashMap<String, Arc<AcpConn>>>` keyed by **connId =
+local session id** (`ses-xxxxxxxx`). `acp_connect(sessionId)` spawns+initializes the
+session's own process (idempotent, per-session start lock); `acp_disconnect(sessionId)`
+kills it (close stdin → ≤2s → kill). Closing a tab kills that session's process.
+A background **idle sweep** thread (every ~15s) disconnects connections idle ≥
+`LIGHTR_ACP_IDLE_TIMEOUT_SECS` (default 180, `0` = off) when not busy (no pending
+request / pending permission).
+
 - Transport: **newline-delimited JSON-RPC 2.0 over stdio** (no Content-Length).
   One `writeln!` of compact JSON per message; blank/non-JSON lines are skipped.
 - Rust routes stdout lines three ways: response (has `id` **and** no `method`) →
@@ -176,15 +186,17 @@ cross-platform native dialog; do not re-implement picking in Rust.
 - **JSON-RPC ids are preserved as raw `Value`** — agent may legitimately use
   string ids. Never model an incoming id as `u64`, and never treat `id: null`
   as a response.
-- Events emitted: `acp://update` `{sessionId, update}` · `acp://permission`
-  `{requestId, sessionId, toolCall, options}` · `acp://status` `{status, reason}`.
+- Events **carry `connId`** (local session id) so the frontend routes per connection:
+  `acp://update` `{connId, sessionId, update}` · `acp://permission`
+  `{connId, requestId, sessionId, toolCall, options}` ·
+  `acp://status` `{connId, status, reason}`.
 
-> **Critical gotcha**: the `sessionId` on ACP events is the **agent-side** id
-> (`ses_xxx` from opencode), while local sessions use `createId('ses')` ids
-> (`ses-xxxxxxxx`). Every consumer must map through
-> `sessionStore.findByAcpSessionId()` before touching local state. Skipping this
-> mapping silently drops all streaming updates and makes permission cards never
-> appear (both were real bugs found in review).
+> **Critical mapping rule**: `connId` is the **local** session id (`ses-xxxxxxxx`,
+> matches the frontend `session.id`); `sessionId` is the **agent-side** id
+> (`ses_xxx`, used only as the `session/*` method argument and for message
+> attribution). Route updates/permissions by `connId` (`sessionStore.get(connId)`),
+> NOT by `findByAcpSessionId` — the events no longer need that reverse lookup.
+> A dead/stopped status affects **only that connId's** session (never clears all).
 
 Other ACP behaviors worth keeping:
 
@@ -199,14 +211,53 @@ Other ACP behaviors worth keeping:
   The first `session/new` on a cold agent takes 8–13s (model enumeration).
 - Always `create_dir_all(cwd)` before `session/new` — the protocol requires an
   existing absolute cwd.
+- Command surface (all take `connId`, camelCase params): `acp_connect`,
+  `acp_disconnect`, `acp_status`, `acp_session_new(connId, cwd)`,
+  `acp_session_load(connId, acpSessionId, cwd)`,
+  `acp_prompt(connId, sessionId, text)`, `acp_cancel(connId, sessionId)`,
+  `acp_session_close(connId, sessionId)`,
+  `acp_set_config(connId, sessionId, configId, value)`,
+  `acp_respond_permission(connId, requestId, optionId?)`.
+
+### Per-session invariants (verify on every ACP change)
+
+These are the contracts that make «one process per session» correct. Each was
+validated in review; a regression in any of them silently breaks multi-session
+isolation.
+
+1. **Route strictly by `connId`.** Every event handler (`applyUpdate`,
+   `onStatus`, permission queue) resets/targets state via `sessionStore.get(connId)`.
+   Never map an agent-side `sessionId` back to a local session — that reverse
+   lookup (`findByAcpSessionId`) was deleted on purpose.
+2. **Per-session tool-call host key.** `toolCallHosts` is keyed by the composite
+   `connId:toolCallId` — two sessions' agents may emit the *same* `toolCallId`,
+   and a bare-id key would patch the wrong session's message.
+3. **`closeConnection` = kill that process.** Generating → `session/cancel` first,
+   then `acp_disconnect(sessionId)` (close stdin → ≤2s → kill → remove → emit
+   `acp://status {connId, stopped}`). Closing a tab / deleting a session must
+   reach this path.
+4. **`dead` is scoped.** A reader-loop EOF clears only that conn and emits
+   `acp://status {connId, dead}`; every other session stays connected. `mark_dead`
+   must never clear the whole registry.
+5. **Health chip is per-session.** `connecting`/`connected` are derived from the
+   local session id's membership in the live set (`liveAcpSessions`), plus a
+   per-session connecting mirror (`acpConnectingSessionIds`). No global
+   `acpConnecting` bool may drive a chip.
+6. **Concurrent connect dedup.** Rust holds a per-session start lock and re-checks
+   `CONNS` under it; the frontend shares an in-flight promise per session
+   (`connectInFlight`). Two rapid connects must spawn exactly one process.
+7. **`StatusResult` carries `connId`.** `acp_status` returns `connId` so the TS
+   type (`AcpStatusEvent`) is honest; keep Rust and TS field-for-field.
+8. **Idle sweep.** 180s default (env `LIGHTR_ACP_IDLE_TIMEOUT_SECS`, `0` = off);
+   only disconnects when connected AND not generating AND no pending
+   request/permission. Activity (prompt / update / permission) refreshes the timer.
 
 ### Process spawn (`build_acp_command`)
 
-Both the long-lived connection (`start_inner`) and the one-shot probe
-(`probe_options_inner`) build the child through **one** helper,
-`build_acp_command()` (`resolve_spawn()` → real exe or `cmd /C opencode acp`,
-piped stdio, `CREATE_NO_WINDOW` on Windows). It **removes
-`OPENCODE_SERVER_USERNAME` / `OPENCODE_SERVER_PASSWORD`** from the child env.
+Every connection (`connect_inner`) and the one-shot probe (`probe_options_inner`)
+build the child through **one** helper, `build_acp_command()` (`resolve_spawn()` →
+real exe or `cmd /C opencode acp`, piped stdio, `CREATE_NO_WINDOW` on Windows). It
+**removes `OPENCODE_SERVER_USERNAME` / `OPENCODE_SERVER_PASSWORD`** from the child env.
 
 > **Gotcha**: those two vars are exported by *another* running opencode instance
 > and leak into our spawned `opencode acp`. With them present, opencode's free
@@ -219,7 +270,7 @@ piped stdio, `CREATE_NO_WINDOW` on Windows). It **removes
 
 `acp_probe_options(cwd?)` spawns a **throwaway** `opencode acp`, runs
 `initialize` → `session/new`, returns `configOptions`, then closes stdin and
-reaps the child. It never touches the global `conn_slot`, never emits `acp://*`,
+reaps the child. It never touches the `CONNS` registry, never emits `acp://*`,
 and must reap on **every** path (a real timeout via a reader thread + `mpsc`,
 not a blocking `read_line`). The frontend caches the result per agent and calls
 it on session open / manual refresh so the model dropdown has real values before

@@ -147,12 +147,6 @@ export const useSessionStore = defineStore('session', () => {
     return id ? (byId.value.get(id) ?? null) : null
   }
 
-  /** 按 ACP 会话 ID 反查本地会话：acp://update 与 acp://permission 事件携带的
-   * 是 ACP 侧 sessionId（opencode 的 ses_xxx），不是本地会话 id，消费前必须先映射 */
-  function findByAcpSessionId(acpSessionId: string): Session | null {
-    return sessions.value.find((s) => s.acpSessionId === acpSessionId) ?? null
-  }
-
   // ---- 持久化 ----
 
   async function persistIndex(): Promise<void> {
@@ -411,7 +405,6 @@ export const useSessionStore = defineStore('session', () => {
     sessions,
     loaded,
     get,
-    findByAcpSessionId,
     load,
     ensureMessages,
     createSession,

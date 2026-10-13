@@ -107,3 +107,66 @@ src/views/coding/components/
 - 权限三模式各一用例 + 「总是允许」命中用例。
 - 持久化往返：发消息→杀进程→重启→历史可见→继续发送。
 - 进程死亡注入（taskkill）→ status dead → 会话 error 卡 → 重启恢复。
+
+---
+
+## 8. 架构变更：单进程多会话 → 每会话一进程（对齐 codeg）
+
+> 用户决策（本次）：**完全对齐 codeg = 每会话一个独立 `opencode acp` 进程 + 独立连接**；
+> 关标签杀该会话进程；空闲自动断连（idle sweep）杀进程；重启后 `session/load` 恢复。
+> **取代原 D1（长驻单进程多会话）。** 第 2/3 节中「全局单 `conn_slot`」的描述作废，改为下述模型。
+
+### 8.1 进程/连接模型（Rust）
+
+- **连接仓库**：`static CONNS: Mutex<HashMap<String, Arc<AcpConn>>>`，键 = **本地会话 id**
+  （`ses-xxxxxxxx`，前端可见、稳定）；删除 `conn_slot()` 单例。
+  `AcpConn` 结构不变（child/stdin/pending/pending_perm/agent_info/stderr_tail/dead），
+  新增 `last_activity_at: Mutex<Instant>`。
+- **命令面加 `connId` 维**：`acp_start` 改为 `acp_connect(sessionId)`（为该会话 spawn +
+  initialize，幂等）；`acp_session_new(sessionId, cwd)` / `acp_session_load(connId,
+  acpSessionId, cwd)` / `acp_prompt(connId, sessionId, text)` / `acp_cancel(connId, sessionId)`
+  / `acp_set_config(connId, sessionId, ...)` / `acp_respond_permission(connId, requestId, ...)`
+  / `acp_session_close(connId, sessionId)` / `acp_disconnect(connId)`（杀该会话进程）。
+- **事件带 connId**：`acp://update {connId, sessionId, update}`、`acp://permission
+  {connId, ...}`、`acp://status {connId, status, reason}` —— 前端按 connId 精确路由，
+  不再依赖全局 agent-side id 反查（仍保留 agent-side sessionId 做消息归属）。
+- **死亡**：某 conn 读线程 EOF → 只清该 conn + emit `acp://status {connId, dead}`，
+  **不影响其它会话**。
+- **`shutdown()`**：遍历所有 conn 关闭 stdin（app 退出清理）。
+
+### 8.2 空闲自动断连（idle sweep，对齐 codeg）
+
+- 后台定时任务（`std::thread` 循环 or tauri async task）每 ~15s 扫一次；
+  **空闲超时默认 180s**（对齐 codeg `DEFAULT_IDLE_TIMEOUT_SECS=180`），可用环境变量
+  `LIGHTR_ACP_IDLE_TIMEOUT_SECS` 覆盖，`0` = 关闭。
+- 断连条件（全部满足）：`connected` 且 **非 generating**、无 pending permission、
+  `now - last_activity_at >= timeout`。命中 → `acp_disconnect(connId)`（杀进程）。
+- 活动计时：任何 prompt 发送 / `session/update` 到达 / permission 交互都刷新
+  `last_activity_at`。
+- 重开：前端再次发送/打开时 `acp_connect` 重新 spawn + `session/load` 恢复。
+
+### 8.3 前端
+
+- `useConversation`：`liveAcpSessions` 语义从「agent-side id 集合」改为「本地会话 id 已连集合」；
+  连/断以本地会话 id 为键。`ensureConnected(sessionId)` → `acpService.connect(sessionId)`。
+- 关标签：`closeConnection(sessionId)` → `acp_disconnect(sessionId)`（杀进程）+ 清 live；
+  生成中先 `stop()`。**语义 = 真正销毁该会话进程**（用户诉求）。
+- 健康芯片：`sessionConnected` = 本地会话 id ∈ live；`connecting` 同上；**每连接独立**，
+  不再有"进程级 ready 覆盖全会话"的问题。
+- `acp_probe_options`（一次性探针）**保留**（建连前拿模型列表；每会话建连后也可复用其返回的
+  configOptions，无需额外探针）。
+- 持久化不变：`sessions-index.json` 记 `acpSessionId`；重启后各会话首次打开时
+  `acp_connect` + `session/load`。
+
+### 8.4 兼容/回滚
+
+- 回滚 = `acp.rs` 恢复 `conn_slot` 单例（整模块差异可 revert）；前端 service 命令签名同步还原。
+- 不改协议语义（仍 newline JSON-RPC/同一方法集），仅传输路由加 connId 维。
+
+### 8.5 风险
+
+- 资源：N 会话 = N 进程；空闲回收缓解（180s）。
+- 并发 spawn 去重：同一会话并发 `acp_connect` 需按 sessionId 串行（复用 START_LOCK 思路，
+  改为 per-connId 锁）。
+- Windows 杀进程：`child.kill()` 对 `cmd /C` 回退链可能杀不到真身 → 优先直 spawn 真身 exe
+  （现状已如此）。

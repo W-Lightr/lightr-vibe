@@ -58,22 +58,29 @@ export function disposeAcpListeners(): void {
 }
 
 export const acpService = {
-  /** 启动 ACP 进程（幂等）：spawn + initialize 握手 */
-  async start(): Promise<AcpStartResult> {
-    if (!isTauri()) return acpMock.start()
-    return invoke<AcpStartResult>('acp_start')
+  /** 建立/复用某会话的 ACP 连接（幂等）：为该 connId(本地会话 id) spawn 独立进程 +
+   *  initialize 握手（design §8.1 每会话一进程）。 */
+  async connect(sessionId: string): Promise<AcpStartResult> {
+    if (!isTauri()) return acpMock.connect(sessionId)
+    return invoke<AcpStartResult>('acp_connect', { sessionId })
   },
 
-  /** 查询进程状态（ready / dead / stopped + 原因） */
-  async status(): Promise<AcpStatusEvent & { agentInfo?: { name: string; version: string } | null }> {
-    if (!isTauri()) return acpMock.status()
-    return invoke('acp_status')
+  /** 断开某会话连接（杀该会话进程）：关标签/删除会话时调用；幂等（不存在 no-op） */
+  async disconnect(sessionId: string): Promise<void> {
+    if (!isTauri()) return acpMock.disconnect(sessionId)
+    await invoke('acp_disconnect', { sessionId })
+  },
+
+  /** 查询某会话连接状态（ready / dead / stopped + 原因） */
+  async status(connId: string): Promise<AcpStatusEvent & { agentInfo?: { name: string; version: string } | null }> {
+    if (!isTauri()) return acpMock.status(connId)
+    return invoke('acp_status', { connId })
   },
 
   /** 新建 ACP 会话（首调 7.6-8.9s，Rust 侧 30s 超时） */
-  async sessionNew(cwd: string): Promise<AcpSessionResult> {
-    if (!isTauri()) return acpMock.sessionNew(cwd)
-    return invoke<AcpSessionResult>('acp_session_new', { cwd })
+  async sessionNew(connId: string, cwd: string): Promise<AcpSessionResult> {
+    if (!isTauri()) return acpMock.sessionNew(connId, cwd)
+    return invoke<AcpSessionResult>('acp_session_new', { connId, cwd })
   },
 
   /** 一次性探针：throwaway 进程跑 initialize + session/new 取 configOptions
@@ -86,39 +93,52 @@ export const acpService = {
   },
 
   /** 重载 ACP 会话（load 失败由调用方走「新建+已重连」路径，design §4） */
-  async sessionLoad(acpSessionId: string, cwd: string): Promise<AcpSessionResult> {
-    if (!isTauri()) return acpMock.sessionLoad(acpSessionId, cwd)
-    return invoke<AcpSessionResult>('acp_session_load', { acpSessionId, cwd })
+  async sessionLoad(connId: string, acpSessionId: string, cwd: string): Promise<AcpSessionResult> {
+    if (!isTauri()) return acpMock.sessionLoad(connId, acpSessionId, cwd)
+    return invoke<AcpSessionResult>('acp_session_load', { connId, acpSessionId, cwd })
   },
 
-  /** 发送 prompt（长请求：流式内容走 acp://update 事件，turn 结束才 resolve） */
-  async prompt(sessionId: string, text: string): Promise<AcpPromptResult> {
-    if (!isTauri()) return acpMock.prompt(sessionId, text)
-    return invoke<AcpPromptResult>('acp_prompt', { sessionId, text })
+  /** 发送 prompt（长请求：流式内容走 acp://update 事件，turn 结束才 resolve）。
+   * connId = 本地会话 id（定位进程）；sessionId = agent-side id（方法参数）。 */
+  async prompt(connId: string, sessionId: string, text: string): Promise<AcpPromptResult> {
+    if (!isTauri()) return acpMock.prompt(connId, sessionId, text)
+    return invoke<AcpPromptResult>('acp_prompt', { connId, sessionId, text })
   },
 
   /** 停止：session/cancel notification（无响应；pending permission 由 Rust 回 cancelled） */
-  async cancel(sessionId: string): Promise<void> {
-    if (!isTauri()) return acpMock.cancel(sessionId)
-    await invoke('acp_cancel', { sessionId })
+  async cancel(connId: string, sessionId: string): Promise<void> {
+    if (!isTauri()) return acpMock.cancel(connId, sessionId)
+    await invoke('acp_cancel', { connId, sessionId })
+  },
+
+  /** 关闭 ACP 会话（session/close）：释放 agent 侧会话资源，连接（进程）保持存活。
+   * 连接销毁走 acp_disconnect。sessionId 为 ACP 侧 id（ses_xxx）。 */
+  async closeSession(connId: string, sessionId: string): Promise<void> {
+    if (!isTauri()) return acpMock.closeSession(connId, sessionId)
+    await invoke('acp_session_close', { connId, sessionId })
   },
 
   /** 切换会话配置（model/mode）→ 返回归一化后的全量 configOptions（协议 §8） */
   async setConfig(
+    connId: string,
     sessionId: string,
     configId: string,
     value: string,
   ): Promise<AcpConfigOption[] | null> {
     const raw = !isTauri()
-      ? await acpMock.setConfig(sessionId, configId, value)
-      : await invoke('acp_set_config', { sessionId, configId, value })
+      ? await acpMock.setConfig(connId, sessionId, configId, value)
+      : await invoke('acp_set_config', { connId, sessionId, configId, value })
     return extractConfigOptions(raw)
   },
 
   /** 答复权限请求；optionId 为 null = cancelled 语义 */
-  async respondPermission(requestId: string, optionId: string | null): Promise<void> {
-    if (!isTauri()) return acpMock.respondPermission(requestId, optionId)
-    await invoke('acp_respond_permission', { requestId, optionId })
+  async respondPermission(
+    connId: string,
+    requestId: string,
+    optionId: string | null,
+  ): Promise<void> {
+    if (!isTauri()) return acpMock.respondPermission(connId, requestId, optionId)
+    await invoke('acp_respond_permission', { connId, requestId, optionId })
   },
 
   /** 按 provider/model 解析上下文窗口（limit.context）：用户 opencode 配置 → models.dev

@@ -18,6 +18,7 @@ import {
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
 import { useProjectStore } from '../../../stores/project'
+import { useConversation } from '../../../composables/useConversation'
 import { canPickFolder, fsService, projectNameFromPath } from '../../../services/fsService'
 import { formatRelativeTime } from '../../../utils/time'
 import SessionItem from './SessionItem.vue'
@@ -26,6 +27,7 @@ import type { Session } from '../../../types/session'
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
+const { closeConnection } = useConversation()
 const message = useMessage()
 
 /** 原生目录对话框仅桌面端可用；浏览器 dev 环境按钮禁用态（R1） */
@@ -111,6 +113,8 @@ function createTmpSession() {
 }
 
 function removeSession(id: string) {
+  // 删除会话前销毁其 ACP 连接（生成中先 cancel，再 session/close + 杀进程）
+  void closeConnection(id)
   sessionStore.deleteSession(id)
   workspace.forgetSession(id)
 }
