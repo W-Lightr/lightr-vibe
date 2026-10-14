@@ -65,7 +65,9 @@ const activeControllers = new Map<string, AbortController>()
 const pendingPermissions = new Map<string, () => void>()
 let permSeq = 0
 
-/** 模拟一次 tool_call 的权限请求（对应真实 session/request_permission） */
+/** 模拟一次 tool_call 的权限请求（对应真实 session/request_permission）。
+ *  携带富 `_meta`（title/description/defaultToNo + 选项 changes）与 edit 的补丁 rawInput，
+ *  使浏览器 dev 能看到富权限卡（AC9）。 */
 function simulatePermission(
   connId: string,
   sessionId: string,
@@ -74,6 +76,13 @@ function simulatePermission(
   kind: 'read' | 'edit' | 'execute' = 'execute',
 ): void {
   const requestId = `mock-perm-${++permSeq}`
+  const isEdit = kind === 'edit'
+  const diffPatch = isEdit
+    ? {
+        file_path: 'src/demo.ts',
+        patch: '@@ -1,3 +1,4 @@\n function greet() {\n-  return "hi"\n+  const x = 1\n+  return "hi"\n }',
+      }
+    : undefined
   const event: AcpPermissionEvent = {
     connId,
     requestId,
@@ -83,13 +92,32 @@ function simulatePermission(
       title,
       kind,
       status: 'pending',
-      rawInput: { command: `echo ${title}` },
+      rawInput: isEdit ? diffPatch : { command: `echo ${title}` },
     },
     options: [
-      { optionId: 'allow_once', name: '允许一次', kind: 'allow_once' },
-      { optionId: 'allow_always', name: '本会话总是允许', kind: 'allow_always' },
+      {
+        optionId: 'allow_once',
+        name: '允许一次',
+        kind: 'allow_once',
+        meta: { permission: { version: 1, changes: [{ description: isEdit ? '修改 src/demo.ts' : '执行该命令', lifetime: { scope: 'session' } }] } },
+      },
+      {
+        optionId: 'allow_always',
+        name: '本会话总是允许',
+        kind: 'allow_always',
+        meta: { permission: { version: 1, changes: [{ description: isEdit ? '本会话内允许所有编辑' : '本会话内允许所有命令', lifetime: { scope: 'persistent', storage: 'project' } }] } },
+      },
       { optionId: 'reject_once', name: '拒绝', kind: 'reject_once' },
     ],
+    // 请求级 _meta：title/description/defaultToNo（execute 演示「不该误触批准」）
+    meta: {
+      permission: {
+        version: 1,
+        title: isEdit ? '是否修改文件？' : '是否运行命令？',
+        description: isEdit ? 'Agent 想要改写 src/demo.ts' : `Agent 想要执行：echo ${title}`,
+        defaultToNo: !isEdit,
+      },
+    },
   }
   pendingPermissions.set(requestId, () => pendingPermissions.delete(requestId))
   dispatchPermission(event)

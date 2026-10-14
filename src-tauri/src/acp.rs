@@ -347,14 +347,23 @@ fn handle_client_request(
             .lock()
             .unwrap()
             .insert(request_id.clone(), (id, session_id.clone()));
+        // toolCall 原样透传；顺带对 rawInput 注入 `_start_line`（best-effort，仅供前端 diff 定位；
+        // 失败保持原值，不阻断事件，不 host 任何 fs/terminal）。
+        let mut tool_call = params
+            .and_then(|p| p.get("toolCall"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        inject_raw_input_start_line_into(&mut tool_call);
         let _ = app.emit(
             "acp://permission",
             json!({
                 "connId": conn.conn_id,
                 "requestId": request_id,
                 "sessionId": session_id,
-                "toolCall": params.and_then(|p| p.get("toolCall")).cloned().unwrap_or(Value::Null),
+                "toolCall": tool_call,
                 "options": params.and_then(|p| p.get("options")).cloned().unwrap_or(Value::Null),
+                // 请求级 `_meta`（title/description/defaultToNo）原样透传，前端解析；缺失 → null
+                "meta": params.and_then(|p| p.get("_meta")).cloned().unwrap_or(Value::Null),
             }),
         );
         return;
@@ -381,6 +390,44 @@ fn handle_client_request(
             "error": { "code": -32601, "message": format!("method not found: {}", method) }
         }),
     );
+}
+
+/// 对 toolCall 就地注入 `_start_line`（best-effort）：仅当 toolCall 是 object 且其
+/// `rawInput` 可解析出补丁/文件文本时。任何失败都保持原值，不阻断事件。
+fn inject_raw_input_start_line_into(tool_call: &mut Value) {
+    let Some(obj) = tool_call.as_object_mut() else {
+        return;
+    };
+    let Some(raw) = obj.get("rawInput").cloned() else {
+        return;
+    };
+    let injected = inject_raw_input_start_line(&raw);
+    obj.insert("rawInput".into(), injected);
+}
+
+/// 纯函数：从 `rawInput` 求带 `_start_line` 的形状（best-effort，仿 codeg
+/// `inject_start_line` 的最小面）。规则：
+/// - object：若已有 `_start_line` 则原样返回；否则不动（行号需 cwd/文件解析，本地无 fs）。
+/// - string 且含 `@@`（unified patch）：尝试 parse 为 JSON 对象；成功则递归处理，失败保持原串。
+/// - 其他（null/number/bool/数组/无补丁字符串）：原样返回。
+///
+/// 注：本项目不 host `fs/*`，不做真实行号解析；这里只保证「补丁字符串可被前端 diff 视图读取」
+/// 的稳定形状，真正的 ± 行由前端按 diff 文本渲染。
+fn inject_raw_input_start_line(raw: &Value) -> Value {
+    match raw {
+        Value::Object(_) => raw.clone(),
+        Value::String(text) => {
+            if text.contains("@@") {
+                match serde_json::from_str::<Value>(text) {
+                    Ok(parsed @ Value::Object(_)) => parsed,
+                    _ => raw.clone(),
+                }
+            } else {
+                raw.clone()
+            }
+        }
+        _ => raw.clone(),
+    }
 }
 
 /// $/cancel_request 兜底：按被取消请求的 JSON-RPC id 找 pending_perm 中对应条目，
@@ -1368,6 +1415,60 @@ fn respond_permission_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inject_raw_input_start_line_leaves_non_patch_untouched() {
+        // null / number / bool / 无补丁字符串 / 数组：原样
+        assert_eq!(inject_raw_input_start_line(&Value::Null), Value::Null);
+        assert_eq!(inject_raw_input_start_line(&json!(42)), json!(42));
+        assert_eq!(inject_raw_input_start_line(&json!(true)), json!(true));
+        assert_eq!(inject_raw_input_start_line(&json!("plain text")), json!("plain text"));
+        assert_eq!(inject_raw_input_start_line(&json!([1, 2])), json!([1, 2]));
+    }
+
+    #[test]
+    fn inject_raw_input_start_line_keeps_object_as_is() {
+        // object 原样返回（不 host fs，不做行号解析）
+        let obj = json!({"file_path": "a.rs", "old_string": "x", "new_string": "y"});
+        assert_eq!(inject_raw_input_start_line(&obj), obj);
+    }
+
+    #[test]
+    fn inject_raw_input_start_line_parses_patch_string() {
+        // 含 `@@` 且可 parse 为对象的 JSON 字符串 → 转为对象
+        let patch = json!({
+            "file_path": "a.rs",
+            "patch": "@@ -1,2 +1,2 @@\n-old\n+new\n"
+        });
+        let raw = Value::String(patch.to_string());
+        assert_eq!(inject_raw_input_start_line(&raw), patch);
+    }
+
+    #[test]
+    fn inject_raw_input_start_line_keeps_unparseable_patch_string() {
+        // 含 `@@` 但 parse 失败 → 保持原串
+        let raw = json!("@@ -1 +1 @@ not json");
+        assert_eq!(inject_raw_input_start_line(&raw), raw);
+    }
+
+    #[test]
+    fn inject_raw_input_start_line_into_only_touches_object_toolcall() {
+        // toolCall 非 object：不动
+        let mut not_obj = json!("nope");
+        inject_raw_input_start_line_into(&mut not_obj);
+        assert_eq!(not_obj, json!("nope"));
+
+        // toolCall 无 rawInput：不动
+        let mut no_raw = json!({"toolCallId": "t1"});
+        inject_raw_input_start_line_into(&mut no_raw);
+        assert_eq!(no_raw, json!({"toolCallId": "t1"}));
+
+        // toolCall 有 rawInput：就地替换
+        let patch = json!({"file_path": "a.rs", "patch": "@@ -1 +1 @@\n-a\n+b"});
+        let mut tc = json!({"toolCallId": "t1", "rawInput": patch.to_string()});
+        inject_raw_input_start_line_into(&mut tc);
+        assert_eq!(tc.get("rawInput"), Some(&patch));
+    }
 
     #[test]
     fn classify_routes_three_ways() {

@@ -116,7 +116,11 @@ export interface AcpConfigOption {
 export interface AcpPermissionOption {
   optionId: string
   name?: string
-  kind?: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always'
+  /** 选项语义：allow_once/allow_always/reject_once/reject_always（未知 agent 可能给别的）
+   *  —— 回应时按此优先级挑选项，不按数组顺序 */
+  kind?: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always' | string
+  /** 选项级 `_meta`（含 `permission.changes[]`：选中该选项会授予什么/持续多久） */
+  meta?: unknown
 }
 
 export interface AcpPermissionEvent {
@@ -126,6 +130,9 @@ export interface AcpPermissionEvent {
   sessionId: string
   toolCall: AcpToolCallUpdate
   options: AcpPermissionOption[]
+  /** 请求级 `_meta`（`permission.{title,description,defaultToNo}` / `claudeCode.title`）；
+   *  缺失 → 事件里为 null */
+  meta?: unknown
 }
 
 /** Rust 命令返回（camelCase，tauri-bridge spec §2） */

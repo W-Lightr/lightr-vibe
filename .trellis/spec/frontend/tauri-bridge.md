@@ -188,7 +188,7 @@ request / pending permission).
   as a response.
 - Events **carry `connId`** (local session id) so the frontend routes per connection:
   `acp://update` `{connId, sessionId, update}` · `acp://permission`
-  `{connId, requestId, sessionId, toolCall, options}` ·
+  `{connId, requestId, sessionId, toolCall, options, meta}` ·
   `acp://status` `{connId, status, reason}`.
 
 > **Critical mapping rule**: `connId` is the **local** session id (`ses-xxxxxxxx`,
@@ -197,6 +197,37 @@ request / pending permission).
 > attribution). Route updates/permissions by `connId` (`sessionStore.get(connId)`),
 > NOT by `findByAcpSessionId` — the events no longer need that reverse lookup.
 > A dead/stopped status affects **only that connId's** session (never clears all).
+
+### Permission-card richness (`_meta.permission`, task 10-14-acp-permission-rich)
+
+ACP permission requests carry agent-authored rich data the card must surface. The
+Rust bridge **passes it through verbatim** — it never interprets it:
+
+- **Request-level `_meta`** → the `acp://permission` event's `meta` field
+  (`params._meta` cloned, `null` when absent). Holds
+  `permission.{title, description, defaultToNo}` and `claudeCode.title`.
+- **Option-level `_meta`** stays inside each entry of the `options` array
+  (`PermissionOption.meta`) — `permission.{version:1, changes[]|description}`.
+- **`toolCall.rawInput`** is forwarded as-is, except the bridge applies a
+  best-effort `inject_raw_input_start_line_into` (no fs access): a `@@`-bearing
+  JSON **string** is parsed to an object so the frontend diff view can read it;
+  anything else is left untouched. It never throws.
+
+**Frontend owner**: all decoding lives in **one** pure module,
+`src/utils/permissionMeta.ts` (`parsePermissionTitle` / `parsePermissionDescription`
+/ `isDefaultToNo` / `parsePermissionCommand` / `parseOptionChanges` / `extractDiff`
+/ `optionLabel`). `PermissionCard.vue` must import these, never re-parse `_meta`
+inline (code-reuse rule). Parsers are **strict**: `_meta.permission` is honoured
+only when `version === 1`; `defaultToNo` counts only for the literal `true`;
+anything unrecognised falls back to `toolCall.title` / the JSON summary / the
+legacy three buttons (allow once / always / reject) — so an opencode request with
+no `_meta` renders exactly as before (zero regression).
+
+**Queue count is a frontend projection**: `useAcpPermission` already queues *every*
+pending request per connection, so the card's「还有 N 个待审批」is
+`permissionQueue.length - 1 - i` computed in `ConversationView.vue` — the Rust
+`pending_perm` map is intentionally **not** turned into a server-side queue (only
+needed for codeg's single-slot snapshot, which we do not have).
 
 Other ACP behaviors worth keeping:
 

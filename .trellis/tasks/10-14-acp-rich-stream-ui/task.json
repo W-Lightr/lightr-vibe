@@ -1,0 +1,31 @@
+{
+  "id": "acp-rich-stream-ui",
+  "name": "acp-rich-stream-ui",
+  "title": "ACP 富交互与流处理（权限/提问/流控制/update 种类）",
+  "description": "统一父任务：让对话框完整处理 ACP 引擎响应的非纯文本交互（权限富化、AI 提问/elicitation、session/update 全量种类、流中断/停止/重连）。认证不在范围。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "lightr",
+  "assignee": "lightr",
+  "createdAt": "2026-10-14",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-14-acp-elicitation",
+    "10-14-acp-permission-rich",
+    "10-14-acp-stream-control",
+    "10-14-acp-update-kinds"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

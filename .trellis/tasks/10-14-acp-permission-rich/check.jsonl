@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核对 ACP 不变量未被破坏：connId 路由、事件形状、错误串前缀"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对 _meta 字段在 Rust 事件与 TS 解析两端一致，无遗漏/错名"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "核对解析逻辑集中在 permissionMeta.ts，未在组件内重复实现"}
+{"file": ".trellis/tasks/10-14-acp-permission-rich/prd.md", "reason": "逐条核对 AC1-AC10，尤其 AC7 opencode 零回归、AC6 队列计数"}
+{"file": ".trellis/tasks/10-14-acp-permission-rich/design.md", "reason": "核对实现与设计一致：meta 透传、行号注入 best-effort、动态按钮"}
+{"file": ".trellis/tasks/10-14-acp-permission-rich/implement.md", "reason": "核对 checklist 完成度与验证命令是否全跑"}
+{"file": ".trellis/tasks/10-14-acp-permission-rich/research/codeg-permission.md", "reason": "核对未引入 elicitation/host channel/AIR（Out of Scope）"}

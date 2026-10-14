@@ -155,12 +155,19 @@ export function useAcpPermission() {
     await respond(event, option?.optionId ?? null, false)
   }
 
+  /** 直接回应某个具体选项（动态按钮用）；仅当该选项是 allow_always 时记入总是允许 */
+  async function respondOption(event: AcpPermissionEvent, optionId: string): Promise<void> {
+    const opt = event.options.find((o) => o.optionId === optionId)
+    await respond(event, optionId, opt?.kind === 'allow_always')
+  }
+
   return {
     pending,
     executionMode: computed(() => workspace.executionMode),
     allow,
     allowAlways,
     deny,
+    respondOption,
     cancelQueued,
   }
 }

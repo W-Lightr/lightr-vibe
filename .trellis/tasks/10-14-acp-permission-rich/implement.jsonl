@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "ACP 桥接契约：权限事件形状、connId 路由、错误串前缀、8 项不变量；本子任务改动 acp://permission 事件须遵守"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "AcpPermissionEvent/AcpPermissionOption 类型扩展与 camelCase 契约一致性"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "useAcpPermission 队列与 always-allowed map 的读写规则"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层：Rust 事件 meta 字段与 TS 解析契约一致；_meta 透传字段名一致"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "解析逻辑集中到 utils/permissionMeta.ts，避免组件内重复解析 _meta"}
+{"file": ".trellis/tasks/10-14-acp-permission-rich/prd.md", "reason": "本子任务需求、AC、Out of Scope（不做 elicitation/host channel/auth）"}
+{"file": ".trellis/tasks/10-14-acp-permission-rich/design.md", "reason": "设计：meta 透传、行号注入 best-effort、前端队列计数、动态按钮、diff 视图"}
+{"file": ".trellis/tasks/10-14-acp-permission-rich/implement.md", "reason": "有序执行 checklist、验证命令、回滚点"}
+{"file": ".trellis/tasks/10-14-acp-permission-rich/research/codeg-permission.md", "reason": "codeg 权限实现路径+行号依据（changes[] 解析、defaultToNo、队列、diff）"}
