@@ -71,3 +71,32 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 4: 权限授权富化：changes/diff/队列 + 弹窗定位与样式迭代
+<!-- trellis-session: v=2 fp=fb54b49c44398333 -->
+
+**Date**: 2026-10-14
+**Task**: 权限授权富化：changes/diff/队列 + 弹窗定位与样式迭代
+**Branch**: `main`
+
+### Summary
+
+实现 ACP 权限授权富化子任务 10-14-acp-permission-rich 并通过实机验证：Rust 透传请求级 _meta + rawInput 行号注入；前端 utils/permissionMeta.ts 单一解析源（changes[]/title/defaultToNo/diff）；PermissionCard 富信息卡。期间排查并修复三个真实缺陷：ConversationView 按 sessionId 而非 connId 过滤导致卡永不渲染/引擎挂起；initAcpListeners 失败后永久无订阅；事件监听未在 connect 前就绪。UI 多轮迭代：卡片移到 composer 上方独立窄边框盒（比输入框窄、上方留距、不并入边框）、工具名中文、详情收起、按钮右对齐。四门禁全绿。任务已归档。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2ca3959` | feat(acp): 权限授权富化 — changes/diff/默认拒绝 + 队列计数 |
+| `86a0b69` | fix(acp): 权限卡按 connId 过滤（修复 confirm 模式永不弹窗/引擎挂起） |
+| `a6dde63` | fix(acp): 保证权限事件监听就绪 + 全链路诊断日志 |
+| `127bec7` | feat(acp): 权限卡移到 composer 上方（codeg 风格 dock）+ 按钮中文 |
+| `700a25e` | feat(acp): 权限卡改为紧凑 dock 并贴合并入输入框（照确认框风格） |
+| `c677be9` | fix(acp): 权限面板与输入框共用一个外壳边框（保边框、去中间分隔线） |
+| `6abaf9d` | fix(acp): 权限面板改为独立窄边框卡片（比输入框窄、上方留距、不并入输入框边框） |
+| `7c430f8` | docs(spec): 权限卡 UI 形态同步（composer 上独立窄框 + 中文工具名 + 详情收起） |
+
+### Status
+
+[OK] **Completed**
