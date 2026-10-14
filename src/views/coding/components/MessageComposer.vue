@@ -27,6 +27,8 @@ import { MODELS, EXECUTION_MODES, useWorkspaceStore } from '../../../stores/work
 import { useSessionStore } from '../../../stores/session'
 import { useEngineStore } from '../../../stores/engine'
 import { useProjectStore } from '../../../stores/project'
+import { useAcpPermission } from '../../../composables/useAcpPermission'
+import PermissionCard from './PermissionCard.vue'
 import {
   useConversation,
   ensureModelOptions,
@@ -45,6 +47,12 @@ const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
 const engineStore = useEngineStore()
 const projectStore = useProjectStore()
+
+// 权限审批卡（贴在输入框上沿，与输入框融合为一体）：按 connId 过滤本会话待审批
+const { pending: pendingPermissions } = useAcpPermission()
+const permissionQueue = computed(() =>
+  pendingPermissions.value.filter((e) => e.connId === props.sessionId),
+)
 const { send, stop, setModel, setConfigOption, reconnect, reconnecting, ensureConnected, closeConnection } =
   useConversation()
 const { healthOf, acpConnectingSessionIds, acpLiveSessionIds, refreshAcpStatus } = useAcpHealth()
@@ -393,9 +401,24 @@ function pickFiles(e: Event) {
 <template>
   <div class="shrink-0 px-6 pb-3">
     <div class="mx-auto max-w-3xl">
-      <!-- 输入容器：Codex 风格单卡片布局 -->
+      <!-- 权限审批面板：与下方输入框融合为一体（去底边、只上圆角；输入框去顶边、只下圆角） -->
       <div
-        class="rounded-2xl border border-neutral-200 bg-white shadow-sm transition-colors focus-within:border-neutral-300"
+        v-if="permissionQueue.length > 0"
+        class="rounded-t-2xl border border-b-0 border-neutral-200 bg-white shadow-sm"
+      >
+        <PermissionCard
+          v-for="(req, i) in permissionQueue"
+          :key="req.requestId"
+          :event="req"
+          :queued-count="permissionQueue.length - 1 - i"
+          :class="i > 0 && 'border-t border-neutral-100'"
+        />
+      </div>
+
+      <!-- 输入容器：Codex 风格单卡片布局；有权限面板时去顶部圆角与上边框，连成一体 -->
+      <div
+        class="border border-neutral-200 bg-white shadow-sm transition-colors focus-within:border-neutral-300"
+        :class="permissionQueue.length > 0 ? 'rounded-b-2xl rounded-t-none border-t-0' : 'rounded-2xl'"
       >
         <!-- 附件 chips -->
         <div v-if="attachments.length" class="flex flex-wrap gap-1.5 px-4 pt-3">

@@ -172,6 +172,47 @@ export function optionLabel(option: AcpPermissionOption): string {
   return option.optionId
 }
 
+/** 工具 kind → 中文动词名（标题用；未知 kind 退回 kind 原值/toolCall.title） */
+export const TOOL_KIND_LABEL: Record<string, string> = {
+  read: '读取文件',
+  edit: '编辑文件',
+  write: '写入文件',
+  execute: '执行命令',
+  bash: '执行命令',
+  search: '搜索',
+  fetch: '抓取网页',
+  think: '思考',
+  switch_mode: '切换模式',
+  delete: '删除',
+  move: '移动',
+  other: '工具调用',
+}
+
+/** 权限卡标题：优先工具中文名（按 kind），无 kind 时退回 toolCall.title / _meta 标题 */
+export function toolDisplayName(event: AcpPermissionEvent): string {
+  const kind = event.toolCall.kind
+  if (kind && TOOL_KIND_LABEL[kind]) return TOOL_KIND_LABEL[kind]
+  const metaTitle = parsePermissionTitle(event)
+  return metaTitle || kind || '工具调用'
+}
+
+/** 权限卡副标题（一行）：目标路径 basename 或命令摘要，用于紧凑展示。
+ *  取不到 → null（该行不渲染）。 */
+export function permissionTarget(event: AcpPermissionEvent): string | null {
+  const cmd = parsePermissionCommand(event)
+  if (cmd) return cmd.split('\n')[0]
+  const title = event.toolCall.title
+  if (title && title.trim()) {
+    // 路径取 basename（Windows/类 Unix 分隔符都处理）
+    const base = title.split(/[\\/]/).filter(Boolean).pop()
+    return base ?? title
+  }
+  const loc = event.toolCall.locations?.[0]?.path
+  if (loc) return loc.split(/[\\/]/).filter(Boolean).pop() ?? loc
+  return null
+}
+
+
 /** scope → 中文徽章文案（无 scope → 不显示徽章） */
 export const CHANGE_SCOPE_LABEL: Record<PermissionChangeScope, string> = {
   session: '本会话',
