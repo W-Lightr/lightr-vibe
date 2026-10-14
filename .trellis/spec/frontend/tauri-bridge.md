@@ -229,6 +229,14 @@ pending request per connection, so the card's「还有 N 个待审批」is
 `pending_perm` map is intentionally **not** turned into a server-side queue (only
 needed for codeg's single-slot snapshot, which we do not have).
 
+> **Gotcha (cost a real hang)**: filtering the pending queue **must use `connId`**
+> (`e.connId === session.id`), never `e.sessionId`. `sessionId` is the agent-side
+> id (`ses_xxx`) and is **never equal** to the local `session.id` (`ses-xxxxxxxx`),
+> so a `sessionId`-keyed filter matches nothing → the card never renders → the
+> engine blocks on `session/request_permission` forever (UI shows「正在生成…」with
+> no card). This is the event-routing invariant applied to the permission queue;
+> the mock hides it only if its `sessionNew` happens to return the local id.
+
 Other ACP behaviors worth keeping:
 
 - `tool_call_update.content` is **cumulative replacement** — overwrite, never append.
