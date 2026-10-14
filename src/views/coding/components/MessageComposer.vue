@@ -401,25 +401,36 @@ function pickFiles(e: Event) {
 <template>
   <div class="shrink-0 px-6 pb-3">
     <div class="mx-auto max-w-3xl">
-      <!-- 权限审批面板：与下方输入框融合为一体（去底边、只上圆角；输入框去顶边、只下圆角） -->
+      <!-- 外壳：有权限卡时，权限面板 + 输入框共用这一个边框/圆角（composer 边框保留），
+           两者之间无线；无权限卡时外壳透明，输入框自带边框。 -->
       <div
-        v-if="permissionQueue.length > 0"
-        class="rounded-t-2xl border border-b-0 border-neutral-200 bg-white shadow-sm"
+        class="transition-colors"
+        :class="
+          permissionQueue.length > 0
+            ? 'rounded-2xl border border-neutral-200 bg-white shadow-sm focus-within:border-neutral-300'
+            : ''
+        "
       >
-        <PermissionCard
-          v-for="(req, i) in permissionQueue"
-          :key="req.requestId"
-          :event="req"
-          :queued-count="permissionQueue.length - 1 - i"
-          :class="i > 0 && 'border-t border-neutral-100'"
-        />
-      </div>
+        <!-- 权限审批面板：无自身边框/底部分隔线（与输入框连成一体，从输入框「长出来」） -->
+        <div v-if="permissionQueue.length > 0">
+          <PermissionCard
+            v-for="(req, i) in permissionQueue"
+            :key="req.requestId"
+            :event="req"
+            :queued-count="permissionQueue.length - 1 - i"
+            :class="i > 0 && 'border-t border-neutral-100'"
+          />
+        </div>
 
-      <!-- 输入容器：Codex 风格单卡片布局；有权限面板时去顶部圆角与上边框，连成一体 -->
-      <div
-        class="border border-neutral-200 bg-white shadow-sm transition-colors focus-within:border-neutral-300"
-        :class="permissionQueue.length > 0 ? 'rounded-b-2xl rounded-t-none border-t-0' : 'rounded-2xl'"
-      >
+        <!-- 输入容器：Codex 风格单卡片布局；有权限面板时不再自绘边框（外壳已提供） -->
+        <div
+          class="bg-white transition-colors"
+          :class="
+            permissionQueue.length > 0
+              ? 'rounded-b-2xl'
+              : 'rounded-2xl border border-neutral-200 shadow-sm focus-within:border-neutral-300'
+          "
+        >
         <!-- 附件 chips -->
         <div v-if="attachments.length" class="flex flex-wrap gap-1.5 px-4 pt-3">
           <span
@@ -708,6 +719,7 @@ function pickFiles(e: Event) {
           >
             <ArrowUp class="h-4 w-4" />
           </button>
+        </div>
         </div>
       </div>
 
