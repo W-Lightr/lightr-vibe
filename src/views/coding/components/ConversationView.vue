@@ -3,9 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { ArrowDown, MessageSquarePlus } from 'lucide-vue-next'
 import type { Session } from '../../../types/session'
 import MessageItem from './MessageItem.vue'
-import PermissionCard from './PermissionCard.vue'
 import { useConversationScroll } from '../../../composables/useConversationScroll'
-import { useAcpPermission } from '../../../composables/useAcpPermission'
 import { useSessionStore } from '../../../stores/session'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { isTauri } from '../../../utils/isTauri'
@@ -15,12 +13,6 @@ const props = defineProps<{ session: Session }>()
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
 const listRef = ref<HTMLElement | null>(null)
-
-// confirm 模式权限审批队列（PRD 权限 UX：绑定执行模式）
-// 按 **connId**（= 本地会话 id，与 props.session.id 一致）路由；绝不按 sessionId
-// （那是 agent 侧 id `ses_xxx`，二者不相等，按它过滤会导致卡片永不显示、引擎挂起）。
-const { pending } = useAcpPermission()
-const permissionQueue = computed(() => pending.value.filter((e) => e.connId === props.session.id))
 
 const { onScroll, restore, followIfAtBottom, scrollToBottom, showBackToLatest } =
   useConversationScroll(listRef)
@@ -52,15 +44,6 @@ const generating = computed(() => workspace.isGenerating(props.session.id))
   <div class="relative min-h-0 flex-1">
     <div ref="listRef" class="no-scrollbar h-full overflow-y-auto" @scroll="onScroll">
       <div class="mx-auto max-w-3xl px-6 py-6">
-        <!-- confirm 模式权限审批卡（PRD R2：对话内审批）；
-             队列尾部传「还有 N 个待审批」（同会话其余待审批数） -->
-        <PermissionCard
-          v-for="(req, i) in permissionQueue"
-          :key="req.requestId"
-          :event="req"
-          :queued-count="permissionQueue.length - 1 - i"
-        />
-
         <MessageItem v-for="msg in session.messages" :key="msg.id" :message="msg" />
 
         <!-- 空会话引导 -->

@@ -6,6 +6,7 @@ import SidebarPanel from './components/SidebarPanel.vue'
 import WorkspaceHeader from './components/WorkspaceHeader.vue'
 import ConversationView from './components/ConversationView.vue'
 import MessageComposer from './components/MessageComposer.vue'
+import PermissionDock from './components/PermissionDock.vue'
 import FileEditorView from './components/FileEditorView.vue'
 import RightPanel from './components/RightPanel.vue'
 import TerminalPanel from './components/TerminalPanel.vue'
@@ -158,6 +159,8 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
             <div v-if="terminalVisible" class="h-60 shrink-0 border-t border-neutral-200">
               <TerminalPanel />
             </div>
+            <!-- 权限审批停靠条：贴在 composer 上方（codeg 风格：dock 在输入区上沿） -->
+            <PermissionDock :session-id="activeSession.id" />
             <MessageComposer :session-id="activeSession.id" />
           </template>
 

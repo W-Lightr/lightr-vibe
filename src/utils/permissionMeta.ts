@@ -163,10 +163,12 @@ export const KIND_LABEL: Record<string, string> = {
   reject_always: '始终拒绝',
 }
 
-/** 选项按钮文案：优先 agent 给的 `name`，无则按 `kind` 回退中文，再退回 `optionId` */
+/** 选项按钮文案：**优先中文**（按 kind 映射，UI 统一中文）；未知 kind 才退回
+ *  agent 给的 `name`，再退回 `optionId`。opencode 默认发英文名（Allow once/…），
+ *  直接用它会让界面中英混排，故已知 kind 一律走我们的中文文案。 */
 export function optionLabel(option: AcpPermissionOption): string {
-  if (option.name && option.name.trim()) return option.name
   if (option.kind && KIND_LABEL[option.kind]) return KIND_LABEL[option.kind]
+  if (option.name && option.name.trim()) return option.name
   return option.optionId
 }
 
