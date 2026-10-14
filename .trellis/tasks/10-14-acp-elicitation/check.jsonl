@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核对 ACP 不变量未被破坏：connId 路由、事件形状、收到请求 MUST 回响应"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对 elicitation 请求/响应契约在 Rust↔TS 一致"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "核对未重复实现 pending/emit 逻辑；复用既有模式"}
+{"file": ".trellis/tasks/10-14-acp-elicitation/prd.md", "reason": "逐条核对 AC1-AC12，尤其 AC9 协议路由无引擎名、AC10 opencode 零回归"}
+{"file": ".trellis/tasks/10-14-acp-elicitation/design.md", "reason": "核对实现与设计一致：classify 五态、build 三态、cancel/decline 路径"}
+{"file": ".trellis/tasks/10-14-acp-elicitation/implement.md", "reason": "核对 checklist 完成度与验证命令是否全跑"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/research/codeg-acp-stream-ui.md", "reason": "核对未引入 Approval/多字段/AIR 重型（Out of Scope）"}

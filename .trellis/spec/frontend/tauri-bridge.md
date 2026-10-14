@@ -181,14 +181,15 @@ request / pending permission).
   One `writeln!` of compact JSON per message; blank/non-JSON lines are skipped.
 - Rust routes stdout lines three ways: response (has `id` **and** no `method`) →
   pending oneshot; notification (`method`, no `id`) → `app.emit`; client request
-  (`method` + `id`) → `request_permission` forwarded to the UI,
-  `fs/*` / `terminal/*` / `elicitation/*` refused with `-32601`.
+  (`method` + `id`) → `request_permission` + `elicitation/create` forwarded to the UI,
+  `fs/*` / `terminal/*` (and any other `elicitation/*` sub-method) refused with `-32601`.
 - **JSON-RPC ids are preserved as raw `Value`** — agent may legitimately use
   string ids. Never model an incoming id as `u64`, and never treat `id: null`
   as a response.
 - Events **carry `connId`** (local session id) so the frontend routes per connection:
   `acp://update` `{connId, sessionId, update}` · `acp://permission`
   `{connId, requestId, sessionId, toolCall, options, meta}` ·
+  `acp://question` `{connId, requestId, sessionId, questions}` ·
   `acp://status` `{connId, status, reason}`.
 
 > **Critical mapping rule**: `connId` is the **local** session id (`ses-xxxxxxxx`,
@@ -249,6 +250,44 @@ needed for codeg's single-slot snapshot, which we do not have).
 > no card). This is the event-routing invariant applied to the permission queue;
 > the mock hides it only if its `sessionNew` happens to return the local id.
 
+### AI questions / `elicitation/create` (task 10-14-acp-elicitation)
+
+`elicitation/create` (server→client) is how codex asks the user a question
+(Plan-mode `request_user_input`, generic MCP forms). Previously refused with
+`-32601` → codex questions **silently failed**. Now handled for the **Questions**
+shape only:
+
+- **Rust** (`acp_question.rs`): pure `classify_elicitation(&Value) -> ElicitationPlan`
+  reads `params.mode.requestedSchema.properties` (lenient) → `Questions(Vec<Question>)`
+  or `Decline`. Field mapping: `type:"array"` → multi (options from `items.enum`);
+  `type:"string"` with `enum` → single; `type:"string"` without → free text; any
+  other type / empty/missing schema → `Decline`. **One question at a time** (first
+  field; the rest are dropped — documented limitation). `build_elicitation_result`
+  maps answers → `{action:"accept", content:{id: string|string[]}}`, or
+  `{action:"decline"}`.
+- **Rust** (`acp.rs`): `AcpConn.pending_question` is a **parallel** map to
+  `pending_perm` (do NOT overload the permission map). `handle_client_request`
+  intercepts `elicitation/create` **before** the `fs/|terminal/|elicitation/`
+  `-32601` block: Questions → store + emit `acp://question`; Decline → reply
+  `{action:"decline"}` directly (agent continues, never hang). `acp_answer_elicitation`
+  writes the JSON-RPC response and removes the entry (missing id → safe `Ok(())`).
+  `cancel_by_rpc_id`, `acp_cancel`, `disconnect_conn`, `mark_dead`, and the idle
+  busy-check all drain `pending_question` (decline — the protocol's MUST-respond
+  obligation; a dead pipe is the one case where writing is impossible).
+- **Capability scoping**: `client_capabilities(engine)` advertises `elicitation.form`
+  **only for `AgentType::Codex`** (the known spec-conformant sender). Other engines'
+  initialize is unchanged → **opencode zero-regression** (it never sends elicitation).
+  This is capability *declaration* (allowed registry scope), NOT a protocol-routing
+  engine branch (AC9 still holds: `reader_loop`/`handle_client_request` are engine-free).
+- **Frontend**: `useAcpQuestion.ts` mirrors `useAcpPermission` (module singleton,
+  queue filtered by **`connId`** — same invariant warning as the permission queue),
+  `AskQuestionCard.vue` renders single/multi/text + 提交/跳过, mounted above the
+  composer; a local 「AI 提问 / 我的回答」 text message is pushed back into the
+  transcript. Service owner: `acpService.answerElicitation(...)` (sole invoke site).
+- **Out of scope now**: Approval-style elicitation (MCP tool approval / message-only
+  confirm), boolean/number/URL fields, multi-question forms, `ask_user_question`
+  user toggle.
+
 Other ACP behaviors worth keeping:
 
 - `tool_call_update.content` is **cumulative replacement** — overwrite, never append.
@@ -268,7 +307,8 @@ Other ACP behaviors worth keeping:
   `acp_prompt(connId, sessionId, text)`, `acp_cancel(connId, sessionId)`,
   `acp_session_close(connId, sessionId)`,
   `acp_set_config(connId, sessionId, configId, value)`,
-  `acp_respond_permission(connId, requestId, optionId?)`.
+  `acp_respond_permission(connId, requestId, optionId?)`,
+  `acp_answer_elicitation(connId, requestId, answers, declined)`.
 
 ### Per-session invariants (verify on every ACP change)
 

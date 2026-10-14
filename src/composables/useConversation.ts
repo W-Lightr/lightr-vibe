@@ -25,6 +25,7 @@ import { useSessionStore } from '../stores/session'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useAgentStore } from '../stores/agent'
 import { useAcpPermission } from './useAcpPermission'
+import { useAcpQuestion } from './useAcpQuestion'
 import { isTauri } from '../utils/isTauri'
 import { tmpSessionDirSync } from '../utils/appData'
 
@@ -560,6 +561,7 @@ export function useConversation() {
   const router = useRouter()
   const message = useMessage()
   const { cancelQueued } = useAcpPermission()
+  const { cancelQueued: cancelQueuedQuestions } = useAcpQuestion()
 
   ensureSubscribed()
 
@@ -679,6 +681,8 @@ export function useConversation() {
     const session = sessionStore.get(sessionId)
     if (session?.acpSessionId) {
       cancelQueued(sessionId)
+      // 挂起的 elicitation 提问同权限一样回 decline（协议 client 义务），避免 agent 阻塞
+      cancelQueuedQuestions(sessionId)
       void acpService.cancel(sessionId, session.acpSessionId).catch(() => undefined)
     }
   }

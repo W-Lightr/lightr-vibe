@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "ACP 桥接契约：per-session 进程、connId 路由、错误串前缀、8 项不变量；本子任务新增 server→client 请求处理器与事件须遵守"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "新增 AcpQuestion/AcpQuestionEvent 类型与 camelCase 契约一致性"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "前端 pending question 状态（按 connId）与 store/composable 读写规则"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层：elicitation 请求/响应的 Rust↔TS 契约、事件字段一致性"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "复用既有 pending_perm 机制模式；避免重复 resolve/emit 逻辑"}
+{"file": ".trellis/tasks/10-14-acp-elicitation/prd.md", "reason": "本子任务需求、AC、Out of Scope（Approval/多字段/开关不做）"}
+{"file": ".trellis/tasks/10-14-acp-elicitation/design.md", "reason": "elicitation 协议形状、classify/build 纯函数设计、pending map、仅 codex 能力声明"}
+{"file": ".trellis/tasks/10-14-acp-elicitation/implement.md", "reason": "有序执行 checklist、验证命令、回滚点"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/research/codeg-acp-stream-ui.md", "reason": "codeg elicitation/提问卡的路径与行号依据（question.rs / connection.rs）"}

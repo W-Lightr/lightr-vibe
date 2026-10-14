@@ -327,6 +327,16 @@ export const acpMock = {
     pendingPermissions.get(requestId)?.()
   },
 
+  /** 浏览器 mock：提问答复立即 resolve（无 agent 侧等待；与服务层返回结构一致） */
+  async answerElicitation(
+    _connId: string,
+    _requestId: string,
+    _answers: { fieldId: string; values: string[] }[],
+    _declined: boolean,
+  ): Promise<void> {
+    // mock 通道无真实 agent，答复即完成
+  },
+
   /** 浏览器 mock：固定的模型上下文窗口表；未命中返回 null */
   modelContextWindow(provider: string, model: string, _engineId?: string): number | null {
     const key = `${provider}/${model}`

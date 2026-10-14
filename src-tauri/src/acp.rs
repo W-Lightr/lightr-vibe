@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::agent_type::AgentType;
+use crate::acp_question::{build_elicitation_result, classify_elicitation, ElicitationPlan, Question};
 use crate::engine::{self, AcpAgentMeta, ContextWindowSource};
 
 #[cfg(windows)]
@@ -57,6 +58,23 @@ fn timeout_for(method: &str) -> Duration {
         "session/prompt" => Duration::from_secs(300),
         _ => Duration::from_secs(30),
     }
+}
+
+/// initialize 的 `clientCapabilities` 构造（纯函数，便于单测）。
+///
+/// - 基线：不 host fs/terminal（D2，文件操作由 Lightr-vibe 自有文件面板承担）。
+/// - elicitation：**仅 codex** 声明 `elicitation.form`。理由：codex 适配器已知会发规范
+///   form（Plan `request_user_input` / MCP 表单）；其他引擎不发规范 form，声明反而可能
+///   误触发未知 MCP 表单（D2）。
+///
+/// 引擎判定只出现在此处（能力声明 = 注册表/声明范畴，与 spawn 构造同性质）；
+/// **协议路由本身不含引擎名分支**（AC9），处理器对已声明引擎通用。
+fn client_capabilities(engine: AgentType) -> Value {
+    let mut caps = json!({ "fs": { "readTextFile": false, "writeTextFile": false } });
+    if engine == AgentType::Codex {
+        caps["elicitation"] = json!({ "form": {} });
+    }
+    caps
 }
 
 /// 入站消息三分路由（research/acp-protocol.md §2）：
@@ -181,6 +199,10 @@ struct AcpConn {
     /// requestId → (JSON-RPC id 原样回显值, sessionId)：request_permission 等待前端答复
     pending_perm: Mutex<HashMap<String, (Value, String)>>,
     perm_next: AtomicU64,
+    /// requestId → (JSON-RPC id 原样回显值, 题目列表)：elicitation/create（Questions 型）
+    /// 等待前端答复。与 pending_perm 平行、语义不同（不复用权限 map，design §2）。
+    pending_question: Mutex<HashMap<String, (Value, Vec<Question>)>>,
+    q_next: AtomicU64,
     agent_info: Mutex<Value>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     dead: AtomicBool,
@@ -370,6 +392,13 @@ fn handle_client_request(
         eprintln!("[acp] emitted acp://permission requestId={request_id}");
         return;
     }
+    // elicitation/create（server→client）：codex Plan `request_user_input` / 通用 MCP form。
+    // 不能落入下方 `elicitation/` 的 -32601（否则提问静默失败，design §2）。
+    // 处理器通用、不含引擎名分支（AC9）；引擎差异只在 initialize 能力声明处。
+    if method == "elicitation/create" {
+        handle_elicitation_request(conn, id, msg, app);
+        return;
+    }
     // D2：fs/terminal/elicitation 一律拒绝（initialize 未声明 capability，双保险；
     // Agent 的文件操作由自有文件面板观察，不走 Agent 借道写盘）
     if method.starts_with("fs/")
@@ -392,6 +421,48 @@ fn handle_client_request(
             "error": { "code": -32601, "message": format!("method not found: {}", method) }
         }),
     );
+}
+
+/// 处理 `elicitation/create`（Questions 型）：分类 → Questions 则存 pending + emit
+/// `acp://question` 等前端答复；Decline 则**直接回 decline**（agent 自行判断，不 hang）。
+/// 与 request_permission 同构（生成 requestId、存 map、emit、答复后回写 response）。
+/// 协议要求收到方 MUST 回应 elicitation，故任一分支都必须 send_line 或 emit。
+fn handle_elicitation_request(conn: &AcpConn, id: Value, msg: &Value, app: &AppHandle) {
+    let params = msg.get("params").cloned().unwrap_or(Value::Null);
+    let session_id = params
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    match classify_elicitation(&params) {
+        ElicitationPlan::Questions(questions) => {
+            let request_id = conn.q_next.fetch_add(1, Ordering::SeqCst).to_string();
+            conn.pending_question
+                .lock()
+                .unwrap()
+                .insert(request_id.clone(), (id.clone(), questions.clone()));
+            let questions_json =
+                serde_json::to_value(&questions).unwrap_or(Value::Array(Vec::new()));
+            let _ = app.emit(
+                "acp://question",
+                json!({
+                    "connId": conn.conn_id,
+                    "requestId": request_id,
+                    "sessionId": session_id,
+                    "questions": questions_json,
+                }),
+            );
+            eprintln!("[acp] emitted acp://question requestId={request_id}");
+        }
+        ElicitationPlan::Decline => {
+            // 本期不支持的 elicitation（Approval / boolean / 未知形状）→ 直接拒答，
+            // 语义比 -32601 更友好（「用户拒答」而非「方法不存在」），agent 据此自行判断。
+            let _ = send_line(
+                conn,
+                &json!({ "jsonrpc": "2.0", "id": id, "result": { "action": "decline" } }),
+            );
+        }
+    }
 }
 
 /// 对 toolCall 就地注入 `_start_line`（best-effort）：仅当 toolCall 是 object 且其
@@ -432,9 +503,9 @@ fn inject_raw_input_start_line(raw: &Value) -> Value {
     }
 }
 
-/// $/cancel_request 兜底：按被取消请求的 JSON-RPC id 找 pending_perm 中对应条目，
-/// 回 cancelled outcome 并从 map 移除（协议 §5：收到方 MUST 对原请求回响应；
-/// permission 请求的规范取消形状是 outcome cancelled）
+/// $/cancel_request 兜底：按被取消请求的 JSON-RPC id 找 pending_perm / pending_question
+/// 中对应条目，回取消响应并从 map 移除（协议 §5：收到方 MUST 对原请求回响应；
+/// permission 请求的规范取消形状是 outcome cancelled；elicitation 回 decline）
 fn cancel_by_rpc_id(conn: &AcpConn, rpc_id: &Value) {
     let doomed: Option<String> = conn
         .pending_perm
@@ -445,6 +516,17 @@ fn cancel_by_rpc_id(conn: &AcpConn, rpc_id: &Value) {
         .map(|(k, _)| k.clone());
     if let Some(request_id) = doomed {
         let _ = respond_permission_inner(conn, &request_id, None);
+    }
+    // elicitation：挂起的提问请求也须回响应（decline），否则 agent hang（design §3.4）
+    let doomed_q: Option<String> = conn
+        .pending_question
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(_, (id, _))| id == rpc_id)
+        .map(|(k, _)| k.clone());
+    if let Some(request_id) = doomed_q {
+        let _ = decline_elicitation_inner(conn, &request_id);
     }
 }
 
@@ -479,6 +561,8 @@ fn mark_dead(app: &AppHandle, conn: &Arc<AcpConn>, reason: &str) {
     conn.pending.lock().unwrap().clear();
     // 权限请求也随进程失效：前端答复会走 require_conn 的 acp-dead 分支，这里清防泄漏
     conn.pending_perm.lock().unwrap().clear();
+    // 挂起的 elicitation 同理：进程已死，无法回响应，清 map 防泄漏
+    conn.pending_question.lock().unwrap().clear();
     let tail: Vec<String> = {
         let t = conn.stderr_tail.lock().unwrap();
         t.iter().rev().take(5).rev().cloned().collect()
@@ -602,9 +686,10 @@ fn idle_sweep_loop(app: AppHandle) {
             if conn.dead.load(Ordering::SeqCst) {
                 continue;
             }
-            // 忙判据：有挂起请求或待答复权限 → 跳过（近似「生成中」）
+            // 忙判据：有挂起请求或待答复权限/提问 → 跳过（近似「生成中」）
             if !conn.pending.lock().unwrap().is_empty()
                 || !conn.pending_perm.lock().unwrap().is_empty()
+                || !conn.pending_question.lock().unwrap().is_empty()
             {
                 continue;
             }
@@ -658,6 +743,8 @@ fn connect_inner(app: AppHandle, conn_id: String, engine: AgentType) -> Result<S
         pending: Mutex::new(HashMap::new()),
         pending_perm: Mutex::new(HashMap::new()),
         perm_next: AtomicU64::new(1),
+        pending_question: Mutex::new(HashMap::new()),
+        q_next: AtomicU64::new(1),
         agent_info: Mutex::new(Value::Null),
         stderr_tail: stderr_tail.clone(),
         dead: AtomicBool::new(false),
@@ -681,7 +768,7 @@ fn connect_inner(app: AppHandle, conn_id: String, engine: AgentType) -> Result<S
         "initialize",
         json!({
             "protocolVersion": 1,
-            "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false } },
+            "clientCapabilities": client_capabilities(engine),
             "clientInfo": { "name": "lightr-vibe", "version": "0.1.0" }
         }),
     )
@@ -715,6 +802,18 @@ fn connect_inner(app: AppHandle, conn_id: String, engine: AgentType) -> Result<S
 fn disconnect_conn(app: &AppHandle, conn_id: &str, conn: &Arc<AcpConn>, reason: &str) {
     // 先移除仓库条目（幂等：重复断连不再匹配）
     remove_conn(conn_id, conn);
+    // 断连前对挂起的 elicitation 回 decline（协议：收到方 MUST 回响应，避免 agent hang）。
+    // stdin 关闭后无法再写，故必须在关 stdin 之前 drain（design §3.4）。
+    let doomed_q: Vec<String> = conn
+        .pending_question
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    for request_id in doomed_q {
+        let _ = decline_elicitation_inner(conn, &request_id);
+    }
     // 关 stdin（drop writer）触发 opencode <1s 干净退出
     *conn.stdin.lock().unwrap() = None;
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -919,7 +1018,7 @@ fn probe_options_inner(cwd: Option<String>, engine: AgentType) -> Result<ProbeRe
         "jsonrpc": "2.0", "id": init_id, "method": "initialize",
         "params": {
             "protocolVersion": 1,
-            "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false } },
+            "clientCapabilities": client_capabilities(engine),
             "clientInfo": { "name": "lightr-vibe", "version": "0.1.0" }
         }
     });
@@ -1339,6 +1438,18 @@ pub fn acp_cancel(conn_id: String, session_id: String) -> Result<(), String> {
     for request_id in doomed {
         let _ = respond_permission_inner(&conn, &request_id, None);
     }
+    // 挂起的 elicitation 提问同权限一样回 decline（与 pending_perm 平行清理）：
+    // 协议要求收到方 MUST 回响应，否则 agent 在该会话上阻塞
+    let doomed_q: Vec<String> = conn
+        .pending_question
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    for request_id in doomed_q {
+        let _ = decline_elicitation_inner(&conn, &request_id);
+    }
     Ok(())
 }
 
@@ -1410,6 +1521,61 @@ fn respond_permission_inner(
     send_line(
         conn,
         &json!({ "jsonrpc": "2.0", "id": rpc_id, "result": outcome }),
+    )
+}
+
+/// 答复 elicitation 提问的回传参数项（camelCase：fieldId / values）
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnswerItem {
+    pub field_id: String,
+    pub values: Vec<String>,
+}
+
+/// 答复 elicitation 提问（Questions 型）：按 requestId 找 pending 的 JSON-RPC id，
+/// 构造 accept/decline 响应回写并从 map 移除。
+/// 未命中（重复/过期/已答复/已死）→ `Ok(())` 安全 no-op（design §3.3）。
+#[tauri::command]
+pub fn acp_answer_elicitation(
+    conn_id: String,
+    request_id: String,
+    answers: Vec<AnswerItem>,
+    declined: bool,
+) -> Result<(), String> {
+    let conn = require_conn(&conn_id)?;
+    touch_activity(&conn);
+    if declined {
+        // 用户跳过 / 拒答：回 decline（找不到也安全 no-op）
+        let _ = decline_elicitation_inner(&conn, &request_id);
+        return Ok(());
+    }
+    let entry = conn.pending_question.lock().unwrap().remove(&request_id);
+    let Some((rpc_id, questions)) = entry else {
+        // 请求不存在或已答复：安全 no-op（不报错，避免 UI 因迟到答复弹错）
+        return Ok(());
+    };
+    let pairs: Vec<(String, Vec<String>)> = answers
+        .into_iter()
+        .map(|a| (a.field_id, a.values))
+        .collect();
+    let result = build_elicitation_result(&questions, &pairs, false);
+    eprintln!("[acp] answer elicitation requestId={request_id}");
+    send_line(
+        &conn,
+        &json!({ "jsonrpc": "2.0", "id": rpc_id, "result": result }),
+    )
+}
+
+/// 内部：对某挂起 elicitation 回 `{"action":"decline"}` 并移除（找不到则 no-op）。
+/// 供 cancel / disconnect 清理与「跳过」答复复用。
+fn decline_elicitation_inner(conn: &AcpConn, request_id: &str) -> Result<(), String> {
+    let entry = conn.pending_question.lock().unwrap().remove(request_id);
+    let Some((rpc_id, _questions)) = entry else {
+        return Ok(());
+    };
+    send_line(
+        conn,
+        &json!({ "jsonrpc": "2.0", "id": rpc_id, "result": { "action": "decline" } }),
     )
 }
 

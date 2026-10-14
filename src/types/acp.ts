@@ -135,6 +135,35 @@ export interface AcpPermissionEvent {
   meta?: unknown
 }
 
+/** elicitation/create 题型（Questions 型）：单选 / 多选 / 自由文本（Rust acp_question.rs 同形） */
+export type AcpQuestionKind = 'single' | 'multi' | 'text'
+
+/** elicitation 候选项：value 回传 content，label 展示 */
+export interface AcpQuestionOption {
+  value: string
+  label: string
+}
+
+/** 一道 elicitation 提问（本期一次一问） */
+export interface AcpQuestion {
+  /** = form properties 的键：回传答案的 content key */
+  id: string
+  prompt: string
+  kind: AcpQuestionKind
+  /** single/multi 有；text 为空数组 */
+  options: AcpQuestionOption[]
+}
+
+/** acp://question 事件载荷（Rust emit，connId 路由） */
+export interface AcpQuestionEvent {
+  /** 连接 id = 本地会话 id（ses-xxxxxxxx）：按此路由到本地会话（design §8.1） */
+  connId: string
+  requestId: string
+  /** ACP 侧 sessionId（agent-side ses_xxx），仅归属用 */
+  sessionId: string
+  questions: AcpQuestion[]
+}
+
 /** Rust 命令返回（camelCase，tauri-bridge spec §2） */
 export interface AcpStartResult {
   status: AcpProcessStatus

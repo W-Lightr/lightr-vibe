@@ -10,13 +10,14 @@ import type {
   AcpConfigOption,
   AcpPermissionEvent,
   AcpPromptResult,
+  AcpQuestionEvent,
   AcpSessionResult,
   AcpStartResult,
   AcpStatusEvent,
   AcpUpdateEvent,
 } from '../types/acp'
 import { isTauri } from '../utils/isTauri'
-import { dispatchPermission, dispatchStatus, dispatchUpdate } from './acpEvents'
+import { dispatchPermission, dispatchQuestion, dispatchStatus, dispatchUpdate } from './acpEvents'
 import { acpMock } from './acpMock'
 
 let unlistenAll: UnlistenFn[] | null = null
@@ -39,15 +40,19 @@ export function initAcpListeners(): Promise<void> {
   if (!isTauri()) return Promise.resolve()
   if (!initPromise) {
     initPromise = (async () => {
-      const [u1, u2, u3] = await Promise.all([
+      const [u1, u2, u3, u4] = await Promise.all([
         listen<AcpUpdateEvent>('acp://update', (e) => dispatchUpdate(e.payload)),
         listen<AcpPermissionEvent>('acp://permission', (e) => {
           console.debug('[acp-listener] acp://permission', e.payload?.connId, e.payload?.toolCall?.kind)
           dispatchPermission(e.payload)
         }),
+        listen<AcpQuestionEvent>('acp://question', (e) => {
+          console.debug('[acp-listener] acp://question', e.payload?.connId, e.payload?.questions?.length)
+          dispatchQuestion(e.payload)
+        }),
         listen<AcpStatusEvent>('acp://status', (e) => dispatchStatus(e.payload)),
       ])
-      unlistenAll = [u1, u2, u3]
+      unlistenAll = [u1, u2, u3, u4]
       console.debug('[acp-listener] listeners ready')
     })().catch((err) => {
       // 初始化失败（webview 未就绪等）：清空缓存以便下次重试，不让一个 reject 永久卡死监听
@@ -150,6 +155,18 @@ export const acpService = {
   ): Promise<void> {
     if (!isTauri()) return acpMock.respondPermission(connId, requestId, optionId)
     await invoke('acp_respond_permission', { connId, requestId, optionId })
+  },
+
+  /** 答复 elicitation 提问（Questions 型）：answers 为 {fieldId,values} 列表，
+   *  declined=true 表示跳过/拒答。Rust 侧构造 accept/decline 响应回写 agent。 */
+  async answerElicitation(
+    connId: string,
+    requestId: string,
+    answers: { fieldId: string; values: string[] }[],
+    declined: boolean,
+  ): Promise<void> {
+    if (!isTauri()) return acpMock.answerElicitation(connId, requestId, answers, declined)
+    await invoke('acp_answer_elicitation', { connId, requestId, answers, declined })
   },
 
   /** 按 provider/model 解析上下文窗口（limit.context），策略来自引擎声明。查不到返回 null

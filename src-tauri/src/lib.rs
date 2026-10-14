@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod acp;
+mod acp_question;
 mod agent;
 mod agent_type;
 mod engine;
@@ -44,7 +45,8 @@ pub fn run() {
             acp::acp_cancel,
             acp::acp_session_close,
             acp::acp_set_config,
-            acp::acp_respond_permission
+            acp::acp_respond_permission,
+            acp::acp_answer_elicitation
         ])
         // ACP 长驻子进程清理：App.vue onBeforeUnmount 不可靠 → Rust 侧退出钩子
         .build(tauri::generate_context!())

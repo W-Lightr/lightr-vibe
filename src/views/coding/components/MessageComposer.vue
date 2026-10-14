@@ -28,7 +28,9 @@ import { useSessionStore } from '../../../stores/session'
 import { useEngineStore } from '../../../stores/engine'
 import { useProjectStore } from '../../../stores/project'
 import { useAcpPermission } from '../../../composables/useAcpPermission'
+import { useAcpQuestion } from '../../../composables/useAcpQuestion'
 import PermissionCard from './PermissionCard.vue'
+import AskQuestionCard from './AskQuestionCard.vue'
 import {
   useConversation,
   ensureModelOptions,
@@ -52,6 +54,11 @@ const projectStore = useProjectStore()
 const { pending: pendingPermissions } = useAcpPermission()
 const permissionQueue = computed(() =>
   pendingPermissions.value.filter((e) => e.connId === props.sessionId),
+)
+// elicitation 提问卡（同区域、浮在输入框上方）：按 connId 过滤本会话待答（本期一次一张）
+const { pending: pendingQuestions } = useAcpQuestion()
+const questionQueue = computed(() =>
+  pendingQuestions.value.filter((e) => e.connId === props.sessionId),
 )
 const { send, stop, setModel, setConfigOption, reconnect, reconnecting, ensureConnected, closeConnection } =
   useConversation()
@@ -412,6 +419,19 @@ function pickFiles(e: Event) {
           :key="req.requestId"
           :event="req"
           :queued-count="permissionQueue.length - 1 - i"
+          :class="i > 0 && 'border-t border-neutral-100'"
+        />
+      </div>
+
+      <!-- elicitation 提问卡：与权限卡同区域/层级，独立边框浮在输入框上方 -->
+      <div
+        v-if="questionQueue.length > 0"
+        class="mx-3 mb-1.5 overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm sm:mx-6"
+      >
+        <AskQuestionCard
+          v-for="(req, i) in questionQueue"
+          :key="req.requestId"
+          :event="req"
           :class="i > 0 && 'border-t border-neutral-100'"
         />
       </div>
