@@ -117,6 +117,8 @@ function ensureSubscribed(): void {
   })
   onPermission((event) => {
     void (async () => {
+      // 诊断（临时）：确认权限事件是否到达前端
+      console.debug('[acp-permission] received', event.connId, event.toolCall?.kind, event.toolCall?.title)
       // 事件携带 connId = 本地会话 id（design §8.1）：直接定位本地会话；
       // 会话已删/不存在 → 直接回 cancelled，避免请求悬挂且 UI 不可达
       const local = useSessionStore().get(event.connId)

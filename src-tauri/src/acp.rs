@@ -335,6 +335,7 @@ fn handle_client_request(
     msg: &Value,
     app: &AppHandle,
 ) {
+    eprintln!("[acp] client request: {method} (connId={})", conn.conn_id);
     if method == "session/request_permission" {
         let request_id = conn.perm_next.fetch_add(1, Ordering::SeqCst).to_string();
         let params = msg.get("params");
@@ -366,6 +367,7 @@ fn handle_client_request(
                 "meta": params.and_then(|p| p.get("_meta")).cloned().unwrap_or(Value::Null),
             }),
         );
+        eprintln!("[acp] emitted acp://permission requestId={request_id}");
         return;
     }
     // D2：fs/terminal/elicitation 一律拒绝（initialize 未声明 capability，双保险；
@@ -1404,6 +1406,7 @@ fn respond_permission_inner(
         Some(o) => json!({ "outcome": { "outcome": "selected", "optionId": o } }),
         None => json!({ "outcome": { "outcome": "cancelled" } }),
     };
+    eprintln!("[acp] respond permission requestId={request_id} optionId={:?}", option_id);
     send_line(
         conn,
         &json!({ "jsonrpc": "2.0", "id": rpc_id, "result": outcome }),

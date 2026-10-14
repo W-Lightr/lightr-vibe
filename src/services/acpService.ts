@@ -41,11 +41,19 @@ export function initAcpListeners(): Promise<void> {
     initPromise = (async () => {
       const [u1, u2, u3] = await Promise.all([
         listen<AcpUpdateEvent>('acp://update', (e) => dispatchUpdate(e.payload)),
-        listen<AcpPermissionEvent>('acp://permission', (e) => dispatchPermission(e.payload)),
+        listen<AcpPermissionEvent>('acp://permission', (e) => {
+          console.debug('[acp-listener] acp://permission', e.payload?.connId, e.payload?.toolCall?.kind)
+          dispatchPermission(e.payload)
+        }),
         listen<AcpStatusEvent>('acp://status', (e) => dispatchStatus(e.payload)),
       ])
       unlistenAll = [u1, u2, u3]
-    })()
+      console.debug('[acp-listener] listeners ready')
+    })().catch((err) => {
+      // 初始化失败（webview 未就绪等）：清空缓存以便下次重试，不让一个 reject 永久卡死监听
+      console.error('[acp-listener] init failed, will retry on next call', err)
+      initPromise = null
+    })
   }
   return initPromise
 }
@@ -62,6 +70,8 @@ export const acpService = {
    *  initialize 握手（design §8.1 每会话一进程）。engineId 为该会话绑定的引擎 wire。 */
   async connect(sessionId: string, engineId: string): Promise<AcpStartResult> {
     if (!isTauri()) return acpMock.connect(sessionId, engineId)
+    // 保证事件监听已就绪（避免 main.ts 早起失败后永久无订阅）：connect 在任何 prompt 之前
+    await initAcpListeners()
     return invoke<AcpStartResult>('acp_connect', { sessionId, engineId })
   },
 
