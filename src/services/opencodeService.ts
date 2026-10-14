@@ -27,7 +27,7 @@ import {
 export const opencodeService = {
   /** 检测引擎安装/版本/ACP 能力（engineId 缺省回退 opencode） */
   async detect(engineId?: string): Promise<DetectResult> {
-    if (!isTauri()) return mockDetect()
+    if (!isTauri()) return mockDetect(engineId)
     return invoke<DetectResult>('agent_detect', { engineId })
   },
 

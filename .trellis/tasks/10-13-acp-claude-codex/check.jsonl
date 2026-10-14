@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核对 ACP 不变量未被破坏：connId 路由、错误串前缀、shutdown 清理、命令面无引擎名分支"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "核对未重复实现 resolve_bin/shim 提取；npm 解析复用既有模式"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对 engineId wire 值在 Rust as_wire / TS union / mock / sessions-index 四处一致"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/prd.md", "reason": "逐条核对 AC1-AC10，尤其 AC8 协议路由无引擎名、AC6 opencode 零回归"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/design.md", "reason": "核对实现与设计一致：LaunchKind 三态、SpawnSpec 分支、决策点是否被遵守"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/implement.md", "reason": "核对执行 checklist 完成度、验证命令是否全跑、回滚点是否清晰"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/research/codeg-claude-codex.md", "reason": "核对未引入 codeg 引擎专属能力（Out of Scope）与适配器启动事实"}

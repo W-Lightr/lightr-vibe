@@ -1,6 +1,6 @@
 // 浏览器 dev 环境的 OpenCode mock 数据（design §2.1 / PRD R3）。
 // why: 前端在非 Tauri 环境无法真正 spawn 进程或读写用户目录；
-// 这里提供固定、全 PASS 的假数据，界面顶部会明示「浏览器模式：数据为 mock」。
+// 这里提供固定数据，界面顶部会明示「浏览器模式：数据为 mock」。
 
 import type { ConfigReadResult, ConfigWriteResult, DetectResult, EnvFileResult } from '../types/agent'
 
@@ -55,8 +55,23 @@ export const MOCK_CONFIG_TEXT = `{
 }
 `
 
-/** mock 检测：全部通过 */
-export function mockDetect(): DetectResult {
+/** 浏览器 dev 下应显示「未安装」的引擎：其 ACP 适配器需用户自己 npm i -g */
+const MOCK_NOT_INSTALLED = new Set(['claude_code', 'codex'])
+
+/** mock 检测：opencode 恒通过；claude/codex 复现「外部适配器未安装」语义 */
+export function mockDetect(engineId?: string): DetectResult {
+  if (engineId && MOCK_NOT_INSTALLED.has(engineId)) {
+    return {
+      installed: false,
+      version: null,
+      binPath: null,
+      platform: 'win32 / x86_64 (mock)',
+      acpOk: false,
+      configPath: '',
+      configExists: false,
+      detail: '未安装（mock）：ACP 适配器需 npm i -g，见引擎详情',
+    }
+  }
   return {
     installed: true,
     version: MOCK_VERSION,

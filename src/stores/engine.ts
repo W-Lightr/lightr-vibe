@@ -20,6 +20,24 @@ const FALLBACK_AGENTS: AcpAgentInfo[] = [
     available: true,
     installedVersion: null,
   },
+  {
+    agentType: 'claude_code',
+    name: 'Claude Code',
+    description: 'Anthropic Claude 的 ACP 适配器（用户自装 claude-agent-acp）',
+    enabled: true,
+    sortOrder: 1,
+    available: false,
+    installedVersion: null,
+  },
+  {
+    agentType: 'codex',
+    name: 'Codex CLI',
+    description: 'OpenAI Codex 的 ACP 适配器（用户自装 codex-acp）',
+    enabled: true,
+    sortOrder: 2,
+    available: false,
+    installedVersion: null,
+  },
 ]
 
 /** sortOrder 升序 + name 字典序（照 codeg 排序规则）。 */

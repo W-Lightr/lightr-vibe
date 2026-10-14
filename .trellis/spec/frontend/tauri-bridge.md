@@ -297,14 +297,14 @@ split on the **first** `/` only (the modelId itself may contain `/`, e.g.
 the resolved window to `tokenUsage.contextWindow` immediately (best-effort,
 never blocks); the live `usage_update.size` still refines it per turn.
 
-## Agent / engine registry (`src-tauri/src/agent_type.rs` + `engine.rs`, task 10-13-acp-multi-engine)
+## Agent / engine registry (`src-tauri/src/agent_type.rs` + `engine.rs`, task 10-13-acp-multi-engine, extended by 10-13-acp-claude-codex)
 
 The ACP layer is **engine-pluggable**, modeled on codeg's multi-agent abstraction but
 trimmed to "spawn a system-installed engine" (no download/install/version-pinning/
 custom agents/DB — those are out of scope). Two Rust modules:
 
-- **`agent_type.rs`** — `AgentType` compile-time enum (currently only `OpenCode`) with
-  `as_wire()` / `from_wire()` / `Display` / `Serialize` / `Deserialize` and
+- **`agent_type.rs`** — `AgentType` compile-time enum (`OpenCode`, `ClaudeCode`, `Codex`)
+  with `as_wire()` / `from_wire()` / `Display` / `Serialize` / `Deserialize` and
   `BUILTIN_AGENT_TYPES`.
 - **`engine.rs`** — `AcpAgentMeta { agent_type, name, description, launch: LaunchSpec }`,
   `get_agent_meta(AgentType) -> AcpAgentMeta` (exhaustive `match`), `AcpAgentInfo`
@@ -313,11 +313,59 @@ custom agents/DB — those are out of scope). Two Rust modules:
 ### Wire contract (persistence boundary — DO NOT rename)
 
 `AgentType::as_wire()` is the **stable persisted form** written to
-`SessionIndexEntry.engineId` / `Session.engineId` (`"open_code"` today). Renaming a
-wire string silently orphans every saved session that references it — the
-`builtin_wire_names_are_unchanged` test locks the mapping (mirrors codeg). Unknown
-wire → `from_wire` returns `None`; Rust commands error, frontend falls back to
-`DEFAULT_ENGINE_WIRE` (`'open_code'`).
+`SessionIndexEntry.engineId` / `Session.engineId`. Current values: `"open_code"`,
+`"claude_code"`, `"codex"` (the latter two mirror codeg `models/agent.rs` for future
+data interop). Renaming a wire string silently orphans every saved session that
+references it — the `builtin_wire_names_are_unchanged` test locks the mapping (mirrors
+codeg). Unknown wire → `from_wire` returns `None`; Rust commands error, frontend falls
+back to `DEFAULT_ENGINE_WIRE` (`'open_code'`).
+
+### Two launch forms: `DirectCommand` vs `ExternalAdapter` (task 10-13-acp-claude-codex)
+
+`LaunchSpec.kind: LaunchKind` selects how the engine process is resolved:
+
+- **`DirectCommand`** (OpenCode) — the engine IS the vendor CLI with an ACP subcommand
+  (`opencode acp`). Resolved via `resolve_bin` = PATH scan of `bin_candidates` only.
+- **`ExternalAdapter`** (Claude Code, Codex) — the vendor CLI does **not** speak ACP;
+  a separately-installed ACP adapter bridges it (`claude-agent-acp` / `codex-acp`,
+  published by the Agent Client Protocol org). The adapter command may live in **PATH
+  or the npm global bin dir** (`npm prefix -g` → `<prefix>` on Windows / `<prefix>/bin`
+  on Unix). Resolution order: PATH → npm global bin → `SpawnSpec::NotInstalled{hint}`.
+
+**User-installs, we never bundle or download** (AC11). The adapters are heavy
+(`claude-agent-acp` ~287MB incl. the Anthropic SDK; `codex-acp` pulls `@openai/codex`
+whose `codex.exe` is ~326MB), so packaging them is not viable. `LaunchSpec.install_hint`
+carries the npm package name **only to render the `npm i -g <hint>` guidance** in the
+`NotInstalled` error and detect `detail` — it never triggers a download. There is no
+`npm install` / `npx` spawn anywhere in `src-tauri/src/`; the only npm invocation is the
+local query `npm prefix -g` (`resolve_npm_global_bin_dir`).
+
+`SpawnSpec` is the single generic spawn shape (no engine names):
+
+```rust
+pub enum SpawnSpec {
+    Exe(PathBuf),                        // resolved real executable
+    CmdFallback,                         // DirectCommand: `cmd /C <bare> [subcommand]`
+    NotInstalled { hint: String },       // ExternalAdapter, nothing resolved → Err, no spawn
+}
+```
+
+`build_acp_command(meta) -> Result<Command, String>` (returns `Result` so `NotInstalled`
+propagates before any `spawn()`); both call sites (`connect_inner`, `probe_options_inner`)
+use `?`. `command_from_spawn_spec()` is the pure, unit-tested argv builder.
+
+> **Warning (codex optional-dep gotcha)**: `@openai/codex`'s platform binary is an npm
+> **optional dependency** (`@openai/codex-win32-x64` → `@openai/codex@<ver>-win32-x64`).
+> Some npm configs skip it, leaving a missing/truncated `codex.exe` → adapter dies with
+> `Missing optional dependency ...` / `spawn EFTYPE`. This is a **user environment**
+> issue; the fix is `npm i -g @openai/codex@latest`. Our code surfaces a readable hint
+> but does not repair it.
+
+> **Warning**: `agent.rs::run_engine` must run the **resolved** bin (`resolve_bin_for_detect`
+> result), not `bin_candidates[0]` verbatim — an `ExternalAdapter` installed only in the
+> npm global bin dir is invisible to PATH, so the `--version` probe would spuriously fail
+> even though `installed = true`. `run_engine(meta, resolved_bin, args)` takes the resolved
+> path and falls back to the bare name (opencode behavior preserved).
 
 ### Command surface
 
@@ -343,20 +391,47 @@ config→models.dev-cache lookup lives behind that variant, not inline in a bran
 
 Protocol routing (`reader_loop` / `handle_incoming` / `handle_client_request`) **must
 not branch on engine name**. Engine-specific code lives only in: spawn construction
-(`resolve_bin`/`resolve_spawn`/`build_acp_command` take `&AcpAgentMeta`), detect chain
-(`agent.rs`, engine-ified end to end), config path, and context-window lookup. All
-constants (bin candidates, subcommand, env strip, detect args, config path) come from
+(`resolve_bin`/`resolve_spawn`/`build_acp_command` take `&AcpAgentMeta`, and dispatch
+only on `LaunchKind`/`SpawnSpec`, never on `AgentType`), detect chain (`agent.rs`,
+engine-ified end to end), config path, and context-window lookup. All constants (bin
+candidates, subcommand, env strip, detect args, config path, install hint) come from
 `LaunchSpec`. Adding an engine = new enum variant + one `match` arm in `get_agent_meta`.
+Verify with `rg -n "claude|codex|ClaudeCode|Codex" src-tauri/src/acp.rs` — every hit must
+be inside `#[cfg(test)]`.
 
 > **Warning**: `env_strip` is engine data now (opencode strips
-> `OPENCODE_SERVER_USERNAME`/`OPENCODE_SERVER_PASSWORD`). New engines declare their own.
+> `OPENCODE_SERVER_USERNAME`/`OPENCODE_SERVER_PASSWORD`; claude/codex are `&[]`). New
+> engines declare their own.
 > The Windows fallback uses `bare_bin_name()` (extension-stripped) so `cmd /C <bin>`
 > keeps PATHEXT resolution — never feed it `bin_candidates[0]` verbatim.
+> Windows `bin_candidates` for `ExternalAdapter` must lead with the `.cmd` shim
+> (`claude-agent-acp.cmd`, `codex-acp.cmd`) — npm installs `.cmd`/`.ps1`, not a bare name
+> or `.exe`.
+
+### Adapter detection & fields (task 10-13-acp-claude-codex)
+
+- `detect_args = ["--version"]`, `acp_probe_args = ["--version"]` for both adapters.
+  Measured: `claude-agent-acp --version` → `0.89.1` (exit 0); `codex-acp --version` →
+  `@agentclientprotocol/codex-acp 2.2.2` (exit 0). `--help` is **unreliable**
+  (`claude-agent-acp --help` exits 0 with no output; `codex-acp --help` crashes with
+  `0xC0000409`), so it is never used as a probe.
+- `config_path = None` for claude/codex (no independently editable config; credentials
+  are managed by the vendor CLI in `~/.claude` / `~/.codex`). `agent_read/write_config`
+  therefore returns empty / errors for them and the settings page shows a generic
+  placeholder instead of a config editor.
+- `context_window = ContextWindowSource::None` (returns `Ok(None)`; the frontend keeps
+  its existing denominator). The first `session/new` measured claude ~5.4s / codex ~1.7s,
+  within the existing 10s/30s budgets — no timeout change needed.
+- The adapters **bundle their own vendor CLI** (`@anthropic-ai/claude-agent-sdk-*/claude.exe`,
+  `@openai/codex/vendor/.../codex.exe`), so the vendor CLI need not be on PATH; auth
+  problems surface at prompt time as normal ACP auth errors.
+- `session/new`'s `configOptions` is a **standard array** for both (claude 3 items,
+  codex 5) — the existing model/mode dropdown consumption path is reused unchanged.
 
 ### Frontend
 
-- `src/types/engine.ts` — `EngineWire` (`'open_code'`), `AcpAgentInfo`,
-  `BUILTIN_ENGINE_WIRES`, `DEFAULT_ENGINE_WIRE`.
+- `src/types/engine.ts` — `EngineWire` (`'open_code' | 'claude_code' | 'codex'`),
+  `AcpAgentInfo`, `BUILTIN_ENGINE_WIRES`, `DEFAULT_ENGINE_WIRE`.
 - `src/services/engineService.ts` — sole `invoke` site for `acp_list_agents` /
   `engine_default_get` / `engine_default_set`; isTauri dual-channel + mock.
 - `src/stores/engine.ts` — **single shared store** (like codeg `use-acp-agents`):
@@ -364,21 +439,86 @@ constants (bin candidates, subcommand, env strip, detect args, config path) come
   `preselectedEngineId` (default → first-available fallback, **without writing back
   the default** — fallback ≠ user confirmation), `load()`/`refresh()`,
   `setDefaultEngine()`, `pickEngine()`, `agentName()`. On fetch failure it keeps the
-  last list (never clears); browser dev falls back to a static opencode entry.
+  last list (never clears); browser dev falls back to a static 3-engine entry.
 - `NewSessionDialog.vue` — engine picker at new-session entry points
   (`SidebarPanel.vue` folder/tmp, `CodingWorkspace.vue`, `TopBar.vue`). Confirm writes
-  `engineId` into the created `Session`.
+  `engineId` into the created `Session`. Supports `engineOnly` mode (folder already
+  fixed by the caller — the picker hides the folder select and shows a read-only target);
+  the sidebar folder-row 「新建会话」 uses it. **Engine is chosen here (at creation) and
+  nowhere else**: once a session exists its `engineId` is frozen (R8) — there is
+  deliberately NO engine switcher in the composer.
+- Engine **icon** mapping is single-sourced in `src/utils/engineIcons.ts`
+  (`engineIcon(wire)` → lobehub `?raw` SVG). Prefer `*-color.svg` variants (brand color
+  baked in); mono variants use `fill=currentColor`, so the container must set an
+  explicit text color or it renders black.
+- After the dialog confirms and the draft is created, `SidebarPanel` calls
+  `ensureModelOptions(sessionId)` to pre-warm that engine's model list (probe keyed by
+  engine; failure silent — the composer still loads it asynchronously).
 - `AgentManageView.vue` — list from the engine store, reactive selection, plus a
   "default engine" chooser writing `settings.json`.
 
+### Per-engine status isolation (`stores/agent.ts`, closed in 10-13-acp-claude-codex)
+
+**Design rule**: `detectResults` is bucketed **by engine wire**, and every list row reads
+its own bucket. Never hand a shared/global status value to every row.
+
+`stores/agent.ts` exposes per-engine projections for this:
+
+- `detectingEngineId` (`ref<string|null>`) — the engine currently being detected, set by
+  `detect()` / updated per id inside `detectAll()`, cleared in `finally`.
+- `agentStatusFor(engineId)` — `'detecting'` **only** when
+  `detectingEngineId === engineId` (a global `detecting` bool would light up every row's
+  spinner), else maps `detectResults[engineId]` → `'unknown' | 'not-installed' | 'pass' | 'fail'`.
+  The legacy single-value `agentStatus` computed was **removed** (all callers now pass an
+  explicit engine id to `agentStatusFor`); do not reintroduce a global status for rows.
+- `runDetect(target)` (pure: writes only `detectResults[target]`) vs
+  `loadSupporting(target)` (config + app-level env side effects) — split so
+  `detectAll()` can sweep several engines and then load the shared config/env cache
+  **exactly once** for `activeEngineId` (a per-engine loop that called `loadSupporting`
+  for each id would let the last engine's `configExists:false` clear opencode's loaded
+  config from under the detail panel).
+
+Row/action wiring in `AgentManageView.vue`:
+
+```
+onMounted   → engineStore.load() → set activeEngineId (= selectedAgentId) → detectAll(all agentTypes)
+onSelect    → selectedAgentId = id → watcher writes activeEngineId → detect(id)
+row @refresh→ refresh(rowId) → detect(rowId)   // NOT the currently selected engine
+watch(selectedAgentId) → if builtin wire: agentStore.activeEngineId = id
+```
+
+**Concurrency contract**: `detect()` / `detectAll()` share the `detecting` re-entrancy
+lock (a second caller returns early). Both clear `detecting`/`detectingEngineId` in
+`finally`, so a thrown service error cannot leave a row spinning. Callers in the view
+must handle rejection explicitly (`refresh()` catch → `message.error`;
+`onMounted` catch → `message.error`) — an un-awaited `onMounted` promise rejection is
+an unhandled rejection, not a silent no-op.
+
+**Browser mock parity**: `mockDetect(engineId)` mirrors the real contract —
+claude/codex (external adapters the user must `npm i -g`) return
+`installed:false` + `detail`, only opencode passes. `engineService.mockList()`
+must keep `available` consistent with that (claude/codex `available:false`,
+`installedVersion: null`), otherwise the new-session dialog shows a green engine the
+settings page calls 未安装.
+
 ### Known gap (second-engine work)
 
-`stores/agent.ts` keeps `detectResults` keyed by engine wire with a derived
-`detectResult = detectResults[activeEngineId]`, but **nothing writes `activeEngineId`**
-today; `AgentManageView.refresh()` writes `detectResults[selectedAgentId]` while the
-detail panel reads `activeEngineId`. With a single engine these coincide. When R7
-gains a second engine, wire `selectedAgentId → activeEngineId` or the settings detail
-will render the wrong engine's precheck.
+**Closed** (10-13-acp-claude-codex): `stores/agent.ts` used to keep `detectResults`
+keyed by engine wire while nothing wrote `activeEngineId`, so
+`AgentManageView.refresh()` wrote `detectResults[selectedAgentId]` and the detail panel
+read a different key. Now the `selectedAgentId → activeEngineId` watcher (plus the
+explicit write in `onMounted`) keeps them in sync, and rows call `agentStatusFor(id)`.
+
+Remaining, documented edge cases (not bugs, but keep them in mind when adding engines):
+
+- `prechecks` / `detectResult` / the config cache are still **single-slot**, keyed by
+  `activeEngineId`. Only one engine's detail can be shown at a time; `detectAll()`
+  deliberately loads the cache for `activeEngineId` only.
+- `useConversation.passGate()` caches detect per session engine in the same
+  `detectResults` map; a session whose engine was never detected triggers `detect()`.
+  It ignores the store's re-entrancy early-return, so a concurrent detect can leave the
+  gate evaluating a stale/absent result. Values resolve after the in-flight detect
+  completes — acceptable today, revisit if detect becomes slow for a third engine.
 
 ## Gotchas
 

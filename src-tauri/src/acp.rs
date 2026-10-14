@@ -98,30 +98,58 @@ fn rpc_error_string(err: &Value) -> String {
 #[cfg(test)]
 use engine::extract_exe_from_shim;
 
-/// 构造引擎 ACP 子进程 Command（stdin/stdout/stderr 管道 + Windows 无窗口）。
-/// 严格按 `AcpAgentMeta` 取参：bin 候选 / subcommand / env 清洗列表均来自声明，
-/// 协议路由代码不引用引擎名（AC8）。
-///
-/// env_strip 剔除父进程可能继承的 server 凭据（如 opencode 的
-/// `OPENCODE_SERVER_USERNAME/PASSWORD`）：泄漏给子进程会让 Zen 免费通道上游鉴权失败
-/// （`-32603 ... Invalid credential`）。剔除后回到干净态，与 codeg 独立启动等价。
-fn build_acp_command(meta: &AcpAgentMeta) -> Command {
-    let mut cmd = match engine::resolve_spawn(meta) {
+/// 按 `SpawnSpec` 构造子进程命令（纯函数，便于单测；**不出现引擎名**）。
+/// `bare_bin` 供 CmdFallback 用（cmd 走 PATHEXT 解析）；`subcommand` 为空串时跳过。
+fn command_from_spawn_spec(
+    spec: engine::SpawnSpec,
+    display_name: &str,
+    bare_bin: &str,
+    subcommand: &str,
+) -> Result<Command, String> {
+    match spec {
         engine::SpawnSpec::Exe(path) => {
             let mut c = Command::new(path);
-            c.arg(meta.launch.acp_subcommand);
-            c
+            if !subcommand.is_empty() {
+                c.arg(subcommand);
+            }
+            Ok(c)
         }
         engine::SpawnSpec::CmdFallback => {
             let mut c = Command::new("cmd");
             // 用去扩展名的裸名交给 cmd：cmd 走 PATHEXT 解析（可命中 .exe/.cmd/.bat），
             // 比写死 bin_candidates[0]（如 "opencode.exe"）更贴近原 `cmd /C opencode` 语义。
-            c.arg("/C")
-                .arg(engine::bare_bin_name(meta))
-                .arg(meta.launch.acp_subcommand);
-            c
+            c.arg("/C").arg(bare_bin);
+            if !subcommand.is_empty() {
+                c.arg(subcommand);
+            }
+            Ok(c)
         }
-    };
+        engine::SpawnSpec::NotInstalled { hint } => Err(format!(
+            "acp:-32603 未安装 {} 的适配器命令，请运行 `npm i -g {}`（需要 Node.js）",
+            display_name, hint
+        )),
+    }
+}
+
+/// 构造引擎 ACP 子进程 Command（stdin/stdout/stderr 管道 + Windows 无窗口）。
+/// 严格按 `AcpAgentMeta` 取参：bin 候选 / subcommand / env 清洗列表均来自声明，
+/// 协议路由代码不引用引擎名（AC8）。
+///
+/// 分发形态经 `SpawnSpec` 收敛为通用三态（不出现引擎名）：
+/// - Exe(path)：直接 spawn 真身；subcommand 非空时追加（opencode `acp`；适配器为空）。
+/// - CmdFallback：`cmd /C <bare_bin> [subcommand]` 末选（.cmd 无法 CreateProcess）。
+/// - NotInstalled：适配器未安装 → 返回 Err（含 `npm i -g <package>` 指引），**不 spawn**。
+///
+/// env_strip 剔除父进程可能继承的 server 凭据（如 opencode 的
+/// `OPENCODE_SERVER_USERNAME/PASSWORD`）：泄漏给子进程会让 Zen 免费通道上游鉴权失败
+/// （`-32603 ... Invalid credential`）。剔除后回到干净态，与 codeg 独立启动等价。
+fn build_acp_command(meta: &AcpAgentMeta) -> Result<Command, String> {
+    let mut cmd = command_from_spawn_spec(
+        engine::resolve_spawn(meta),
+        meta.name,
+        engine::bare_bin_name(meta),
+        meta.launch.acp_subcommand,
+    )?;
     for var in meta.launch.env_strip {
         cmd.env_remove(var);
     }
@@ -130,7 +158,7 @@ fn build_acp_command(meta: &AcpAgentMeta) -> Command {
         .stderr(Stdio::piped());
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd
+    Ok(cmd)
 }
 
 // ---------- 连接对象 ----------
@@ -560,7 +588,7 @@ fn connect_inner(app: AppHandle, conn_id: String, engine: AgentType) -> Result<S
     ensure_idle_sweep(&app);
 
     let meta = engine::get_agent_meta(engine);
-    let mut cmd = build_acp_command(&meta);
+    let mut cmd = build_acp_command(&meta)?;
     // ACP 自身 cwd 与会话 cwd 无关（session/new 传 cwd），无需 --cwd
 
     let mut child = cmd
@@ -814,7 +842,7 @@ fn probe_options_inner(cwd: Option<String>, engine: AgentType) -> Result<ProbeRe
     let cwd_str = work_dir.to_string_lossy().into_owned();
 
     let meta = engine::get_agent_meta(engine);
-    let mut cmd = build_acp_command(&meta);
+    let mut cmd = build_acp_command(&meta)?;
 
     let mut child = cmd
         .spawn()
@@ -1465,6 +1493,59 @@ mod tests {
         std::env::set_var("LIGHTR_ACP_IDLE_TIMEOUT_SECS", "abc");
         assert_eq!(idle_timeout_secs(), DEFAULT_IDLE_TIMEOUT_SECS);
         std::env::remove_var("LIGHTR_ACP_IDLE_TIMEOUT_SECS");
+    }
+
+    /// 三种 SpawnSpec → Command argv 构造（纯函数；不 spawn 进程）。
+    #[test]
+    fn command_from_spawn_spec_three_states() {
+        use std::ffi::OsStr;
+
+        // Exe + 非空 subcommand（opencode 形态）：argv = [exe, "acp"]
+        let c = command_from_spawn_spec(
+            engine::SpawnSpec::Exe(PathBuf::from("C:\\bin\\opencode.exe")),
+            "OpenCode",
+            "opencode",
+            "acp",
+        )
+        .expect("Exe 应成功");
+        let args: Vec<&OsStr> = c.get_args().collect();
+        assert_eq!(args, vec![OsStr::new("acp")]);
+
+        // Exe + 空 subcommand（适配器形态）：无额外 argv
+        let c = command_from_spawn_spec(
+            engine::SpawnSpec::Exe(PathBuf::from("C:\\bin\\claude-agent-acp.cmd")),
+            "Claude Code",
+            "claude-agent-acp",
+            "",
+        )
+        .expect("Exe 应成功");
+        assert_eq!(c.get_args().count(), 0);
+
+        // CmdFallback + 非空 subcommand：cmd /C <bare> <subcommand>
+        let c = command_from_spawn_spec(
+            engine::SpawnSpec::CmdFallback,
+            "OpenCode",
+            "opencode",
+            "acp",
+        )
+        .expect("CmdFallback 应成功");
+        let args: Vec<&OsStr> = c.get_args().collect();
+        assert_eq!(
+            args,
+            vec![OsStr::new("/C"), OsStr::new("opencode"), OsStr::new("acp")]
+        );
+
+        // NotInstalled：返回 Err，含安装指引，不构造 Command
+        let err = command_from_spawn_spec(
+            engine::SpawnSpec::NotInstalled {
+                hint: "@agentclientprotocol/codex-acp".into(),
+            },
+            "Codex CLI",
+            "codex-acp",
+            "",
+        )
+        .expect_err("NotInstalled 应返回 Err");
+        assert!(err.contains("npm i -g @agentclientprotocol/codex-acp"), "err={}", err);
     }
 
     #[test]

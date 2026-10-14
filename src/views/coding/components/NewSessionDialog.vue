@@ -5,36 +5,20 @@
 // 文件夹来源 = 已打开的项目列表（projectStore.projects）；不支持在弹窗内新建文件夹。
 import { computed, onMounted, ref } from 'vue'
 import { ChevronDown, Folder, X } from 'lucide-vue-next'
-// lobehub 图标以 ?raw 内联 SVG 文本导入（currentColor，1em），v-html 渲染（与 AgentManageView 一致）
-import opencodeIcon from '@lobehub/icons-static-svg/icons/opencode.svg?raw'
-import claudecodeIcon from '@lobehub/icons-static-svg/icons/claudecode-color.svg?raw'
-import codexIcon from '@lobehub/icons-static-svg/icons/codex-color.svg?raw'
-import geminiCliIcon from '@lobehub/icons-static-svg/icons/geminicli-color.svg?raw'
-import clineIcon from '@lobehub/icons-static-svg/icons/cline.svg?raw'
-import cursorIcon from '@lobehub/icons-static-svg/icons/cursor-text.svg?raw'
+import { engineIcon } from '../../../utils/engineIcons'
 import { useEngineStore } from '../../../stores/engine'
 import { useProjectStore } from '../../../stores/project'
 import type { EngineWire } from '../../../types/engine'
 import type { NewSessionTarget } from '../../../types/session'
-
-/** 引擎 wire → 图标 SVG（未知引擎空串占位；与 AgentManageView 同一映射） */
-const ENGINE_ICONS: Record<string, string> = {
-  open_code: opencodeIcon,
-  claude_code: claudecodeIcon,
-  codex: codexIcon,
-  gemini: geminiCliIcon,
-  cline: clineIcon,
-  cursor: cursorIcon,
-}
-function engineIcon(wire: string): string {
-  return ENGINE_ICONS[wire] ?? ''
-}
 
 const props = defineProps<{
   /** 弹窗是否可见（父级 v-model 控制） */
   open: boolean
   /** 初始选中的项目 id（父级可预置；仅用于初始选中） */
   defaultProjectId?: string | null
+  /** 仅选引擎模式（文件夹已由调用方确定，如侧栏文件夹行内「新建会话」）：
+   * 隐藏「选择文件夹」，目标固定为该文件夹；确认后由父级按 defaultProjectId 建会话。 */
+  engineOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -57,11 +41,13 @@ onMounted(() => {
   void engineStore.load()
 })
 
-/** 打开时同步预选：引擎 + 文件夹（默认 = 父级预置 > 最近项目 > 临时会话） */
+/** 打开时同步预选：引擎 + 文件夹（默认 = 父级预置 > 最近项目 > 临时会话）。
+ * engineOnly 模式下文件夹锁定为 defaultProjectId（不可选）。 */
 function syncOnOpen() {
   selected.value = engineStore.preselectedEngineId
-  selectedProjectId.value =
-    props.defaultProjectId ?? projectStore.recentProjects[0]?.id ?? null
+  selectedProjectId.value = props.engineOnly
+    ? (props.defaultProjectId ?? null)
+    : (props.defaultProjectId ?? projectStore.recentProjects[0]?.id ?? null)
 }
 
 const list = computed(() => engineStore.agents)
@@ -110,9 +96,11 @@ const canConfirm = computed(() => {
 function confirm() {
   if (!canConfirm.value) return
   engineStore.pickEngine(selected.value)
-  const target: NewSessionTarget = selectedProjectId.value
-    ? { kind: 'folder', projectId: selectedProjectId.value }
-    : { kind: 'tmp' }
+  const target: NewSessionTarget = props.engineOnly
+    ? { kind: 'folder', projectId: props.defaultProjectId as string }
+    : selectedProjectId.value
+      ? { kind: 'folder', projectId: selectedProjectId.value }
+      : { kind: 'tmp' }
   emit('confirm', { engineId: selected.value, target })
   emit('close')
 }
@@ -130,7 +118,7 @@ function close() {
     @mousedown.self="close"
   >
     <div
-      class="w-[340px] rounded-md border border-neutral-200 bg-white p-4"
+      class="w-[340px] rounded-2xl border border-neutral-200 bg-white p-5 shadow-lg"
       @mousedown.stop="onRootMousedown"
       @vue:mounted="syncOnOpen"
     >
@@ -149,7 +137,7 @@ function close() {
       <div class="relative" @mousedown.stop>
         <!-- 收起态：当前引擎（图标 + 名称） -->
         <button
-          class="flex w-full cursor-pointer items-center gap-2 rounded-md border border-neutral-300 bg-white px-2.5 py-2 text-left transition-colors hover:bg-neutral-50"
+          class="flex w-full cursor-pointer items-center gap-2 rounded-lg border border-neutral-300 bg-white px-2.5 py-2 text-left transition-colors hover:bg-neutral-50"
           :class="dropOpen && 'border-blue-400'"
           type="button"
           @click="dropOpen = !dropOpen"
@@ -170,7 +158,7 @@ function close() {
         <!-- 展开态：引擎列表（每项图标 + 名称 + 描述） -->
         <div
           v-if="dropOpen"
-          class="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-neutral-200 bg-white py-1 shadow-sm"
+          class="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-sm"
         >
           <button
             v-for="agent in list"
@@ -196,11 +184,22 @@ function close() {
         </div>
       </div>
 
+      <!-- engineOnly：文件夹已由调用方确定，显示只读提示；否则给下拉选择 -->
+      <template v-if="props.engineOnly">
+        <div class="mt-3 mb-1.5 text-[11px] text-neutral-500">目标文件夹</div>
+        <div class="flex w-full items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-2">
+          <Folder class="h-4 w-4 shrink-0 text-neutral-500" />
+          <span class="min-w-0 flex-1 truncate text-[13px] text-neutral-600">
+            {{ projectStore.get(props.defaultProjectId)?.name ?? '临时会话' }}
+          </span>
+        </div>
+      </template>
+      <template v-else>
       <div class="mt-3 mb-1.5 text-[11px] text-neutral-500">选择文件夹</div>
       <div class="relative" @mousedown.stop>
         <!-- 收起态：当前目标（文件夹 / 临时会话） -->
         <button
-          class="flex w-full cursor-pointer items-center gap-2 rounded-md border border-neutral-300 bg-white px-2.5 py-2 text-left transition-colors hover:bg-neutral-50"
+          class="flex w-full cursor-pointer items-center gap-2 rounded-lg border border-neutral-300 bg-white px-2.5 py-2 text-left transition-colors hover:bg-neutral-50"
           :class="projectDropOpen && 'border-blue-400'"
           type="button"
           :disabled="!hasProjects"
@@ -219,7 +218,7 @@ function close() {
         <!-- 展开态：临时会话 + 已有文件夹列表 -->
         <div
           v-if="projectDropOpen"
-          class="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-neutral-200 bg-white py-1 shadow-sm"
+          class="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-sm"
         >
           <button
             class="flex w-full cursor-pointer items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-neutral-100"
@@ -249,16 +248,17 @@ function close() {
       <p v-if="!hasProjects" class="mt-1.5 text-[11px] text-neutral-400">
         暂无已打开的文件夹，请先打开一个文件夹，或使用临时会话
       </p>
+      </template>
 
       <div class="mt-4 flex justify-end gap-2">
         <button
-          class="cursor-pointer rounded-md border border-neutral-200 px-3 py-1.5 text-[13px] text-neutral-600 transition-colors hover:bg-neutral-100"
+          class="cursor-pointer rounded-lg border border-neutral-200 px-3 py-1.5 text-[13px] text-neutral-600 transition-colors hover:bg-neutral-100"
           @click="close"
         >
           取消
         </button>
         <button
-          class="cursor-pointer rounded-md bg-blue-500 px-3 py-1.5 text-[13px] text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+          class="cursor-pointer rounded-lg bg-blue-500 px-3 py-1.5 text-[13px] text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
           :disabled="!canConfirm"
           @click="confirm"
         >

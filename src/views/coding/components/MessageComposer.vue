@@ -297,6 +297,7 @@ const healthShimmer = computed(() => healthState.value === 'connecting')
 const agentName = computed(
   () => acpHealth.value?.agentInfo?.name ?? engineStore.agentName(session.value?.engineId),
 )
+
 /** 弹层错误原因（仅异常态显示） */
 const healthReason = computed(() =>
   healthState.value === 'error' ? (acpHealth.value?.reason ?? null) : null,

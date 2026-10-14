@@ -27,6 +27,8 @@ export const useAgentStore = defineStore('agent', () => {
   const detecting = ref(false)
   /** 每个引擎独立的检测结果（键 = wire） */
   const detectResults = ref<Record<string, DetectResult>>({})
+  /** 正在检测的引擎 wire；null = 未在检测（列表徽章据此只点亮自己那一行） */
+  const detectingEngineId = ref<string | null>(null)
   /** 当前设置页/详情页聚焦的引擎（默认 opencode） */
   const activeEngineId = ref<EngineWire>(DEFAULT_ENGINE_WIRE)
   /** 浏览器 dev 环境标记：界面显示 mock 提示条（PRD R3） */
@@ -81,65 +83,104 @@ export const useAgentStore = defineStore('agent', () => {
         id: 'platform',
         label: 'Platform',
         status: d.binPath ? 'pass' : 'fail',
-        detail: d.binPath ? `${d.platform} · ${d.binPath}` : `${d.platform} · PATH 中未找到 opencode`,
+        detail: d.binPath ? `${d.platform} · ${d.binPath}` : `${d.platform} · 未找到引擎命令`,
       },
       {
         id: 'config',
         label: '配置文件',
         status: d.configExists ? 'pass' : 'fail',
-        detail: d.configExists ? d.configPath : `${d.configPath}（不存在）`,
+        detail: d.configExists ? d.configPath : `${d.configPath || '该引擎无独立配置文件'}（不存在）`,
       },
       {
         id: 'acp',
         label: 'ACP 能力',
         status: d.acpOk ? 'pass' : 'fail',
-        detail: d.acpOk ? 'opencode acp 子命令可用（仅探测，未启动服务）' : 'acp --help 探测失败',
+        detail: d.acpOk ? 'ACP 能力探测通过（仅探测，未启动服务）' : 'ACP 能力探测失败',
       },
     ]
   })
 
-  /** 列表徽章状态：检测中 spin / PASS 绿 / FAIL 红 / 未安装灰 */
-  const agentStatus = computed<AgentStatus>(() => {
-    if (detecting.value) return 'detecting'
-    const d = detectResult.value
+  /**
+   * 单个引擎的徽章状态。**必须按 engineId 取数**：detectResults 是按键分桶的，
+   * 共用一个全局状态会让所有列表行显示最后一次检测的结果（点 opencode 全 PASS、
+   * 点 Claude 全「未安装」）。未检测过的引擎返回 'unknown'（未检测）。
+   */
+  function agentStatusFor(engineId: string): AgentStatus {
+    if (detecting.value && detectingEngineId.value === engineId) return 'detecting'
+    const d = detectResults.value[engineId]
     if (!d) return 'unknown'
     if (!d.installed) return 'not-installed'
     return d.version && d.acpOk ? 'pass' : 'fail'
-  })
+  }
 
-  /** 执行检测并顺带加载配置与环境变量（进入 Agent 管理页时调用）。
+  /** 纯检测：只写 detectResults[engineId]，不触碰配置/环境缓存。
+   *  单独抽出让 detectAll 能把多个引擎各测一次而不互相覆盖单份缓存。 */
+  async function runDetect(target: EngineWire): Promise<void> {
+    const result = await opencodeService.detect(target)
+    detectResults.value = { ...detectResults.value, [target]: result }
+  }
+
+  /** 检测后的配套数据：target 引擎的配置文件 + 应用级环境变量。
+   *  失败只降级不抛出（配置损坏/被删时 UI 走引导分支，不让整个检测崩）。 */
+  async function loadSupporting(target: EngineWire): Promise<void> {
+    const result = detectResults.value[target]
+    if (result?.installed && result?.configExists) {
+      try {
+        await loadConfig(target)
+      } catch (e) {
+        configError.value = e instanceof Error ? e.message : '配置读取失败'
+        configText.value = null
+        configLoaded.value = true
+      }
+    } else {
+      configText.value = null
+      configMtime.value = null
+      configLoaded.value = true
+    }
+    // 环境变量文件读取失败不阻断检测（应用级文件损坏/缺失时按空处理）
+    try {
+      await loadEnv()
+    } catch {
+      envVars.value = []
+      envLoaded.value = true
+    }
+  }
+
+  /** 执行检测并顺带加载配置与环境变量（进入 Agent 管理页、切换引擎时调用）。
    * 重入保护：检测进行中直接返回（quality-guidelines 规则 7）。
    * engineId 缺省用当前聚焦引擎。 */
   async function detect(engineId?: EngineWire): Promise<void> {
     const target = engineId ?? activeEngineId.value
     if (detecting.value) return
     detecting.value = true
+    detectingEngineId.value = target
     try {
-      const result = await opencodeService.detect(target)
-      detectResults.value = { ...detectResults.value, [target]: result }
-      if (result.installed && result.configExists) {
-        // 配置读取失败不应让整个检测崩溃：记录错误，UI 走引导分支
-        try {
-          await loadConfig(target)
-        } catch (e) {
-          configError.value = e instanceof Error ? e.message : '配置读取失败'
-          configText.value = null
-          configLoaded.value = true
-        }
-      } else {
-        configText.value = null
-        configMtime.value = null
-        configLoaded.value = true
-      }
-      // 环境变量文件读取失败不阻断检测（应用级文件损坏/缺失时按空处理）
-      try {
-        await loadEnv()
-      } catch {
-        envVars.value = []
-        envLoaded.value = true
-      }
+      await runDetect(target)
+      await loadSupporting(target)
     } finally {
       detecting.value = false
+      detectingEngineId.value = null
+    }
+  }
+
+  /** 依次检测多个引擎（进设置页时用，让列表徽章一次到位）。
+   *  配置/环境变量只按当前聚焦引擎加载一次（单份缓存，避免后测的引擎把先测的清掉）。 */
+  async function detectAll(engineIds: string[]): Promise<void> {
+    if (detecting.value) return
+    if (engineIds.length === 0) return
+    detecting.value = true
+    try {
+      for (const id of engineIds) {
+        detectingEngineId.value = id
+        await runDetect(id as EngineWire)
+      }
+      // 逐项检测已结束：清掉行级「检测中」，否则最后一个引擎会在加载配置时
+      // 继续假装在转（它的 detectResults 其实已经落桶）。
+      detectingEngineId.value = null
+      await loadSupporting(activeEngineId.value)
+    } finally {
+      detecting.value = false
+      detectingEngineId.value = null
     }
   }
 
@@ -268,6 +309,7 @@ export const useAgentStore = defineStore('agent', () => {
 
   return {
     detecting,
+    detectingEngineId,
     detectResult,
     detectResults,
     activeEngineId,
@@ -279,12 +321,13 @@ export const useAgentStore = defineStore('agent', () => {
     configView,
     configError,
     prechecks,
-    agentStatus,
+    agentStatusFor,
     envVars,
     envLoaded,
     enabled,
     writing,
     detect,
+    detectAll,
     loadConfig,
     loadEnv,
     saveModel,

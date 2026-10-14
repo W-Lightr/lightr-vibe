@@ -2,10 +2,10 @@
 // 照 Rust 侧 AgentType::as_wire（wire 名是持久化契约，不可变）。
 
 /** 引擎 wire 标识：写入 Session.engineId / SessionIndexEntry.engineId。 */
-export type EngineWire = 'open_code'
+export type EngineWire = 'open_code' | 'claude_code' | 'codex'
 
 /** 已知引擎 wire 列表（前端静态回退用；权威列表来自 acp_list_agents）。 */
-export const BUILTIN_ENGINE_WIRES: EngineWire[] = ['open_code']
+export const BUILTIN_ENGINE_WIRES: EngineWire[] = ['open_code', 'claude_code', 'codex']
 
 /** 默认引擎 wire（设置页不可用时的兜底）。 */
 export const DEFAULT_ENGINE_WIRE: EngineWire = 'open_code'

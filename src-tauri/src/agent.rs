@@ -183,11 +183,21 @@ fn read_all(mut handle: Option<impl Read>) -> String {
     buf
 }
 
-/// 执行引擎子命令：直接 spawn 失败（CreateProcess 不能执行 .cmd shim）
-/// 时回退 `cmd /C <bin> ...`（research §1 回退链）。超时不回退（避免叠加 2×5s）。
-/// bin 取 meta.launch.bin_candidates[0]（Windows 下为 .exe 首选）。
-fn run_engine(meta: &AcpAgentMeta, args: &[&str]) -> Result<CmdOutput, RunError> {
-    let bin = meta.launch.bin_candidates[0];
+/// 执行引擎子命令（best-effort 版本/能力探测）：直接 spawn 失败（CreateProcess
+/// 不能执行 .cmd shim）时回退 `cmd /C <bin> ...`（research §1 回退链）。
+/// 超时不回退（避免叠加 2×5s）。
+///
+/// bin 优先用 `resolved_bin`——resolve_bin_for_detect 已把 PATH 与 npm 全局 bin 都纳入，
+/// 外部适配器（claude/codex）常只装在 npm 全局 bin（不在 PATH），此时裸名 spawn 会失败并
+/// 产生**虚假的**「--version 失败」误报；用解析到的绝对路径才能真正探到版本（D5：
+/// 版本探测 best-effort，不因探测失败误报不可用）。未解析到（None）时退回裸名候选，
+/// 保持 opencode 既有 PATH 语义不变。
+fn run_engine(
+    meta: &AcpAgentMeta,
+    resolved_bin: Option<&str>,
+    args: &[&str],
+) -> Result<CmdOutput, RunError> {
+    let bin = resolved_bin.unwrap_or(meta.launch.bin_candidates[0]);
     let mut direct = Command::new(bin);
     direct.args(args);
     match run_with_timeout(direct) {
@@ -330,7 +340,7 @@ pub async fn agent_detect(engine_id: Option<String>) -> DetectResult {
         Err(e) => DetectResult {
             installed: false,
             version: None,
-            bin_path: engine::resolve_bin(&meta),
+            bin_path: engine::resolve_bin_for_detect(&meta),
             platform: format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH),
             acp_ok: false,
             config_path: engine_config_path(&meta)
@@ -345,7 +355,7 @@ pub async fn agent_detect(engine_id: Option<String>) -> DetectResult {
 }
 
 fn detect_inner(meta: &AcpAgentMeta) -> DetectResult {
-    let bin_path = engine::resolve_bin(meta);
+    let bin_path = engine::resolve_bin_for_detect(meta);
     let platform = format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH);
     let (config_path, config_exists) = match engine_config_path(meta) {
         Ok(Some(p)) => {
@@ -358,29 +368,47 @@ fn detect_inner(meta: &AcpAgentMeta) -> DetectResult {
     let mut problems: Vec<String> = Vec::new();
     let mut version: Option<String> = None;
 
-    // 1) 版本探测（args 来自 meta.launch.detect_args）
-    match run_engine(meta, meta.launch.detect_args) {
-        Ok(out) if out.code == Some(0) => {
-            version = extract_version(&out.stdout).or_else(|| extract_version(&out.stderr));
-            if version.is_none() {
-                problems.push("--version 输出中未解析到版本号".into());
+    // 1) 版本探测（args 来自 meta.launch.detect_args；为空则跳过，不产生无意义超时）
+    if meta.launch.detect_args.is_empty() {
+        // 无声明检测参数：仅以 resolve 结果作为 installed 判据
+    } else {
+        match run_engine(meta, bin_path.as_deref(), meta.launch.detect_args) {
+            Ok(out) if out.code == Some(0) => {
+                version = extract_version(&out.stdout).or_else(|| extract_version(&out.stderr));
+                if version.is_none() {
+                    problems.push("--version 输出中未解析到版本号".into());
+                }
             }
+            Ok(out) => problems.push(format!("--version 退出码异常（{:?}）", out.code)),
+            Err(e) => problems.push(format!("--version {}", e.message())),
         }
-        Ok(out) => problems.push(format!("--version 退出码异常（{:?}）", out.code)),
-        Err(e) => problems.push(format!("--version {}", e.message())),
     }
 
     // 2) ACP 能力探测（退出码 0 = 可用；仅 --help，不启动服务；args 来自 meta）
-    let acp_ok = match run_engine(meta, meta.launch.acp_probe_args) {
-        Ok(out) => out.code == Some(0),
-        Err(e) => {
-            problems.push(format!("acp --help {}", e.message()));
-            false
+    let acp_ok = if meta.launch.acp_probe_args.is_empty() {
+        false
+    } else {
+        match run_engine(meta, bin_path.as_deref(), meta.launch.acp_probe_args) {
+            Ok(out) => out.code == Some(0),
+            Err(e) => {
+                problems.push(format!("acp 能力探测 {}", e.message()));
+                false
+            }
         }
     };
 
-    // 已安装 = PATH 解析到可执行文件，或版本命令跑通并解析出 semver
+    // 已安装 = resolve 到命令（PATH 或 npm 全局 bin），或版本命令跑通并解析出 semver
     let installed = bin_path.is_some() || version.is_some();
+
+    // 未安装且声明了适配器安装指引 → detail 给出可读的 `npm i -g <package>` 指引（AC9）
+    if !installed {
+        if let Some(hint) = meta.launch.install_hint {
+            problems.push(format!(
+                "未检测到适配器命令，请运行 `npm i -g {}`（需要 Node.js）",
+                hint
+            ));
+        }
+    }
 
     DetectResult {
         installed,

@@ -291,6 +291,10 @@ function authHintFor(engineId: string): string {
   switch (engineId) {
     case 'open_code':
       return '当前模型需要凭据：请在终端运行 `opencode auth login` 后重试'
+    case 'claude_code':
+      return '当前模型需要凭据：请在终端运行 `claude` 完成登录后重试（凭据共享 ~/.claude）'
+    case 'codex':
+      return '当前模型需要凭据：请在终端运行 `codex` 完成登录后重试（凭据共享 ~/.codex）'
     default:
       return '当前模型需要凭据：请先完成引擎认证后重试'
   }
@@ -301,6 +305,10 @@ function engineDisplayName(engineId: string): string {
   switch (engineId) {
     case 'open_code':
       return 'OpenCode'
+    case 'claude_code':
+      return 'Claude Code'
+    case 'codex':
+      return 'Codex CLI'
     default:
       return engineId
   }

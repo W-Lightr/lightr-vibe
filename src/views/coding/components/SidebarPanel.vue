@@ -18,8 +18,7 @@ import {
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
 import { useProjectStore } from '../../../stores/project'
-import { useEngineStore } from '../../../stores/engine'
-import { useConversation } from '../../../composables/useConversation'
+import { useConversation, ensureModelOptions } from '../../../composables/useConversation'
 import { canPickFolder, fsService, projectNameFromPath } from '../../../services/fsService'
 import { formatRelativeTime } from '../../../utils/time'
 import SessionItem from './SessionItem.vue'
@@ -30,7 +29,6 @@ import type { EngineWire } from '../../../types/engine'
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
-const engineStore = useEngineStore()
 const { closeConnection } = useConversation()
 const message = useMessage()
 
@@ -100,20 +98,22 @@ function commitRename() {
 
 function createSession() {
   // 通用新建：弹窗选引擎 + 文件夹（PRD R2）；确认后创建草稿
+  pendingProjectId.value = null
   dialogOpen.value = true
 }
 
 function createTmpSession() {
   // 临时会话：同样走弹窗（可选引擎 / 文件夹，默认最近项目）
+  pendingProjectId.value = null
   dialogOpen.value = true
 }
 
-/** 按目标创建草稿会话并打开（延迟入列，PRD D3：不立即入列表/落盘） */
-function createDraftFor(target: NewSessionTarget, engineId: EngineWire) {
+/** 按目标创建草稿会话并打开（延迟入列，PRD D3：不立即入列表/落盘）；返回新会话 id */
+function createDraftFor(target: NewSessionTarget, engineId: EngineWire): string {
   if (target.kind === 'tmp') {
     const session = sessionStore.createDraft(workspace.selectedModel, { kind: 'tmp', engineId })
     workspace.openSession(session.id)
-    return
+    return session.id
   }
   const project = projectStore.get(target.projectId)
   const session = sessionStore.createDraft(workspace.selectedModel, {
@@ -123,20 +123,26 @@ function createDraftFor(target: NewSessionTarget, engineId: EngineWire) {
     engineId,
   })
   workspace.openSession(session.id)
+  return session.id
 }
 
-/** 某文件夹行内的「新建会话」：**不弹窗**，直接绑定该文件夹创建草稿（PRD R1/D1） */
+/** 某文件夹行内的「新建会话」：弹窗选引擎（文件夹已确定），确认后按该文件夹建草稿（PRD R1/D1） */
 function createSessionInProject(projectId: string) {
-  createDraftFor({ kind: 'folder', projectId }, engineStore.defaultEngineId)
-  activeNav.value = 'chat'
+  pendingProjectId.value = projectId
+  dialogOpen.value = true
 }
 
 /** 新建会话弹窗：确认后按所选引擎 + 目标创建草稿（engineId 写入 Session，PRD R2） */
 const dialogOpen = ref(false)
+/** engineOnly 模式下待绑定的文件夹（由文件夹行触发） */
+const pendingProjectId = ref<string | null>(null)
 
-function onDialogConfirm(payload: { engineId: EngineWire; target: NewSessionTarget }) {
-  createDraftFor(payload.target, payload.engineId)
+async function onDialogConfirm(payload: { engineId: EngineWire; target: NewSessionTarget }) {
+  const sessionId = createDraftFor(payload.target, payload.engineId)
   activeNav.value = 'chat'
+  // 选择引擎后立即预取该引擎的模型列表（probe），使 composer 模型下拉打开即有值；
+  // 失败静默（composer 仍会异步兜底，不阻塞）
+  if (sessionId) await ensureModelOptions(sessionId).catch(() => undefined)
 }
 
 function removeSession(id: string) {
@@ -408,7 +414,13 @@ function openProject(projectId: string) {
       <span class="pr-1 text-[11px] text-neutral-400">{{ sessionStore.sessions.length }} 个会话</span>
     </div>
 
-    <!-- 新建会话弹窗（选引擎，PRD R5） -->
-    <NewSessionDialog :open="dialogOpen" @close="dialogOpen = false" @confirm="onDialogConfirm" />
+    <!-- 新建会话弹窗（选引擎 + 目标，PRD R5）；文件夹行触发时为 engineOnly（文件夹已定） -->
+    <NewSessionDialog
+      :open="dialogOpen"
+      :engine-only="pendingProjectId !== null"
+      :default-project-id="pendingProjectId"
+      @close="(dialogOpen = false), (pendingProjectId = null)"
+      @confirm="onDialogConfirm"
+    />
   </aside>
 </template>

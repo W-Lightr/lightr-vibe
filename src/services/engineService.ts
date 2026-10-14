@@ -7,7 +7,11 @@ import type { AcpAgentInfo, EngineWire } from '../types/engine'
 import { BUILTIN_ENGINE_WIRES, DEFAULT_ENGINE_WIRE } from '../types/engine'
 import { isTauri } from '../utils/isTauri'
 
-/** 浏览器 mock：静态引擎列表（本期仅 opencode），available=true。 */
+/**
+ * 浏览器 mock：静态引擎列表（3 个内置引擎）。
+ * `available` 与 mockDetect 口径一致：claude/codex 的外部适配器需用户自装
+ * （mockDetect 返回 installed:false），故这里 available=false + 无版本号。
+ */
 function mockList(): AcpAgentInfo[] {
   return [
     {
@@ -18,6 +22,24 @@ function mockList(): AcpAgentInfo[] {
       sortOrder: 0,
       available: true,
       installedVersion: '1.18.35 (mock)',
+    },
+    {
+      agentType: 'claude_code',
+      name: 'Claude Code',
+      description: 'Anthropic Claude 的 ACP 适配器（用户自装 claude-agent-acp）',
+      enabled: true,
+      sortOrder: 1,
+      available: false,
+      installedVersion: null,
+    },
+    {
+      agentType: 'codex',
+      name: 'Codex CLI',
+      description: 'OpenAI Codex 的 ACP 适配器（用户自装 codex-acp）',
+      enabled: true,
+      sortOrder: 2,
+      available: false,
+      installedVersion: null,
     },
   ]
 }

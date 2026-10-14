@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "ACP 桥接契约：per-session 进程、connId 路由、错误串前缀、8 项不变量；Rust 命令面与前端服务层边界"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "EngineWire 联合类型扩展、camelCase 契约、前端类型一致性要求"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "stores/engine.ts 单一共享 store 与 session/agent store 的读写规范"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层改动检查：新增引擎 wire 值在 Rust/TS/mock/持久化四处一致"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/prd.md", "reason": "本任务需求、AC、Out of Scope（砍掉 codeg 引擎专属能力）"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/design.md", "reason": "LaunchKind/SpawnSpec 扩展设计、npm 解析、检测决策点"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/implement.md", "reason": "有序执行 checklist、验证命令、回滚点、依赖顺序"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/research/codeg-claude-codex.md", "reason": "codeg 启动 claude/codex 适配器的事实依据、npx 分发形态、未决实测项"}

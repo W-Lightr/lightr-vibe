@@ -1,10 +1,11 @@
 // 引擎静态元数据注册表（照 codeg `acp/registry.rs` 裁剪）。
 // 新增引擎 = 加一个 `AgentType` 变体 + 一条 `get_agent_meta` match 臂；所有
 // spawn/检测/配置路径/context-window 规则都从 `AcpAgentMeta` 数据取出，避免代码分支膨胀。
-// 本期仅 opencode 一条，承载原先散落在 acp.rs / agent.rs 的硬编码常量。
+// 现有 opencode / claude_code / codex 三条（后两者为 ExternalAdapter 分发形态）。
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::agent_type::{AgentType, BUILTIN_AGENT_TYPES};
 
@@ -13,9 +14,7 @@ use crate::agent_type::{AgentType, BUILTIN_AGENT_TYPES};
 pub enum ContextWindowSource {
     /// opencode：用户配置（config.json/opencode.json/opencode.jsonc）→ models.dev 缓存目录
     OpenCodeConfigAndCatalog,
-    /// 无已知来源：返回 None（前端保持既有分母，不臆造）。
-    /// 本期无引擎使用，为「新增无 context-window 来源的引擎」预留。
-    #[allow(dead_code)]
+    /// 无已知来源：返回 None（前端保持既有分母，不臆造）。claude/codex 当前使用。
     None,
 }
 
@@ -32,12 +31,24 @@ pub struct AcpAgentMeta {
     pub launch: LaunchSpec,
 }
 
+/// 引擎的分发形态（照 codeg AgentDistribution 裁剪，仅保留 launch 必需两态）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchKind {
+    /// 直接启动 PATH 上的可执行/子命令（opencode：`opencode acp`）。
+    /// 语义同现状：resolve_spawn 走 bin_candidates + shim 回退。
+    DirectCommand,
+    /// 外部适配器命令（用户自装）：命令真身在 PATH 或 npm 全局 bin。
+    /// spawn 时：PATH 命令 → npm 全局 bin 命令；全未命中 → 报「未安装适配器」。
+    ExternalAdapter,
+}
+
 /// 引擎专属的启动/检测/配置声明式规则。
 #[derive(Debug, Clone, Copy)]
 pub struct LaunchSpec {
     /// resolve_bin 候选（含 .exe/.cmd/.bat；Windows 下按此顺序在 PATH 中查找）
     pub bin_candidates: &'static [&'static str],
-    /// ACP 子命令（spawn 时追加到 bin 后，如 `opencode acp`）
+    /// ACP 子命令（spawn 时追加到 bin 后，如 `opencode acp`）；
+    /// ExternalAdapter 为空串（适配器命令本身即 ACP 入口，无子命令）
     pub acp_subcommand: &'static str,
     /// spawn 时移除的环境变量（泄漏会让子进程上游鉴权失败）
     pub env_strip: &'static [&'static str],
@@ -49,6 +60,12 @@ pub struct LaunchSpec {
     pub config_path: Option<&'static [&'static str]>,
     /// context-window 查找策略
     pub context_window: ContextWindowSource,
+    /// 分发形态（DirectCommand = 现状；ExternalAdapter = 用户自装适配器）
+    pub kind: LaunchKind,
+    /// ExternalAdapter 专用：npm 包规格（如 `@agentclientprotocol/claude-agent-acp`），
+    /// **仅用于错误提示里的安装命令指引**（`npm i -g <package>`），不触发任何下载。
+    /// DirectCommand 时为 None。
+    pub install_hint: Option<&'static str>,
 }
 
 /// opencode 声明（承载 acp.rs:133-206、agent.rs:76/103/193/201、acp.rs:943-1079 的常量）。
@@ -71,13 +88,76 @@ const OPENCODE_META: AcpAgentMeta = AcpAgentMeta {
         acp_probe_args: &["acp", "--help"],
         config_path: Some(&[".config", "opencode", "opencode.jsonc"]),
         context_window: ContextWindowSource::OpenCodeConfigAndCatalog,
+        kind: LaunchKind::DirectCommand,
+        install_hint: None,
     },
 };
 
-/// 静态查表（infallible；枚举穷尽 match）。本期仅一条臂，穷尽性检查的收益在新增引擎时兑现。
+/// Claude Code 声明：原生 CLI 不说 ACP，经官方适配器 `claude-agent-acp`（用户自装）桥接。
+/// 分发形态 = ExternalAdapter：命令真身在 PATH 或 npm 全局 bin，我们只解析、不打包、不下载。
+/// 字段值来自 Step 0 实测（research §7）：支持 `--version`；`--help` 不可靠故不用；
+/// 无独立可编辑配置文件（凭据由厂商 CLI 托管于 ~/.claude）。
+const CLAUDE_CODE_META: AcpAgentMeta = AcpAgentMeta {
+    agent_type: AgentType::ClaudeCode,
+    name: "Claude Code",
+    description: "Anthropic Claude 的 ACP 适配器（用户自装 claude-agent-acp）",
+    launch: LaunchSpec {
+        // npm 全局装的适配器命令在 Windows 上是 .cmd/.ps1 shim（无裸名/无 .exe）
+        bin_candidates: if cfg!(windows) {
+            &[
+                "claude-agent-acp.cmd",
+                "claude-agent-acp.exe",
+                "claude-agent-acp.bat",
+                "claude-agent-acp",
+            ]
+        } else {
+            &["claude-agent-acp"]
+        },
+        acp_subcommand: "", // 适配器命令即 ACP 入口
+        env_strip: &[],     // 实测：无已知需清洗变量
+        detect_args: &["--version"],
+        acp_probe_args: &["--version"], // 实测：--help 无输出，用 --version 当探针
+        config_path: None,              // 无独立可编辑配置文件（D-cfg）
+        context_window: ContextWindowSource::None,
+        kind: LaunchKind::ExternalAdapter,
+        install_hint: Some("@agentclientprotocol/claude-agent-acp"),
+    },
+};
+
+/// Codex 声明：同 Claude，经官方适配器 `codex-acp`（用户自装）桥接。
+/// 字段值来自 Step 0 实测（research §7）：支持 `--version`；`--help` 会崩溃故不用。
+const CODEX_META: AcpAgentMeta = AcpAgentMeta {
+    agent_type: AgentType::Codex,
+    name: "Codex CLI",
+    description: "OpenAI Codex 的 ACP 适配器（用户自装 codex-acp）",
+    launch: LaunchSpec {
+        bin_candidates: if cfg!(windows) {
+            &[
+                "codex-acp.cmd",
+                "codex-acp.exe",
+                "codex-acp.bat",
+                "codex-acp",
+            ]
+        } else {
+            &["codex-acp"]
+        },
+        acp_subcommand: "",
+        env_strip: &[],
+        detect_args: &["--version"],
+        acp_probe_args: &["--version"],
+        config_path: None,
+        context_window: ContextWindowSource::None,
+        kind: LaunchKind::ExternalAdapter,
+        install_hint: Some("@agentclientprotocol/codex-acp"),
+    },
+};
+
+/// 静态查表（infallible；枚举穷尽 match）。
 pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
     match agent_type {
         AgentType::OpenCode => OPENCODE_META,
+        AgentType::ClaudeCode => CLAUDE_CODE_META,
+        AgentType::Codex => CODEX_META,
     }
 }
 
@@ -98,13 +178,15 @@ pub struct AcpAgentInfo {
     pub installed_version: Option<String>,
 }
 
-/// 列出所有内置引擎（本期仅 opencode）；available/installed_version 由实机检测填充。
+/// 列出所有内置引擎；available/installed_version 由实机检测填充。
+/// `available` 与 `agent_detect` 口径一致（PATH **或** npm 全局 bin 可解析，D5）：
+/// 仅装在 npm 全局 bin 的外部适配器（claude/codex）不会在新建弹窗里被误标「未安装」。
 pub fn list_agents() -> Vec<AcpAgentInfo> {
     BUILTIN_AGENT_TYPES
         .iter()
         .map(|&agent_type| {
             let meta = get_agent_meta(agent_type);
-            let available = resolve_bin(&meta).is_some();
+            let available = resolve_bin_for_detect(&meta).is_some();
             AcpAgentInfo {
                 agent_type,
                 name: meta.name.to_string(),
@@ -181,41 +263,150 @@ pub enum SpawnSpec {
     Exe(PathBuf),
     /// 末选回退：`cmd /C <bin> <subcommand>`（tauri-bridge Gotcha：.cmd 无法 CreateProcess）
     CmdFallback,
+    /// ExternalAdapter 全未命中：适配器未安装，携带安装指引，spawn 时报错（不 spawn 进程）。
+    NotInstalled { hint: String },
 }
 
-/// spawn 解析链：which → .cmd shim 文本提取真身 exe → cmd /C 末选（全部按 meta）。
-pub fn resolve_spawn(meta: &AcpAgentMeta) -> SpawnSpec {
+/// npm 全局 bin 目录形态：Windows 下即 `<prefix>`，类 Unix 下为 `<prefix>/bin`。
+/// 独立纯函数以便单测（不真跑 npm）。
+fn npm_bin_dir_from_prefix(prefix: &str, windows: bool) -> PathBuf {
+    let base = PathBuf::from(prefix);
+    if windows {
+        base
+    } else {
+        base.join("bin")
+    }
+}
+
+/// 解析 npm 全局 bin 目录：跑 `npm prefix -g` 取前缀 → `<prefix>`（Windows）
+/// 或 `<prefix>/bin`（类 Unix）。**进程内只查一次**（acp_list_agents / agent_detect /
+/// resolve_spawn 三处都可能触发）；失败同样缓存 None，避免每次调用都起一次 npm。
+/// 失败返回 None（不报错，交由上层报未安装）。**纯解析，不做任何下载/安装**（AC11）。
+fn resolve_npm_global_bin_dir() -> Option<PathBuf> {
+    static NPM_BIN_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    NPM_BIN_DIR
+        .get_or_init(resolve_npm_global_bin_dir_uncached)
+        .clone()
+}
+
+/// 真正跑 `npm prefix -g`（仅在 OnceLock 首次初始化时执行一次）。
+fn resolve_npm_global_bin_dir_uncached() -> Option<PathBuf> {
+    let mut cmd = std::process::Command::new("npm");
+    cmd.arg("prefix").arg("-g");
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let child = cmd.spawn().ok()?;
+    // npm 可能因网络/配置卡住：用 wait_with_output 前先设短超时需自旋；此处走简单 wait
+    // （`npm prefix -g` 为本地查询，正常毫秒级返回）。
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if prefix.is_empty() {
+        return None;
+    }
+    Some(npm_bin_dir_from_prefix(&prefix, cfg!(windows)))
+}
+
+/// 在给定目录按 bin_candidates 顺序找命令真身（is_file 判据）。
+fn candidate_in_dir(dir: &Path, bin_candidates: &[&str]) -> Option<String> {
+    for name in bin_candidates {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// 在 npm 全局 bin 目录按 bin_candidates 找适配器命令真身（.cmd/.exe/裸名）。
+fn resolve_bin_in_npm_dir(meta: &AcpAgentMeta) -> Option<String> {
+    let dir = resolve_npm_global_bin_dir()?;
+    candidate_in_dir(&dir, meta.launch.bin_candidates)
+}
+
+/// 检测用 resolve：PATH 命中优先；ExternalAdapter 再退 npm 全局 bin。
+/// DirectCommand 只走 PATH（保持现状语义）。
+pub fn resolve_bin_for_detect(meta: &AcpAgentMeta) -> Option<String> {
     if let Some(bin) = resolve_bin(meta) {
-        let path = Path::new(&bin);
-        let ext = path
-            .extension()
-            .map(|e| e.to_string_lossy().to_ascii_lowercase());
-        match ext.as_deref() {
-            Some("cmd") | Some("bat") => {
-                if let Ok(text) = std::fs::read_to_string(path) {
-                    let dir = path
-                        .parent()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    if let Some(exe) = extract_exe_from_shim(&text, &dir) {
-                        if Path::new(&exe).is_file() {
-                            return SpawnSpec::Exe(PathBuf::from(exe));
-                        }
+        return Some(bin);
+    }
+    match meta.launch.kind {
+        LaunchKind::ExternalAdapter => resolve_bin_in_npm_dir(meta),
+        LaunchKind::DirectCommand => None,
+    }
+}
+
+/// 把已解析到的路径转成 SpawnSpec：.cmd/.bat shim 尝试提取真身 exe，裸 exe 直接 spawn，
+/// 提取失败/未知扩展 → `cmd /C` 回退（DirectCommand 语义）。供 PATH 与 npm 两处复用。
+fn spawn_spec_from_path(bin: &str) -> SpawnSpec {
+    let path = Path::new(bin);
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("cmd") | Some("bat") => {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                let dir = path
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if let Some(exe) = extract_exe_from_shim(&text, &dir) {
+                    if Path::new(&exe).is_file() {
+                        return SpawnSpec::Exe(PathBuf::from(exe));
                     }
                 }
             }
-            _ => {
-                if path.is_file() {
-                    return SpawnSpec::Exe(path.to_path_buf());
-                }
+            // shim 未解析出真身：交给 cmd /C 回退（DirectCommand 场景）
+            SpawnSpec::CmdFallback
+        }
+        _ => {
+            if path.is_file() {
+                SpawnSpec::Exe(path.to_path_buf())
+            } else {
+                SpawnSpec::CmdFallback
             }
         }
-        // 裸名候选（无扩展名，如类 Unix）：直接 spawn 该路径
-        if path.is_file() {
-            return SpawnSpec::Exe(path.to_path_buf());
+    }
+}
+
+/// spawn 解析链（按 meta.launch.kind 分派，**不引用任何引擎名**）：
+/// - DirectCommand：PATH bin_candidates → shim 提取真身 → cmd /C 末选（现状不变）。
+/// - ExternalAdapter：PATH → npm 全局 bin → 全未命中 NotInstalled（携带安装指引）。
+pub fn resolve_spawn(meta: &AcpAgentMeta) -> SpawnSpec {
+    match meta.launch.kind {
+        LaunchKind::DirectCommand => {
+            if let Some(bin) = resolve_bin(meta) {
+                return spawn_spec_from_path(&bin);
+            }
+            SpawnSpec::CmdFallback
+        }
+        LaunchKind::ExternalAdapter => {
+            // 1) PATH 上已装的适配器命令
+            if let Some(bin) = resolve_bin(meta) {
+                return spawn_spec_from_path(&bin);
+            }
+            // 2) npm 全局 bin 下已装的适配器命令
+            if let Some(bin) = resolve_bin_in_npm_dir(meta) {
+                return spawn_spec_from_path(&bin);
+            }
+            // 3) 全未命中：适配器未安装，携带 `npm i -g <package>` 指引（不下载）
+            let hint = meta
+                .launch
+                .install_hint
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| meta.name.to_string());
+            SpawnSpec::NotInstalled { hint }
         }
     }
-    SpawnSpec::CmdFallback
 }
 
 // ---------- 全局设置（默认引擎）持久化 ----------
@@ -336,6 +527,83 @@ mod tests {
             meta.launch.config_path,
             Some(&[".config", "opencode", "opencode.jsonc"][..])
         );
+        // 回归：opencode 保持 DirectCommand 形态，无安装指引
+        assert_eq!(meta.launch.kind, LaunchKind::DirectCommand);
+        assert_eq!(meta.launch.install_hint, None);
+    }
+
+    /// Claude/Codex 为 ExternalAdapter 形态，字段与 Step 0 实测一致。
+    #[test]
+    fn adapter_metas_declare_external_adapter() {
+        let claude = get_agent_meta(AgentType::ClaudeCode);
+        assert_eq!(claude.launch.kind, LaunchKind::ExternalAdapter);
+        assert_eq!(claude.launch.acp_subcommand, "");
+        assert_eq!(claude.launch.env_strip, &[] as &[&str]);
+        assert_eq!(claude.launch.detect_args, &["--version"]);
+        assert_eq!(claude.launch.acp_probe_args, &["--version"]);
+        assert_eq!(claude.launch.config_path, None);
+        assert_eq!(claude.launch.context_window, ContextWindowSource::None);
+        assert_eq!(
+            claude.launch.install_hint,
+            Some("@agentclientprotocol/claude-agent-acp")
+        );
+        assert!(
+            claude
+                .launch
+                .bin_candidates
+                .iter()
+                .any(|c| c.starts_with("claude-agent-acp")),
+            "bin_candidates 应含 claude-agent-acp*"
+        );
+
+        let codex = get_agent_meta(AgentType::Codex);
+        assert_eq!(codex.launch.kind, LaunchKind::ExternalAdapter);
+        assert_eq!(codex.launch.acp_subcommand, "");
+        assert_eq!(codex.launch.env_strip, &[] as &[&str]);
+        assert_eq!(codex.launch.detect_args, &["--version"]);
+        assert_eq!(codex.launch.acp_probe_args, &["--version"]);
+        assert_eq!(codex.launch.config_path, None);
+        assert_eq!(codex.launch.context_window, ContextWindowSource::None);
+        assert_eq!(
+            codex.launch.install_hint,
+            Some("@agentclientprotocol/codex-acp")
+        );
+        assert!(
+            codex
+                .launch
+                .bin_candidates
+                .iter()
+                .any(|c| c.starts_with("codex-acp")),
+            "bin_candidates 应含 codex-acp*"
+        );
+    }
+
+    /// npm 全局 bin 目录形态：Windows 即前缀，类 Unix 加 /bin。
+    #[test]
+    fn npm_bin_dir_from_prefix_shape() {
+        assert_eq!(
+            npm_bin_dir_from_prefix("C:\\npm-global", true),
+            PathBuf::from("C:\\npm-global")
+        );
+        assert_eq!(
+            npm_bin_dir_from_prefix("/usr/local", false),
+            PathBuf::from("/usr/local").join("bin")
+        );
+    }
+
+    /// candidate_in_dir 按候选顺序找真身；无命中返回 None。
+    #[test]
+    fn candidate_in_dir_matches_in_order() {
+        let dir = std::env::temp_dir().join("lightr-vibe-engine-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let exe = dir.join("codex-acp.cmd");
+        let _ = std::fs::write(&exe, "@echo off\r\n");
+
+        let found = candidate_in_dir(&dir, &["codex-acp.cmd", "codex-acp.exe"]);
+        assert_eq!(found, Some(exe.to_string_lossy().into_owned()));
+        assert_eq!(candidate_in_dir(&dir, &["nope-acp.exe"]), None);
+
+        let _ = std::fs::remove_file(&exe);
     }
 
     /// list_agents 覆盖所有内置变体。
@@ -344,6 +612,8 @@ mod tests {
         let agents = list_agents();
         assert_eq!(agents.len(), BUILTIN_AGENT_TYPES.len());
         assert_eq!(agents[0].agent_type.as_wire(), "open_code");
+        assert!(agents.iter().any(|a| a.agent_type.as_wire() == "claude_code"));
+        assert!(agents.iter().any(|a| a.agent_type.as_wire() == "codex"));
     }
 
     /// 裸名去扩展（cmd /C 回退用）。

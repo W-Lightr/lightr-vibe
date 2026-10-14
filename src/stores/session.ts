@@ -4,7 +4,7 @@
 // 生成控制在 useConversation；本 store 只做数据与落盘。
 
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import type { Message, Session, ToolCall } from '../types/session'
 import type { SessionIndexEntry } from '../types/acp'
 import type { EngineWire } from '../types/engine'
@@ -146,7 +146,8 @@ export const useSessionStore = defineStore('session', () => {
 
   /** 草稿暂存区（延迟入列，PRD R3）：新建未发送的会话对象。
    * 不进 sessions（侧栏不显示）、不落盘（索引无此 id）；首次发送 promoteDraft 才入库。
-   * 用非响应式 Map（同 messageLoads 风格）：会话对象本身按 id 取，草稿量极小。 */
+   * 用非响应式 Map 存放（同 messageLoads 风格）；**会话对象本身 reactive 化**，
+   * 使其字段（model/configOptions 等）在草稿期能触发 UI 重渲染。 */
   const drafts = new Map<string, Session>()
 
   const byId = computed(() => {
@@ -278,8 +279,10 @@ export const useSessionStore = defineStore('session', () => {
     session.cwd = opts.cwd ?? tmpSessionDirSync()
     // 临时会话落盘路径：~/.lightr-vibe/lightr-vibe/tmpsession/<id>
     if (session.kind === 'tmp') session.storagePath = `${tmpSessionDirSync()}/${session.id}`
-    drafts.set(session.id, session)
-    return session
+    // reactive 化：草稿期可改字段（engineId）需驱动 composer 重渲染（Map 本身非响应式）
+    const reactiveSession = reactive(session)
+    drafts.set(session.id, reactiveSession)
+    return reactiveSession
   }
 
   /** 首次发送：草稿正式入库（草稿 → sessions + 触发索引落盘，PRD R4） */
