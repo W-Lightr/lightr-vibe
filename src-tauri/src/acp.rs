@@ -63,18 +63,18 @@ fn timeout_for(method: &str) -> Duration {
 /// initialize 的 `clientCapabilities` 构造（纯函数，便于单测）。
 ///
 /// - 基线：不 host fs/terminal（D2，文件操作由 Lightr-vibe 自有文件面板承担）。
-/// - elicitation：**仅 codex** 声明 `elicitation.form`。理由：codex 适配器已知会发规范
-///   form（Plan `request_user_input` / MCP 表单）；其他引擎不发规范 form，声明反而可能
-///   误触发未知 MCP 表单（D2）。
+/// - elicitation：**无条件**声明 `elicitation.form`（D2 修订，所有内置引擎）。
+///   依据：opencode 提供方 ACP 文档 §"Questions" 明确——client 声明 `elicitation.form`
+///   时，OpenCode 以 `elicitation/create`（form 模式）提问；`claude-agent-acp` ≥0.43.0
+///   起实验性支持；codex 一直支持。不支持者不会发（声明只是"我支持"，非强制），
+///   收到非法/不支持形状仍由处理器 `Decline`（不 hang）。
 ///
-/// 引擎判定只出现在此处（能力声明 = 注册表/声明范畴，与 spawn 构造同性质）；
-/// **协议路由本身不含引擎名分支**（AC9），处理器对已声明引擎通用。
-fn client_capabilities(engine: AgentType) -> Value {
-    let mut caps = json!({ "fs": { "readTextFile": false, "writeTextFile": false } });
-    if engine == AgentType::Codex {
-        caps["elicitation"] = json!({ "form": {} });
-    }
-    caps
+/// 该函数不按引擎分支（连"声明"也无需引擎名）；**协议路由亦不含引擎名**（AC9）。
+fn client_capabilities() -> Value {
+    json!({
+        "fs": { "readTextFile": false, "writeTextFile": false },
+        "elicitation": { "form": {} }
+    })
 }
 
 /// 入站消息三分路由（research/acp-protocol.md §2）：
@@ -768,7 +768,7 @@ fn connect_inner(app: AppHandle, conn_id: String, engine: AgentType) -> Result<S
         "initialize",
         json!({
             "protocolVersion": 1,
-            "clientCapabilities": client_capabilities(engine),
+            "clientCapabilities": client_capabilities(),
             "clientInfo": { "name": "lightr-vibe", "version": "0.1.0" }
         }),
     )
@@ -1018,7 +1018,7 @@ fn probe_options_inner(cwd: Option<String>, engine: AgentType) -> Result<ProbeRe
         "jsonrpc": "2.0", "id": init_id, "method": "initialize",
         "params": {
             "protocolVersion": 1,
-            "clientCapabilities": client_capabilities(engine),
+            "clientCapabilities": client_capabilities(),
             "clientInfo": { "name": "lightr-vibe", "version": "0.1.0" }
         }
     });

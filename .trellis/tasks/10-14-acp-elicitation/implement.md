@@ -27,9 +27,12 @@ properties.<id>.enum` vs `enumNames` vs `items.enum`），据此校正宽容解�
       `Question { id, prompt, kind, options }`（`Serialize` camelCase）、
       `ElicitationPlan { Questions(Vec<Question>), Decline }`。
 - [ ] `classify_elicitation(&Value) -> ElicitationPlan`（宽容解析，见 design §3.1）。
+- [ ] **`oneOf`/`anyOf` 解析**：`string` 单选除 `enum` 外也认 `oneOf`/`anyOf`（元素 `{const,title}`）；
+      `array` 选项除 `items.enum` 外也认 `items.oneOf`/`items.anyOf`（opencode 形态）。
 - [ ] `build_elicitation_result(&[Question], &[(String, Vec<String>)], declined) -> Value`。
 - [ ] 在 `acp.rs`（或 `lib.rs`）`mod acp_question;` 挂载。
-- [ ] 单测：single/multi/text/未知type→Decline/空→Decline；build string/string[]/decline。
+- [ ] 单测：single（enum + oneOf 两形态）/multi（items.enum + items.oneOf）/text/未知type→Decline/空→Decline；
+      build string/string[]/decline。
 
 **验证**：`cargo test --lib`。
 **回滚点**：新文件 + 一行 `mod`，可整删。
@@ -65,11 +68,11 @@ properties.<id>.enum` vs `enumNames` vs `items.enum`），据此校正宽容解�
 **验证**：`cargo check` + `cargo test --lib`。
 **回滚点**：`acp.rs`。
 
-## Step 5 · Rust：能力声明（仅 codex）
+## Step 5 · Rust：能力声明（所有引擎）
 
-- [ ] `initialize` params 构造：会话引擎 == codex 时加
-      `clientCapabilities.elicitation.form = {}`；其他不变。
-- [ ] 注释说明「仅 codex」的理由（已知规范 form）+ PAC1（不在协议路由分支）。
+- [ ] `client_capabilities`：**无条件**加 `clientCapabilities.elicitation.form = {}`
+      （去掉 `if engine == Codex` 分支）。
+- [ ] 注释说明理由（opencode 文档确认 + claude ≥0.43.0）+ PAC1（连声明也无引擎名）。
 
 **验证**：`cargo check`。
 **回滚点**：`acp.rs`。

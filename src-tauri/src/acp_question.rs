@@ -93,12 +93,15 @@ pub fn classify_elicitation(params: &Value) -> ElicitationPlan {
 
     match field_type {
         "array" => {
+            // 多选：选项在 `items` 里——`enum`（codex/JSON-Schema 常规）或
+            // `oneOf`/`anyOf`（opencode 形态：`[{const,title}]`）
+            let items = schema.get("items");
             let options = extract_options(
-                schema
-                    .get("items")
+                items
                     .and_then(|i| i.get("enum"))
-                    .or_else(|| schema.get("items").and_then(|i| i.get("oneOf"))),
-                schema.get("items").and_then(|i| i.get("enumNames")),
+                    .or_else(|| items.and_then(|i| i.get("oneOf")))
+                    .or_else(|| items.and_then(|i| i.get("anyOf"))),
+                items.and_then(|i| i.get("enumNames")),
             );
             if options.is_empty() {
                 return ElicitationPlan::Decline;
@@ -111,24 +114,28 @@ pub fn classify_elicitation(params: &Value) -> ElicitationPlan {
             }])
         }
         "string" => {
-            if let Some(enum_values) = schema.get("enum") {
-                let options = extract_options(Some(enum_values), schema.get("enumNames"));
-                if options.is_empty() {
-                    return ElicitationPlan::Decline;
-                }
-                ElicitationPlan::Questions(vec![Question {
-                    id: field_id.clone(),
-                    prompt,
-                    kind: QuestionKind::Single,
-                    options,
-                }])
-            } else {
-                // 无 enum 的 string = 自由文本
+            // 单选：`enum`（+可选 enumNames）或 `oneOf`/`anyOf`（opencode：`[{const,title}]`）
+            let options = extract_options(
+                schema
+                    .get("enum")
+                    .or_else(|| schema.get("oneOf"))
+                    .or_else(|| schema.get("anyOf")),
+                schema.get("enumNames"),
+            );
+            if options.is_empty() {
+                // 无选项的 string = 自由文本
                 ElicitationPlan::Questions(vec![Question {
                     id: field_id.clone(),
                     prompt,
                     kind: QuestionKind::Text,
                     options: Vec::new(),
+                }])
+            } else {
+                ElicitationPlan::Questions(vec![Question {
+                    id: field_id.clone(),
+                    prompt,
+                    kind: QuestionKind::Single,
+                    options,
                 }])
             }
         }
@@ -288,7 +295,73 @@ mod tests {
         assert_eq!(qs[0].options[2].value, "c");
     }
 
-    /// free-text：string 无 enum → Text（无选项）
+    /// opencode 单选：`type:string` + `oneOf:[{const,title}]` → Single（value=const, label=title）
+    #[test]
+    fn classify_single_select_one_of() {
+        let params = json!({
+            "mode": { "requestedSchema": { "properties": {
+                "pm": {
+                    "type": "string",
+                    "oneOf": [
+                        { "const": "bun", "title": "Bun" },
+                        { "const": "npm", "title": "npm" }
+                    ]
+                }
+            }}}
+        });
+        let ElicitationPlan::Questions(qs) = classify_elicitation(&params) else {
+            panic!("opencode oneOf 单选应识别为 Questions");
+        };
+        assert_eq!(qs[0].kind, QuestionKind::Single);
+        assert_eq!(
+            qs[0].options,
+            vec![
+                QuestionOption { value: "bun".into(), label: "Bun".into() },
+                QuestionOption { value: "npm".into(), label: "npm".into() },
+            ]
+        );
+    }
+
+    /// `anyOf` 亦接受（同为 `[{const,title}]`）
+    #[test]
+    fn classify_single_select_any_of() {
+        let params = json!({
+            "mode": { "requestedSchema": { "properties": {
+                "x": { "type": "string", "anyOf": [{ "const": "a", "title": "A" }] }
+            }}}
+        });
+        let ElicitationPlan::Questions(qs) = classify_elicitation(&params) else {
+            panic!("anyOf 应识别为 Questions");
+        };
+        assert_eq!(qs[0].kind, QuestionKind::Single);
+        assert_eq!(qs[0].options[0].value, "a");
+        assert_eq!(qs[0].options[0].label, "A");
+    }
+
+    /// opencode 多选：`type:array` + `items.oneOf:[{const,title}]` → Multi
+    #[test]
+    fn classify_multi_select_items_one_of() {
+        let params = json!({
+            "mode": { "requestedSchema": { "properties": {
+                "features": {
+                    "type": "array",
+                    "items": { "oneOf": [
+                        { "const": "a", "title": "A" },
+                        { "const": "b", "title": "B" }
+                    ]}
+                }
+            }}}
+        });
+        let ElicitationPlan::Questions(qs) = classify_elicitation(&params) else {
+            panic!("items.oneOf 多选应识别为 Questions");
+        };
+        assert_eq!(qs[0].kind, QuestionKind::Multi);
+        assert_eq!(qs[0].options.len(), 2);
+        assert_eq!(qs[0].options[1].value, "b");
+        assert_eq!(qs[0].options[1].label, "B");
+    }
+
+    /// free-text：string 无 enum/oneOf → Text（无选项）
     #[test]
     fn classify_free_text() {
         let params = json!({

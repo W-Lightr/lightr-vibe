@@ -252,19 +252,23 @@ needed for codeg's single-slot snapshot, which we do not have).
 
 ### AI questions / `elicitation/create` (task 10-14-acp-elicitation)
 
-`elicitation/create` (server→client) is how codex asks the user a question
-(Plan-mode `request_user_input`, generic MCP forms). Previously refused with
-`-32601` → codex questions **silently failed**. Now handled for the **Questions**
-shape only:
+`elicitation/create` (server→client) is how an agent asks the user a question
+(codex Plan-mode `request_user_input`, opencode agent questions, generic MCP
+forms). Previously refused with `-32601` → those questions **silently failed**.
+Now handled for the **Questions** shape only:
 
 - **Rust** (`acp_question.rs`): pure `classify_elicitation(&Value) -> ElicitationPlan`
   reads `params.mode.requestedSchema.properties` (lenient) → `Questions(Vec<Question>)`
-  or `Decline`. Field mapping: `type:"array"` → multi (options from `items.enum`);
-  `type:"string"` with `enum` → single; `type:"string"` without → free text; any
-  other type / empty/missing schema → `Decline`. **One question at a time** (first
-  field; the rest are dropped — documented limitation). `build_elicitation_result`
-  maps answers → `{action:"accept", content:{id: string|string[]}}`, or
-  `{action:"decline"}`.
+  or `Decline`. Field mapping: `type:"array"` → multi; `type:"string"` → single if
+  it carries options, else free text; any other type / empty/missing schema →
+  `Decline`. **Option source is dual-shape**: `enum` (+ optional `enumNames`) OR
+  `oneOf`/`anyOf` whose elements are `{const,title}` — the latter is **opencode's**
+  shape (single: `type:"string"` + `oneOf`; multi: `type:"array"` + `items.oneOf`).
+  Missing the `oneOf` form would silently mis-read an opencode single-select as free
+  text. **One question at a time** (first field; the rest are dropped — documented
+  limitation; opencode's `<key>_custom` companion fields are ignored).
+  `build_elicitation_result` maps answers → `{action:"accept", content:{id:
+  string|string[]}}`, or `{action:"decline"}`.
 - **Rust** (`acp.rs`): `AcpConn.pending_question` is a **parallel** map to
   `pending_perm` (do NOT overload the permission map). `handle_client_request`
   intercepts `elicitation/create` **before** the `fs/|terminal/|elicitation/`
@@ -274,11 +278,15 @@ shape only:
   `cancel_by_rpc_id`, `acp_cancel`, `disconnect_conn`, `mark_dead`, and the idle
   busy-check all drain `pending_question` (decline — the protocol's MUST-respond
   obligation; a dead pipe is the one case where writing is impossible).
-- **Capability scoping**: `client_capabilities(engine)` advertises `elicitation.form`
-  **only for `AgentType::Codex`** (the known spec-conformant sender). Other engines'
-  initialize is unchanged → **opencode zero-regression** (it never sends elicitation).
-  This is capability *declaration* (allowed registry scope), NOT a protocol-routing
-  engine branch (AC9 still holds: `reader_loop`/`handle_client_request` are engine-free).
+- **Capability**: `client_capabilities()` **unconditionally** advertises
+  `elicitation.form` for every engine (D2 revised). Evidence: opencode's provider ACP
+  docs (CLI/ACP §"Questions") state it sends `elicitation/create` in form mode *when
+  the client advertises `elicitation.form`*; `claude-agent-acp` ≥0.43.0 adds
+  experimental support; codex always supported it. An engine that doesn't support it
+  simply never sends — declaration is a hint, not a coercion. The function takes **no
+  engine argument** → there is no engine-name branch anywhere in routing OR
+  declaration (AC9 stronger than before). Declined/unsupported shapes still fall to
+  `Decline` (never hang).
 - **Frontend**: `useAcpQuestion.ts` mirrors `useAcpPermission` (module singleton,
   queue filtered by **`connId`** — same invariant warning as the permission queue),
   `AskQuestionCard.vue` renders single/multi/text + 提交/跳过, mounted above the

@@ -76,9 +76,13 @@ pub fn build_elicitation_result(plan: &[Question], answers: &[(String, Vec<Strin
 ```
 
 - `classify_elicitation`：读 `params.mode.requestedSchema.properties`（缺失/非 object →
-  `Decline`）；逐字段：`type=="array"` → Multi（选项取 `items.enum`/`items.oneOf`）；
-  `type=="string"` 且含 `enum` → Single；`type=="string"` 无 `enum` → Text；其他类型 →
-  整体 `Decline`（本期不支持的字段让 agent 自行处理）。空 properties → `Decline`。
+  `Decline`）；逐字段：`type=="array"` → Multi（选项取 `items.enum` 或 `items.oneOf/anyOf`）；
+  `type=="string"` 且含 **`enum` 或 `oneOf`/`anyOf`** → Single；`type=="string"` 两者都无 →
+  Text；其他类型 → 整体 `Decline`。空 properties → `Decline`。
+- **选项双形态**：`enum`（字符串数组，可选 `enumNames` 展示名）与 `oneOf`/`anyOf`
+  （元素 `{const,title}`；`const`=回传值，`title`=展示名）——后者是 **opencode** 单选/多选的形状。
+  `extract_options` 统一处理（已有 `Value::Object` 分支），只需在 `string` 分支补 `oneOf`/`anyOf`
+  探测。`<key>_custom` 附加字段忽略。
 - `build_elicitation_result`：single/text 取首值 → `string`；multi 取全部 → `string[]`；
   无答案 → `{"action":"decline"}`。`{"action":"accept","content":{...}}` 否则。
 
@@ -133,14 +137,20 @@ pub fn acp_answer_elicitation(
 - 连接关闭/`acp_disconnect`：遍历 `pending_question` 回 decline（避免 agent hang）。
   （与现有 perm 的关闭清理同处。）
 
-### 3.5 能力声明（仅 codex）
+### 3.5 能力声明（D2 修订：所有引擎）
 
-`initialize` params 构造处：当会话引擎 == codex 时，加
+`initialize` params 构造处：**无条件**加
 ```json
 "clientCapabilities": { "elicitation": { "form": {} } }
 ```
-其他引擎不加（现状）。**判定按引擎类型，但只此一处**（PAC1：协议路由本身不含引擎名分支；
-能力声明是 initialize 构造，属允许的「注册表/声明」范畴，与 spawn 构造同性质）。
+理由（docs 依据）：
+- **opencode**：提供方 ACP 文档 §"Questions"——client 声明 `elicitation.form` 时，
+  OpenCode 以 `elicitation/create`（form 模式，含 `oneOf` 选项与 `toolCallId`）提问。
+- **claude-agent-acp** ≥0.43.0 起实验性支持。
+- 不支持者不会发（声明只是"我支持"，非强制）；收到非规范形状仍 `Decline`。
+
+`client_capabilities(engine)` 不再按引擎分支（PAC1 更纯粹：连"声明"也不需要引擎名）。
+`connect_inner` 与 `probe_options_inner` 两处一致使用。
 
 ## 4. 前端设计
 
