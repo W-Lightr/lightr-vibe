@@ -218,6 +218,7 @@ struct AcpConn {
     /// requestId → (应答后端, 题目列表)：等待前端答复。两条来源共用同一卡：
     /// - 原生 ACP `elicitation/create` → `QuestionReply::Acp`（回写 JSON-RPC）
     /// - 注入的 `ask_user_question` MCP 工具（伴生进程经 socket 回连）→ `QuestionReply::Mcp`
+    ///
     /// 与 pending_perm 平行、语义不同（不复用权限 map，design §2 / 10-15-acp-ask-tool）。
     pending_question: Mutex<HashMap<String, (QuestionReply, Vec<Question>)>>,
     q_next: AtomicU64,
