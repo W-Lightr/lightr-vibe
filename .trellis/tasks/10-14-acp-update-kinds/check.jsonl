@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核对 ACP 不变量：connId 路由、事件形状、协议路由无引擎名"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对 session/update 种类与 configRejected 在 Rust↔TS 两端契约一致"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "核对种类解码集中在单一 owner，未在组件内重复解析"}
+{"file": ".trellis/tasks/10-14-acp-update-kinds/prd.md", "reason": "逐条核对 AC1-AC12，尤其 AC9 opencode 零回归、AC10 无引擎名分支、AC8 未知种类安全忽略"}
+{"file": ".trellis/tasks/10-14-acp-update-kinds/design.md", "reason": "核对实现与设计一致：各 case 消费、configRejected 纯函数、store 字段"}
+{"file": ".trellis/tasks/10-14-acp-update-kinds/implement.md", "reason": "核对 checklist 完成度与验证命令是否全跑"}
+{"file": ".trellis/tasks/10-14-acp-update-kinds/research/update-kinds.md", "reason": "核对字段按研究而定；未引入 AIR 重型（Out of Scope）"}

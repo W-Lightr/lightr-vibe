@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { ArrowDown, MessageSquarePlus } from 'lucide-vue-next'
 import type { Session } from '../../../types/session'
 import MessageItem from './MessageItem.vue'
+import PlanCard from './PlanCard.vue'
 import { useConversationScroll } from '../../../composables/useConversationScroll'
 import { useSessionStore } from '../../../stores/session'
 import { useWorkspaceStore } from '../../../stores/workspace'
@@ -54,6 +55,9 @@ const generating = computed(() => workspace.isGenerating(props.session.id))
             {{ isTauri() ? '由 OpenCode Agent 提供真实回复' : '当前为本地 Mock 服务，回复内容仅用于界面演示' }}
           </p>
         </div>
+
+        <!-- 计划卡（plan update）：随会话 planEntries 渲染，无条目则隐藏 -->
+        <PlanCard :entries="session.planEntries ?? []" />
 
         <!-- 生成中提示：脉冲蓝点 + 微光扫过文字（Shimmer） -->
         <div v-if="generating" class="mb-4 flex items-center gap-2 text-xs text-neutral-400">

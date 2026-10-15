@@ -173,6 +173,33 @@ export const acpMock = {
     let permissionTriggered = false
     const isWrite = text.includes('写')
 
+    // mock：演示本期新增的 session/update 种类（真实引擎收到才发，此处主动发一次）。
+    // available_commands_update：会话可用命令（供 `/` 菜单/面板，AC7）
+    dispatchUpdate({
+      connId,
+      sessionId,
+      update: {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [
+          { name: 'compact', description: '压缩会话上下文' },
+          { name: 'clear', description: '清空会话' },
+        ],
+      },
+    })
+    // plan：计划清单（acp://update plan 分支 → sessionStore.setPlan → PlanCard）
+    dispatchUpdate({
+      connId,
+      sessionId,
+      update: {
+        sessionUpdate: 'plan',
+        entries: [
+          { content: '分析需求', status: 'completed' },
+          { content: '实现功能', status: 'in_progress' },
+          { content: '验证结果', status: 'pending' },
+        ],
+      },
+    })
+
     try {
       await conversationService.send({
         sessionId,

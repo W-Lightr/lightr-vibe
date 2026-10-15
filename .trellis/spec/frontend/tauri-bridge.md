@@ -336,6 +336,40 @@ codeg's `codeg-mcp` companion but simplified:
 > package has two bins — otherwise `cargo run` (Tauri dev) fails with "could not
 > determine which binary to run".
 
+### `session/update` kind consumption (task 10-14-acp-update-kinds)
+
+`reader_loop` forwards the whole `session/update`, so the frontend can consume any
+kind. `useConversation.applyUpdate` now handles (beyond text/tool/usage/config):
+`plan` · `session_info_update` · `available_commands_update` · `current_mode_update`.
+
+- **`plan`** → `sessionStore.setPlan(connId, entries)` (overwrite; empty clears);
+  `PlanCard.vue` renders items + status badges. Entries `{content, priority?, status?}`
+  (status `pending|in_progress|completed`).
+- **`session_info_update`** → `title` updates the session title via `renameSession`
+  (native title **overwrites** a user rename — documented concession); retry state via
+  the **single owner** `src/utils/sessionUpdateMeta.ts` `parseRetryState(meta)` /
+  `hasRetryMeta(meta)` → `sessionStore.setRetry`, shown as a **retry banner** (amber,
+  above the composer) — NOT a failure card.
+- **`available_commands_update`** → `setCommands`; **`current_mode_update`** →
+  `setCurrentMode` (`currentModeId` + mirrors `mode`).
+- **`acp://configRejected`** (new event) — `ConfigOptionRejected` is **not a wire
+  kind**: `acp.rs::acp_set_config` compares the agent's adopted `currentValue` against
+  the requested value (`detect_config_rejection`, pure) and emits
+  `acp://configRejected {connId, configId, requested, actual}` on mismatch → the
+  frontend rolls back the optimistic value + toasts. `acp://update` also carries a
+  top-level `meta` (from `params._meta`) alongside `update`; retry `_meta` is read as
+  `update._meta ?? event.meta` (lenient — engines differ on where `_meta` sits;
+  opencode's retry/compaction `_meta` is v2-only, absent → harmless no-op).
+
+> **Gotcha**: retry must be cleared **only** when a retry-carrying update arrives
+> (`hasRetryMeta`) or at the turn boundary (one `finally` covering success/error/cancel).
+> Clearing on *any* `session_info_update` wrongly hides a live banner when a
+> title/compaction-only update arrives mid-retry.
+
+Unknown / unhandled kinds still fall through to the default branch (safe no-op);
+AIR-heavy kinds (steering/goal/sessionFailure/contextCompaction/fork/delegation/
+background) remain out of scope.
+
 Other ACP behaviors worth keeping:
 
 - `tool_call_update.content` is **cumulative replacement** — overwrite, never append.

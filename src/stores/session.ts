@@ -473,6 +473,35 @@ export const useSessionStore = defineStore('session', () => {
     if (s) s.status = status
   }
 
+  /**
+   * 应用计划清单（plan update）：整体覆盖（协议增量按 entries 全量替换，不 append）。
+   * 空数组同样覆盖（agent 收尾清空计划）。
+   */
+  function setPlan(sessionId: string, entries: Session['planEntries']) {
+    const s = get(sessionId)
+    if (s) s.planEntries = entries
+  }
+
+  /** 设置/清除可重试错误状态（重试横幅数据源；null = 清除）。in-memory，不落盘。 */
+  function setRetry(sessionId: string, state: Session['retryState'] | null) {
+    const s = get(sessionId)
+    if (s) s.retryState = state ?? undefined
+  }
+
+  /** 设置该会话可用命令列表（available_commands_update，AC7 数据落点） */
+  function setCommands(sessionId: string, commands: Session['availableCommands']) {
+    const s = get(sessionId)
+    if (s) s.availableCommands = commands
+  }
+
+  /** 设置当前模式 id（current_mode_update）；同步 mode 字段以对齐既有显示 */
+  function setCurrentMode(sessionId: string, modeId: string | undefined) {
+    const s = get(sessionId)
+    if (!s) return
+    s.currentModeId = modeId
+    if (modeId) s.mode = modeId
+  }
+
   return {
     sessions,
     loaded,
@@ -500,5 +529,9 @@ export const useSessionStore = defineStore('session', () => {
     addUsage,
     setContextUsage,
     setStatus,
+    setPlan,
+    setRetry,
+    setCommands,
+    setCurrentMode,
   }
 })

@@ -2,17 +2,25 @@
 // 独立模块避免 acpService ↔ acpMock 循环依赖（mock 通道直接 dispatch，
 // Tauri 通道由 acpService 的 listen 回调 dispatch），消费面统一（design D5）。
 
-import type { AcpPermissionEvent, AcpQuestionEvent, AcpStatusEvent, AcpUpdateEvent } from '../types/acp'
+import type {
+  AcpConfigRejectedEvent,
+  AcpPermissionEvent,
+  AcpQuestionEvent,
+  AcpStatusEvent,
+  AcpUpdateEvent,
+} from '../types/acp'
 
 type UpdateHandler = (event: AcpUpdateEvent) => void
 type PermissionHandler = (event: AcpPermissionEvent) => void
 type QuestionHandler = (event: AcpQuestionEvent) => void
 type StatusHandler = (event: AcpStatusEvent) => void
+type ConfigRejectedHandler = (event: AcpConfigRejectedEvent) => void
 
 const updateHandlers = new Set<UpdateHandler>()
 const permissionHandlers = new Set<PermissionHandler>()
 const questionHandlers = new Set<QuestionHandler>()
 const statusHandlers = new Set<StatusHandler>()
+const configRejectedHandlers = new Set<ConfigRejectedHandler>()
 
 export function dispatchUpdate(event: AcpUpdateEvent): void {
   for (const h of updateHandlers) h(event)
@@ -29,6 +37,11 @@ export function dispatchQuestion(event: AcpQuestionEvent): void {
 
 export function dispatchStatus(event: AcpStatusEvent): void {
   for (const h of statusHandlers) h(event)
+}
+
+/** 分发「配置被 agent 调整」事件（Rust 比对产生，非 wire 种类） */
+export function dispatchConfigRejected(event: AcpConfigRejectedEvent): void {
+  for (const h of configRejectedHandlers) h(event)
 }
 
 /** 注册 session/update 处理器；返回取消订阅函数 */
@@ -53,4 +66,10 @@ export function onQuestion(handler: QuestionHandler): () => void {
 export function onStatus(handler: StatusHandler): () => void {
   statusHandlers.add(handler)
   return () => statusHandlers.delete(handler)
+}
+
+/** 注册 configRejected 处理器（acp_set_config 落定值被改动）；返回取消订阅函数 */
+export function onConfigRejected(handler: ConfigRejectedHandler): () => void {
+  configRejectedHandlers.add(handler)
+  return () => configRejectedHandlers.delete(handler)
 }

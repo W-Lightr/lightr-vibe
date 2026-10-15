@@ -1,6 +1,6 @@
 // 会话与消息的核心数据模型
 
-import type { AcpConfigOption } from './acp'
+import type { AcpAvailableCommand, AcpConfigOption, AcpPlanEntry } from './acp'
 import type { EngineWire } from './engine'
 
 export type MessageRole = 'user' | 'assistant'
@@ -49,6 +49,17 @@ export interface Message {
 
 export type SessionKind = 'folder' | 'tmp'
 
+/** 可重试错误状态（session_info_update 的 `_meta`）：渲染重试横幅，非失败卡（AC5）。
+ *  均 in-memory，不落盘（重试是瞬态过程）。 */
+export interface SessionRetryState {
+  /** 第几次重试（agent 上报；缺省 undefined） */
+  attempt?: number
+  /** 错误摘要（可能缺省） */
+  message?: string
+  /** 下次重试时间戳（ms；opencode nextRetryAt，缺省 undefined） */
+  nextRetryAt?: number
+}
+
 /** 新建会话的目标：绑定已有文件夹 / 临时会话（延迟入列，PRD R2/D5）。
  * 来源 = 新建弹窗的文件夹下拉；文件夹内新建不走弹窗，直接构造 folder target。 */
 export type NewSessionTarget = { kind: 'folder'; projectId: string } | { kind: 'tmp' }
@@ -78,6 +89,14 @@ export interface Session {
   cwd?: string
   /** session/new 返回的会话级配置项（model/mode select）；MessageComposer 消费 */
   configOptions?: AcpConfigOption[]
+  /** agent 主动推送的计划清单（plan update，整体覆盖）；PlanCard 消费 */
+  planEntries?: AcpPlanEntry[]
+  /** 可重试错误状态（重试横幅数据源）；非重试中为 undefined */
+  retryState?: SessionRetryState
+  /** agent 可用命令列表（available_commands_update）；供 `/` 菜单/面板（AC7） */
+  availableCommands?: AcpAvailableCommand[]
+  /** 当前模式 id（current_mode_update）；对齐 mode config option（AC7） */
+  currentModeId?: string
   /** ACP 会话 mode（D3：仅记录不暴露 UI，恒 build） */
   mode?: string
   /** 消息是否已从磁盘懒加载（索引恢复后打开标签才读，design §4） */

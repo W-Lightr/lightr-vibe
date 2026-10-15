@@ -39,6 +39,7 @@ import {
   getDraftInput,
   setDraftInput,
   clearDraftInput,
+  configRejectedNotice,
 } from '../../../composables/useConversation'
 import type { AcpConfigOption, AcpConfigOptionGroup, AcpConfigOptionValue } from '../../../types/acp'
 import { formatTokens } from '../../../utils/time'
@@ -319,6 +320,26 @@ const healthReason = computed(() =>
 )
 const healthOpen = ref(false)
 
+/** 可重试错误状态（session_info_update 的 `_meta`）：显示重试横幅而非失败卡（AC5） */
+const retryState = computed(() => session.value?.retryState ?? null)
+/** 重试横幅文案：带次数（有则）与错误摘要（有则） */
+const retryText = computed(() => {
+  const r = retryState.value
+  if (!r) return ''
+  const attempt = typeof r.attempt === 'number' ? `（第 ${r.attempt} 次）` : ''
+  return `正在重试${attempt}${r.message ? `：${r.message}` : '…'}`
+})
+
+// 配置被 agent 调整为别的值（Rust emit acp://configRejected）：仅对当前会话轻提示
+watch(
+  () => configRejectedNotice.value.seq,
+  () => {
+    const notice = configRejectedNotice.value
+    if (!notice.seq || notice.connId !== props.sessionId) return
+    message.info('该选项被 agent 调整')
+  },
+)
+
 /** 重新连接：杀死该会话进程 + 全新 spawn + load-or-new */
 async function onReconnect() {
   await reconnect(props.sessionId)
@@ -408,6 +429,15 @@ function pickFiles(e: Event) {
 <template>
   <div class="shrink-0 px-6 pb-3">
     <div class="mx-auto max-w-3xl">
+      <!-- 重试横幅：可重试错误（非失败卡），生成期间显示在输入框上方（AC5） -->
+      <div
+        v-if="retryState"
+        class="mx-3 mb-1.5 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 sm:mx-6"
+      >
+        <RefreshCw class="h-3.5 w-3.5 shrink-0 animate-spin" />
+        <span class="truncate">{{ retryText }}</span>
+      </div>
+
       <!-- 权限审批面板：独立边框、比输入框窄（左右内缩），浮在输入框上方（有间距）；
            不并入输入框边框。 -->
       <div

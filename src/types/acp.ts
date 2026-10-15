@@ -59,13 +59,49 @@ export interface AcpUsageUpdateEvent {
   cost?: { amount?: number; currency?: string }
 }
 
-/** 本期忽略的变体（plan / available_commands 面板不展示，design §3） */
-export interface AcpIgnoredEvent {
-  sessionUpdate:
-    | 'plan'
-    | 'available_commands_update'
-    | 'current_mode_update'
-    | 'session_info_update'
+/** 计划条目（ACP 标准 PlanEntry）：content 步骤描述，priority/status 可选 */
+export type AcpPlanPriority = 'high' | 'medium' | 'low'
+export type AcpPlanEntryStatus = 'pending' | 'in_progress' | 'completed'
+
+export interface AcpPlanEntry {
+  content: string
+  priority?: AcpPlanPriority
+  /** 步骤状态；缺失按待办处理 */
+  status?: AcpPlanEntryStatus
+}
+
+/** plan：agent 主动推送的计划清单（流式增量按 entries 整体覆盖，不 append） */
+export interface AcpPlanUpdateEvent {
+  sessionUpdate: 'plan'
+  entries?: AcpPlanEntry[]
+}
+
+/**
+ * session_info_update：agent 原生会话标题 / 重试状态 / 压缩进度等。
+ * `title` 为原生标题；重试/压缩信息放在 `_meta`（透传为 unknown，前端按需解析）。
+ * `_meta` 可能在 update 内，也可能由 Rust 提到事件顶层（见 AcpUpdateEvent.meta）。
+ */
+export interface AcpSessionInfoUpdateEvent {
+  sessionUpdate: 'session_info_update'
+  title?: string
+  _meta?: unknown
+}
+
+/** 会话可用命令（供输入 `/` 菜单 / 面板展示） */
+export interface AcpAvailableCommand {
+  name: string
+  description?: string
+}
+
+export interface AcpAvailableCommandsEvent {
+  sessionUpdate: 'available_commands_update'
+  availableCommands?: AcpAvailableCommand[]
+}
+
+/** 当前模式（对齐 config_option_update 的 mode 项） */
+export interface AcpCurrentModeUpdateEvent {
+  sessionUpdate: 'current_mode_update'
+  currentModeId?: string
 }
 
 /** config_option_update：agent 侧变更推送（切模型后 effort 选项可动态增减） */
@@ -79,7 +115,10 @@ export type AcpUpdate =
   | AcpToolCallEvent
   | AcpUsageUpdateEvent
   | AcpConfigOptionUpdateEvent
-  | AcpIgnoredEvent
+  | AcpPlanUpdateEvent
+  | AcpSessionInfoUpdateEvent
+  | AcpAvailableCommandsEvent
+  | AcpCurrentModeUpdateEvent
 
 export interface AcpUpdateEvent {
   /** 连接 id = 本地会话 id（ses-xxxxxxxx）：事件按此路由到本地会话（design §8.1） */
@@ -87,6 +126,18 @@ export interface AcpUpdateEvent {
   /** ACP 侧 sessionId（opencode ses_xxx）：消息归属用 */
   sessionId: string
   update: AcpUpdate
+  /** Rust 透传的 `params._meta`（update 外，如 opencode retry 键）；缺失为 null。
+   *  前端解析重试时两处都读（update._meta 优先，其次此 meta），见 sessionInfoMeta。 */
+  meta?: unknown
+}
+
+/** acp://configRejected 事件载荷（Rust 在 acp_set_config 应答比对产生，非 wire 种类）：
+ *  请求值被 agent 落成别的值 → 前端提示「该选项被 agent 调整」（AC6） */
+export interface AcpConfigRejectedEvent {
+  connId: string
+  configId: string
+  requested: string
+  actual: string
 }
 
 /** session/new 响应的会话配置项（probe §2：model / mode select） */

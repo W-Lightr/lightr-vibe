@@ -344,12 +344,20 @@ fn handle_incoming(app: &AppHandle, conn: &AcpConn, msg: &Value) {
                     .and_then(|p| p.get("update"))
                     .cloned()
                     .unwrap_or(Value::Null);
+                // update 内自带字段（含 `_meta`）已整体透传；个别引擎把 `_meta`
+                // 放在 `params._meta`（update 外，如 opencode/v2 的 retry 键），
+                // 补一个顶层 `meta` 透传给前端，前端宽容地两处都读（design §2.2）。
+                let meta = params
+                    .and_then(|p| p.get("_meta"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 let _ = app.emit(
                     "acp://update",
                     json!({
                         "connId": conn.conn_id,
                         "sessionId": acp_session_id,
                         "update": update,
+                        "meta": meta,
                     }),
                 );
             } else if method == "$/cancel_request" {
@@ -1751,9 +1759,31 @@ pub async fn acp_session_close(conn_id: String, session_id: String) -> Result<()
     .map_err(|e| format!("acp 任务执行失败: {}", e))?
 }
 
-/// 切换会话配置（优先规范方法 set_config_option，probe §6）→ 返回全量 configOptions
+/// 从 set_config_option 的应答里判断该配置项是否被 agent 落成了别的值。
+/// 在 `result.configOptions` 中按 `id` 或 `category` 命中 config_id，取 `currentValue`：
+/// - 命中且为字符串且 != requested → `Some(actual)`（被拒绝/调整）。
+/// - 相等 / 缺项 / currentValue 非字符串 → `None`（不发，避免误报）。
+/// 纯函数，无副作用，便于单测（design §2.1）。
+fn detect_config_rejection(result: &Value, config_id: &str, requested: &str) -> Option<String> {
+    let options = result.get("configOptions")?.as_array()?;
+    let hit = options.iter().find(|o| {
+        o.get("id").and_then(Value::as_str) == Some(config_id)
+            || o.get("category").and_then(Value::as_str) == Some(config_id)
+    })?;
+    let actual = hit.get("currentValue").and_then(Value::as_str)?;
+    if actual == requested {
+        None
+    } else {
+        Some(actual.to_string())
+    }
+}
+
+/// 切换会话配置（优先规范方法 set_config_option，probe §6）→ 返回全量 configOptions。
+/// 应答里该 configId 的落定值 != 请求值 → 额外 emit `acp://configRejected`（AC6）：
+/// agent 有时不采纳（如需凭据模型回退），前端据此提示「该选项被 agent 调整」。
 #[tauri::command]
 pub async fn acp_set_config(
+    app: AppHandle,
     conn_id: String,
     session_id: String,
     config_id: String,
@@ -1764,9 +1794,23 @@ pub async fn acp_set_config(
         let out = rpc_call(
             &conn,
             "session/set_config_option",
-            json!({ "sessionId": session_id, "configId": config_id, "value": value }),
+            json!({ "sessionId": session_id, "configId": config_id, "value": value.clone() }),
         )?;
         touch_activity(&conn);
+        // 比对落定值：仅当请求值为字符串且被落成别的字符串时才提示
+        if let Some(requested) = value.as_str() {
+            if let Some(actual) = detect_config_rejection(&out, &config_id, requested) {
+                let _ = app.emit(
+                    "acp://configRejected",
+                    json!({
+                        "connId": conn_id,
+                        "configId": config_id,
+                        "requested": requested,
+                        "actual": actual,
+                    }),
+                );
+            }
+        }
         Ok(out)
     })
     .await
@@ -2212,5 +2256,70 @@ mod tests {
         }
         let _ = b;
         assert!(conns().lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn config_rejection_equal_returns_none() {
+        // 落定值 == 请求值 → 正常，不发提示
+        let result = json!({
+            "configOptions": [
+                { "id": "model", "currentValue": "opencode/gpt" }
+            ]
+        });
+        assert_eq!(detect_config_rejection(&result, "model", "opencode/gpt"), None);
+    }
+
+    #[test]
+    fn config_rejection_differs_returns_actual() {
+        // 请求值被落成别的值 → 返回实际值
+        let result = json!({
+            "configOptions": [
+                { "id": "model", "currentValue": "opencode/fallback" }
+            ]
+        });
+        assert_eq!(
+            detect_config_rejection(&result, "model", "opencode/wanted").as_deref(),
+            Some("opencode/fallback")
+        );
+    }
+
+    #[test]
+    fn config_rejection_matches_by_category() {
+        // id 不匹配时退回 category 命中
+        let result = json!({
+            "configOptions": [
+                { "id": "someId", "category": "model", "currentValue": "b" }
+            ]
+        });
+        assert_eq!(
+            detect_config_rejection(&result, "model", "a").as_deref(),
+            Some("b")
+        );
+    }
+
+    #[test]
+    fn config_rejection_missing_or_nonnumeric_returns_none() {
+        // 无 configOptions / 缺该 configId / currentValue 非字符串 → 都不发（安全，不误报）
+        assert_eq!(detect_config_rejection(&json!({}), "model", "a"), None);
+        assert_eq!(
+            detect_config_rejection(&json!({ "configOptions": [] }), "model", "a"),
+            None
+        );
+        assert_eq!(
+            detect_config_rejection(
+                &json!({ "configOptions": [{ "id": "model" }] }),
+                "model",
+                "a"
+            ),
+            None
+        );
+        assert_eq!(
+            detect_config_rejection(
+                &json!({ "configOptions": [{ "id": "model", "currentValue": 42 }] }),
+                "model",
+                "a"
+            ),
+            None
+        );
     }
 }

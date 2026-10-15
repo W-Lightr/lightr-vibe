@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "ACP 事件形状（acp://update / acp://configRejected）、connId 路由、命令面；本任务扩 session/update 消费与新增 configRejected 事件须遵守"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "AcpUpdate 判别联合扩展、camelCase 契约、Session 可选字段的类型一致性"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "session store 新增 planEntries/retryState 等字段与 granular 方法；setup-store 规范"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层：session/update 种类 → 前端消费 的边界契约；configRejected 的 Rust↔TS 契约"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "更新种类解码集中在 useConversation/单一 owner；避免各组件重复解析 _meta"}
+{"file": ".trellis/tasks/10-14-acp-update-kinds/prd.md", "reason": "本任务需求、AC、Out of Scope（AIR 重型排除）"}
+{"file": ".trellis/tasks/10-14-acp-update-kinds/design.md", "reason": "各 update 种类的消费设计、configRejected 纯函数、store 字段"}
+{"file": ".trellis/tasks/10-14-acp-update-kinds/implement.md", "reason": "有序执行 checklist、验证命令、回滚点"}
+{"file": ".trellis/tasks/10-14-acp-update-kinds/research/update-kinds.md", "reason": "opencode v2 ACP 文档 + codeg types.rs 的 update 种类与 _meta 字段依据"}

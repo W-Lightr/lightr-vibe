@@ -9,6 +9,8 @@ import { useMessage } from 'naive-ui'
 import { ref } from 'vue'
 import type {
   AcpConfigOption,
+  AcpConfigRejectedEvent,
+  AcpPlanEntry,
   AcpProcessStatus,
   AcpToolCallEvent,
   AcpToolCallStatus,
@@ -20,7 +22,7 @@ import type { MessageErrorKind, ToolCall } from '../types/session'
 import type { EngineWire } from '../types/engine'
 import { DEFAULT_ENGINE_WIRE } from '../types/engine'
 import { acpService } from '../services/acpService'
-import { onUpdate, onStatus } from '../services/acpEvents'
+import { onUpdate, onStatus, onConfigRejected } from '../services/acpEvents'
 import { useSessionStore } from '../stores/session'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useAgentStore } from '../stores/agent'
@@ -28,6 +30,7 @@ import { useAcpPermission } from './useAcpPermission'
 import { useAcpQuestion } from './useAcpQuestion'
 import { isTauri } from '../utils/isTauri'
 import { tmpSessionDirSync } from '../utils/appData'
+import { hasRetryMeta, parseRetryState } from '../utils/sessionUpdateMeta'
 
 /** 本进程内已建立连接的本地会话 id 集合（connId = 本地会话 id，design §8.3 每会话一进程）。
  * 关标签 → 杀该会话进程并从集合移除；重启后为空 → 首次发送走 connect + load-or-new 重连。 */
@@ -317,7 +320,8 @@ function engineDisplayName(engineId: string): string {
 
 let updateSubscribed = false
 
-/** 模块级订阅（一次）：acp://update → store；acp://status → 健康芯片 + 该会话错误态 */
+/** 模块级订阅（一次）：acp://update → store；acp://status → 健康芯片 + 该会话错误态；
+ *  acp://configRejected → 轻提示「该选项被 agent 调整」+ 乐观值回滚（AC6） */
 function ensureSubscribed(): void {
   if (updateSubscribed) return
   updateSubscribed = true
@@ -347,7 +351,31 @@ function ensureSubscribed(): void {
       if (session && session.status !== 'generating') sessionStore.setStatus(session.id, 'error')
     }
   })
+
+  // 配置被 agent 调整为别的值（Rust 比对 set_config_option 应答产生）：
+  // 乐观值回滚为实际值 + 一次性轻提示（naive-ui message 单例；组件/store 不直接 invoke）
+  onConfigRejected((event: AcpConfigRejectedEvent) => {
+    const sessionStore = useSessionStore()
+    const session = sessionStore.get(event.connId)
+    if (session) {
+      const opt = session.configOptions?.find((o) => o.id === event.configId)
+      if (opt) opt.currentValue = event.actual
+      // model 字段同步回滚（与 setConfigOption 乐观写入对称）
+      if (event.configId === 'model') session.model = event.actual
+    }
+    configRejectedNotice.value = { ...event, seq: configRejectedNotice.value.seq + 1 }
+  })
 }
+
+/** 最近一次「配置被调整」提示（响应式）：供 UI 消费（MessageComposer 监听后 toast）。
+ *  用递增 seq 让同内容的连续事件也能触发 watch。 */
+export const configRejectedNotice = ref<{ seq: number } & AcpConfigRejectedEvent>({
+  seq: 0,
+  connId: '',
+  configId: '',
+  requested: '',
+  actual: '',
+})
 
 function applyUpdate(event: AcpUpdateEvent): void {
   const sessionStore = useSessionStore()
@@ -402,8 +430,37 @@ function applyUpdate(event: AcpUpdateEvent): void {
       }
       break
     }
-    // plan / available_commands_update / current_mode_update / session_info_update：
-    // 本期面板不展示（design §3），忽略
+    // plan：agent 计划清单，整体覆盖（流式增量按 entries 全量，不 append）
+    case 'plan': {
+      const entries: AcpPlanEntry[] = Array.isArray(update.entries) ? update.entries : []
+      sessionStore.setPlan(sessionId, entries)
+      break
+    }
+    // session_info_update：原生标题 + 可重试错误（重试横幅，非失败卡）
+    case 'session_info_update': {
+      if (typeof update.title === 'string' && update.title.trim()) {
+        // 复用 store 的改名入口（触发索引落盘）；agent 原生标题优先于本地 applyAutoTitle
+        sessionStore.renameSession(sessionId, update.title.trim())
+      }
+      // 重试 `_meta`：优先 update 内 `_meta`，退回事件顶层 `meta`（Rust 透传 params._meta）。
+      // 仅在 `_meta` **确实携带重试信息**时才更新，避免 title/compaction 等无关
+      // session_info_update 误清正在显示的重试横幅（design §3.2：仅 retry=null 或
+      // prompt 响应到达才清除）。
+      const meta = update._meta ?? event.meta
+      if (hasRetryMeta(meta)) sessionStore.setRetry(sessionId, parseRetryState(meta))
+      break
+    }
+    // available_commands_update：命令列表落点（供 `/` 菜单/面板，AC7）
+    case 'available_commands_update': {
+      sessionStore.setCommands(sessionId, update.availableCommands ?? [])
+      break
+    }
+    // current_mode_update：当前模式（同步 mode 字段对齐既有显示，AC7）
+    case 'current_mode_update': {
+      sessionStore.setCurrentMode(sessionId, update.currentModeId)
+      break
+    }
+    // 未知/未消费种类：安全忽略（AC8，不崩、不误渲染）
     default:
       break
   }
@@ -668,6 +725,8 @@ export function useConversation() {
       }
       turns.delete(sessionId)
       workspace.setGenerating(sessionId, false)
+      // turn 边界：可重试状态清除（成功/失败/取消任一路径，避免横幅悬挂，AC5）
+      sessionStore.setRetry(sessionId, null)
       if (sessionStore.get(sessionId)?.status === 'generating') {
         sessionStore.setStatus(sessionId, 'idle')
       }
