@@ -100,3 +100,26 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 5: 注入自有 ask 工具（任意引擎可提问）
+<!-- trellis-session: v=2 fp=5de2af35f4060386 -->
+
+**Date**: 2026-10-15
+**Task**: 注入自有 ask 工具（任意引擎可提问）
+**Branch**: `main`
+
+### Summary
+
+实现并归档 10-15-acp-ask-tool：新 lightr-ask-mcp 伴生 bin（stdio MCP server，暴露 ask_user_question，经回环 TCP + 每会话 token 回连主进程）；acp.rs 增 ASK_LISTENER 监听 + handle_ask_connection 桥接；pending_question 改为 QuestionReply 双后端（Acp=JSON-RPC / Mcp=socket）；session/new|load 注入 mcpServers；cancel/disconnect/mark_dead 全量 drain 不 hang；前端复用既有提问卡零改动，AskQuestionCard 选项改长方形圆角框。附带修 Cargo.toml default-run（两 bin 后 cargo run 报错）与 tauri-dev.bat 注释乱码（dev 启动）。四门禁全绿（cargo test 49），check 通过（修 1 处 clippy），实机截图证明 opencode 1.x 已弹出我们的提问卡。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `341a5a2` | feat(acp): 注入自有 ask 工具，任意引擎可经我们的 UI 提问 |
+| `e8bc3d9` | style(acp): 修复新增文档注释的 clippy doc_lazy_continuation（检查阶段修正） |
+
+### Status
+
+[OK] **Completed**
