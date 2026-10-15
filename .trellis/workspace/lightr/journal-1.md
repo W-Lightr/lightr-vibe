@@ -123,3 +123,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 6: 消费 session/update 全量种类
+<!-- trellis-session: v=2 fp=51a487cdc5a2bb29 -->
+
+**Date**: 2026-10-15
+**Task**: 消费 session/update 全量种类
+**Branch**: `main`
+
+### Summary
+
+实现并归档 10-14-acp-update-kinds：前端从丢弃改为消费 plan / session_info_update（原生标题 + 重试横幅）/ available_commands_update / current_mode_update；Rust 新增 detect_config_rejection 纯函数并在 acp_set_config 落定值 != 请求值时 emit acp://configRejected（非 wire 种类）；acp://update 增顶层 meta 兼容 params._meta；新增 utils/sessionUpdateMeta.ts 单一 owner 解析重试 _meta（opencode/codex）；PlanCard.vue 计划卡 + 重试横幅 + 配置弹回 toast。check 修复 3 处（误清重试横幅、turn 边界重复清理、类型重复）。四门禁全绿（cargo test 53）。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5b11c12` | feat(acp): 消费 session/update 全量种类（plan/标题/重试/配置弹回/命令/模式） |
+
+### Status
+
+[OK] **Completed**
