@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "ACP 桥接契约：per-session 进程、connId 路由、事件形状、进程 spawn、8 项不变量；本任务新增 MCP 注入与 socket 桥接须遵守"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "若前端类型有微调（预期零改动）需保持 camelCase 契约"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "复用 useAcpQuestion 模块单例；不改 UI"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层：MCP tool 参数 / socket 请求 / acp://question 事件 / 答复回传 四边界契约一致"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "复用 acp_question::classify 与既有 pending_question/提问卡；不重复实现"}
+{"file": ".trellis/tasks/10-15-acp-ask-tool/prd.md", "reason": "本任务需求、AC、Out of Scope、Open Questions"}
+{"file": ".trellis/tasks/10-15-acp-ask-tool/design.md", "reason": "伴生 bin + socket 桥接 + 注入 session/new.mcpServers 设计；QuestionReply 双后端"}
+{"file": ".trellis/tasks/10-15-acp-ask-tool/implement.md", "reason": "有序执行 checklist、验证命令、回滚点"}
+{"file": ".trellis/tasks/10-14-acp-elicitation/prd.md", "reason": "被复用的既有提问卡链路（acp://question / AskQuestionCard / acp_answer_elicitation）"}

@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+# 多个 bin（lightr-vibe 主程序 + lightr-ask-mcp 伴生）时，`cargo run` 默认跑主程序
+default-run = "lightr-vibe"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,6 +15,12 @@ edition = "2021"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "lightr_vibe_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# 伴生 MCP 提问进程（task 10-15-acp-ask-tool）：由引擎按 session/new.mcpServers 拉起，
+# 经回环 socket 回连主进程弹提问卡。独立 bin（std-only，不链接 tauri）。
+[[bin]]
+name = "lightr-ask-mcp"
+path = "src/bin/lightr_ask_mcp.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -80,45 +80,55 @@ async function onSkip() {
     </p>
 
     <!-- 选项 / 文本输入（answered 后只读） -->
-    <div v-if="question" class="mt-1.5 space-y-1 pl-6">
-      <!-- 单选 -->
+    <div v-if="question" class="mt-1.5 space-y-1.5 pl-6">
+      <!-- 单选：每个选项是长方形圆角框 -->
       <template v-if="question.kind === 'single'">
         <label
           v-for="opt in question.options"
           :key="opt.value"
-          class="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-[12.5px] text-neutral-600 hover:bg-neutral-50"
-          :class="answered && 'cursor-default opacity-60'"
+          class="flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[12.5px] transition-colors"
+          :class="
+            singleValue === opt.value
+              ? 'border-blue-400 bg-blue-50/60 text-blue-700'
+              : 'border-neutral-200 bg-white text-neutral-600 hover:border-neutral-300 hover:bg-neutral-50'
+          "
+          :style="answered ? 'cursor: default; opacity: 0.6' : ''"
         >
           <input
             type="radio"
             name="acp-question-single"
-            class="h-3.5 w-3.5"
+            class="h-3.5 w-3.5 shrink-0"
             :value="opt.value"
             :checked="singleValue === opt.value"
             :disabled="answered"
             @change="singleValue = opt.value"
           />
-          <span>{{ opt.label }}</span>
+          <span class="min-w-0 flex-1 truncate">{{ opt.label }}</span>
         </label>
       </template>
 
-      <!-- 多选 -->
+      <!-- 多选：每个选项是长方形圆角框 -->
       <template v-else-if="question.kind === 'multi'">
         <label
           v-for="opt in question.options"
           :key="opt.value"
-          class="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-[12.5px] text-neutral-600 hover:bg-neutral-50"
-          :class="answered && 'cursor-default opacity-60'"
+          class="flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[12.5px] transition-colors"
+          :class="
+            multiValues.includes(opt.value)
+              ? 'border-blue-400 bg-blue-50/60 text-blue-700'
+              : 'border-neutral-200 bg-white text-neutral-600 hover:border-neutral-300 hover:bg-neutral-50'
+          "
+          :style="answered ? 'cursor: default; opacity: 0.6' : ''"
         >
           <input
             type="checkbox"
-            class="h-3.5 w-3.5"
+            class="h-3.5 w-3.5 shrink-0"
             :value="opt.value"
             :checked="multiValues.includes(opt.value)"
             :disabled="answered"
             @change="toggleMulti(opt.value)"
           />
-          <span>{{ opt.label }}</span>
+          <span class="min-w-0 flex-1 truncate">{{ opt.label }}</span>
         </label>
       </template>
 

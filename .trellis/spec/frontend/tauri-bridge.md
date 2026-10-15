@@ -296,6 +296,46 @@ Now handled for the **Questions** shape only:
   confirm), boolean/number/URL fields, multi-question forms, `ask_user_question`
   user toggle.
 
+### Injected ask tool (`lightr-ask-mcp`, task 10-15-acp-ask-tool)
+
+Engines that don't speak ACP `elicitation/create` (e.g. opencode **1.x** — the
+"Questions" feature is ACP-v2-only; without a tool the model improvises a native
+PowerShell `Show-MessageBox`) get a **self-owned ask tool** injected, mirroring
+codeg's `codeg-mcp` companion but simplified:
+
+- **Companion bin** `src-tauri/src/bin/lightr_ask_mcp.rs` (`[[bin]] lightr-ask-mcp`,
+  std-only, does NOT link Tauri): a minimal newline-delimited JSON-RPC **stdio MCP
+  server** exposing one tool, `ask_user_question` (inputSchema: `question` (required),
+  `options[]`, `multiSelect`, `header`). On `tools/call` it connects to `--socket`
+  with `--token`/`--conn-id`, sends the raw arguments, **blocks** for the answer, and
+  returns it as MCP `content` (declined → a "skipped" text result).
+- **Main-process bridge** (in `acp.rs`): `ASK_LISTENER` (a `OnceLock` bound once to
+  loopback TCP `127.0.0.1:0`), per-connId token table (`ask_token_for`/register/
+  unregister), `handle_ask_connection` (validate token → `questions_from_mcp_args` →
+  store pending → emit → block), `write_ask_response`, `render_answer_text`.
+  **Only loopback + per-session token**; never a network port.
+- **Injection**: `mcp_servers_for(conn_id)` returns the ACP `McpServerStdio` entry
+  `{type:"stdio", name:"lightr-ask", command:<sibling lightr-ask-mcp exe>,
+  args:[--socket,127.0.0.1:<port>,--token,<t>,--conn-id,<connId>], env:[]}` and is
+  passed as `session/new` / `session/load` `mcpServers` (was `[]`). **Returns `[]`
+  when the companion exe isn't found** (→ identical to before; opencode zero-regress).
+  The throwaway probe does NOT inject. The injectable decision is gated only on
+  bin-found + listener-present — **no engine-name branch** (AC6/PAC1).
+- **Two reply backends, one card**: `pending_question` value is
+  `(QuestionReply, Vec<Question>)` where `QuestionReply::Acp(rpcId)` writes a JSON-RPC
+  response (native elicitation) and `QuestionReply::Mcp(Sender<AskOutcome>)` pushes
+  the answer over the socket. `acp_answer_elicitation` / `decline_elicitation_inner`
+  branch on it. Frontend is **unchanged** — the MCP ask reuses the exact same
+  `acp://question` event (carries `connId`) + `AskQuestionCard` + `useAcpQuestion`.
+- **Never hang**: cancel/disconnect drains `pending_question` → `decline` (Mcp arm
+  sends `declined` → socket unblocks); `mark_dead` clears the map → drops the Sender
+  → the socket thread's `recv` errors → writes declined. `cancel_by_rpc_id` matches
+  only `Acp` (an MCP ask has no rpc id — it's canceled via socket/session close).
+
+> **Warning**: `default-run = "lightr-vibe"` is required in `Cargo.toml` now that the
+> package has two bins — otherwise `cargo run` (Tauri dev) fails with "could not
+> determine which binary to run".
+
 Other ACP behaviors worth keeping:
 
 - `tool_call_update.content` is **cumulative replacement** — overwrite, never append.

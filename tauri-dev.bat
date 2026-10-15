@@ -1,5 +1,5 @@
 @echo off
-rem ---- MSVC 环境包装器：绕过 Git usr/bin/link.exe 遮蔽与 vcvars64 失效问题 ----
+rem ---- MSVC env wrapper: avoid Git usr/bin/link.exe shadowing and broken vcvars64 ----
 set "MSVC=D:\Env\VisualStudioCC\core\VC\Tools\MSVC\14.51.36231"
 set "SDK=C:\Program Files (x86)\Windows Kits\10"
 set "SDKVER=10.0.26100.0"

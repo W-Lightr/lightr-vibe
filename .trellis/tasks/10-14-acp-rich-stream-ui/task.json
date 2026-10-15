@@ -22,7 +22,8 @@
     "10-14-acp-elicitation",
     "10-14-acp-permission-rich",
     "10-14-acp-stream-control",
-    "10-14-acp-update-kinds"
+    "10-14-acp-update-kinds",
+    "10-15-acp-ask-tool"
   ],
   "parent": null,
   "relatedFiles": [],

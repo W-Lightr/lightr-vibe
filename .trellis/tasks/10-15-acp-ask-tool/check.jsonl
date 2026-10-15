@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核对 ACP 不变量未被破坏：connId 路由、事件形状、进程生命周期"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对 MCP 工具参数/socket/acp://question/答复 四边界契约一致"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "核对复用既有提问卡与 classify，无重复实现"}
+{"file": ".trellis/tasks/10-15-acp-ask-tool/prd.md", "reason": "逐条核对 AC1-AC9，尤其 AC6 无引擎名分支、AC7 opencode 零回归"}
+{"file": ".trellis/tasks/10-15-acp-ask-tool/design.md", "reason": "核对实现与设计一致：伴生 bin、socket、注入、QuestionReply 双后端"}
+{"file": ".trellis/tasks/10-15-acp-ask-tool/implement.md", "reason": "核对 checklist 完成度与验证命令是否全跑"}
+{"file": ".trellis/tasks/10-14-acp-elicitation/prd.md", "reason": "核对复用链路未被破坏；两条提问来源并存"}

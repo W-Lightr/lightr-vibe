@@ -181,6 +181,22 @@ fn build_acp_command(meta: &AcpAgentMeta) -> Result<Command, String> {
 
 // ---------- 连接对象 ----------
 
+/// 一次提问的应答后端（两条来源共用同一张卡，答复时按来源回写）。
+enum QuestionReply {
+    /// 原生 ACP `elicitation/create`：回写 JSON-RPC 响应（原 id 原样回显）。
+    Acp(Value),
+    /// 注入的 `ask_user_question` MCP 工具：经 socket 回传给伴生进程（std mpsc）。
+    Mcp(Sender<AskOutcome>),
+}
+
+/// MCP ask 的答复结果（用户答 → 伴生进程包成 MCP 工具结果）。
+struct AskOutcome {
+    /// 用户跳过/取消
+    declined: bool,
+    /// 展示给模型的答案文本（多为选中项标签；多选以顿号连接）
+    answer: String,
+}
+
 struct AcpConn {
     /// 本地会话 id（connId）：事件/命令路由键，与 ACP 进程一一对应
     conn_id: String,
@@ -199,9 +215,11 @@ struct AcpConn {
     /// requestId → (JSON-RPC id 原样回显值, sessionId)：request_permission 等待前端答复
     pending_perm: Mutex<HashMap<String, (Value, String)>>,
     perm_next: AtomicU64,
-    /// requestId → (JSON-RPC id 原样回显值, 题目列表)：elicitation/create（Questions 型）
-    /// 等待前端答复。与 pending_perm 平行、语义不同（不复用权限 map，design §2）。
-    pending_question: Mutex<HashMap<String, (Value, Vec<Question>)>>,
+    /// requestId → (应答后端, 题目列表)：等待前端答复。两条来源共用同一卡：
+    /// - 原生 ACP `elicitation/create` → `QuestionReply::Acp`（回写 JSON-RPC）
+    /// - 注入的 `ask_user_question` MCP 工具（伴生进程经 socket 回连）→ `QuestionReply::Mcp`
+    /// 与 pending_perm 平行、语义不同（不复用权限 map，design §2 / 10-15-acp-ask-tool）。
+    pending_question: Mutex<HashMap<String, (QuestionReply, Vec<Question>)>>,
     q_next: AtomicU64,
     agent_info: Mutex<Value>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
@@ -437,10 +455,10 @@ fn handle_elicitation_request(conn: &AcpConn, id: Value, msg: &Value, app: &AppH
     match classify_elicitation(&params) {
         ElicitationPlan::Questions(questions) => {
             let request_id = conn.q_next.fetch_add(1, Ordering::SeqCst).to_string();
-            conn.pending_question
-                .lock()
-                .unwrap()
-                .insert(request_id.clone(), (id.clone(), questions.clone()));
+            conn.pending_question.lock().unwrap().insert(
+                request_id.clone(),
+                (QuestionReply::Acp(id.clone()), questions.clone()),
+            );
             let questions_json =
                 serde_json::to_value(&questions).unwrap_or(Value::Array(Vec::new()));
             let _ = app.emit(
@@ -517,13 +535,14 @@ fn cancel_by_rpc_id(conn: &AcpConn, rpc_id: &Value) {
     if let Some(request_id) = doomed {
         let _ = respond_permission_inner(conn, &request_id, None);
     }
-    // elicitation：挂起的提问请求也须回响应（decline），否则 agent hang（design §3.4）
+    // elicitation：挂起的提问请求也须回响应（decline），否则 agent hang（design §3.4）。
+    // 仅原生 ACP 来源可按 rpc id 命中（MCP ask 无 rpc id；其取消走 socket 断开/会话关闭）。
     let doomed_q: Option<String> = conn
         .pending_question
         .lock()
         .unwrap()
         .iter()
-        .find(|(_, (id, _))| id == rpc_id)
+        .find(|(_, (reply, _))| matches!(reply, QuestionReply::Acp(id) if id == rpc_id))
         .map(|(k, _)| k.clone());
     if let Some(request_id) = doomed_q {
         let _ = decline_elicitation_inner(conn, &request_id);
@@ -561,8 +580,10 @@ fn mark_dead(app: &AppHandle, conn: &Arc<AcpConn>, reason: &str) {
     conn.pending.lock().unwrap().clear();
     // 权限请求也随进程失效：前端答复会走 require_conn 的 acp-dead 分支，这里清防泄漏
     conn.pending_perm.lock().unwrap().clear();
-    // 挂起的 elicitation 同理：进程已死，无法回响应，清 map 防泄漏
+    // 挂起的 elicitation 同理：进程已死，无法回响应，清 map 防泄漏。
+    // （清 map 会 drop Mcp 的 Sender → socket 处理线程 recv 失败 → 写 declined，不 hang）
     conn.pending_question.lock().unwrap().clear();
+    unregister_ask_token(&conn.conn_id);
     let tail: Vec<String> = {
         let t = conn.stderr_tail.lock().unwrap();
         t.iter().rev().take(5).rev().cloned().collect()
@@ -668,6 +689,257 @@ fn ensure_idle_sweep(app: &AppHandle) {
     std::thread::spawn(move || idle_sweep_loop(app));
 }
 
+// ---------- 注入的 ask 工具：回环 TCP 监听 + 桥接（task 10-15-acp-ask-tool） ----------
+
+/// 全局 ask 监听：一次性绑定 `127.0.0.1:0`（随机端口），accept 循环处理伴生进程回连。
+/// 附带 connId → 一次性 token 表（校验来源；仅本机）。
+static ASK_LISTENER: OnceLock<AskListener> = OnceLock::new();
+
+struct AskListener {
+    /// `127.0.0.1:<port>`：注入到 `session/new.mcpServers` 的 args 里
+    addr: String,
+    /// connId → token（会话结束移除）
+    tokens: Mutex<HashMap<String, String>>,
+}
+
+/// 确保全局 ask 监听已启动，返回 `127.0.0.1:<port>`（供注入构造 args）。
+fn ensure_ask_listener(app: &AppHandle) -> String {
+    ASK_LISTENER
+        .get_or_init(|| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")
+                .expect("bind ask listener 127.0.0.1:0");
+            let addr = listener
+                .local_addr()
+                .map(|a| format!("127.0.0.1:{}", a.port()))
+                .unwrap_or_else(|_| "127.0.0.1:0".to_string());
+            let app = app.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    match stream {
+                        Ok(s) => {
+                            let app = app.clone();
+                            std::thread::spawn(move || handle_ask_connection(app, s));
+                        }
+                        Err(_) => continue,
+                    }
+                }
+            });
+            AskListener {
+                addr,
+                tokens: Mutex::new(HashMap::new()),
+            }
+        })
+        .addr
+        .clone()
+}
+
+/// 登记/移除某会话的 ask token（spawn 时登记，会话结束移除）。
+fn register_ask_token(conn_id: &str, token: &str) {
+    if let Some(l) = ASK_LISTENER.get() {
+        l.tokens
+            .lock()
+            .unwrap()
+            .insert(conn_id.to_string(), token.to_string());
+    }
+}
+
+fn unregister_ask_token(conn_id: &str) {
+    if let Some(l) = ASK_LISTENER.get() {
+        l.tokens.lock().unwrap().remove(conn_id);
+    }
+}
+
+/// 进程级随机盐（一次性）：ask token = 盐 + connId 的简单混合。仅本机可见，
+/// 用于防串会话（不是强加密；回环 + 校验足够）。
+fn ask_salt() -> &'static str {
+    static SALT: OnceLock<String> = OnceLock::new();
+    SALT.get_or_init(|| {
+        // 用系统时间 + 地址熵做种子（stdlib 无 OS 随机源依赖）
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let addr = &ASK_LISTENER as *const _ as usize;
+        format!("{:x}{:x}", nanos, addr)
+    })
+}
+
+/// 某会话的 ask token（登记与注入构造共用，保证一致）。
+fn ask_token_for(conn_id: &str) -> String {
+    format!("{}{}", ask_salt(), conn_id)
+}
+
+/// 定位 `lightr-ask-mcp` 可执行文件：与主进程同目录（生产/`tauri build`），
+/// 或 dev 下同目录（`target/debug` 与主 exe 同处）。
+fn ask_bin_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let name = if cfg!(windows) {
+        "lightr-ask-mcp.exe"
+    } else {
+        "lightr-ask-mcp"
+    };
+    let candidate = dir.join(name);
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// 构造注入 `session/new`/`session/load` 的 `mcpServers` 数组（ACP McpServerStdio 形状）：
+/// `{ "type":"stdio", "name":"lightr-ask", "command":<bin>, "args":[...], "env":[] }`。
+/// 无法定位 bin 时返回 `[]`（不注入，opencode 零回归）。
+fn mcp_servers_for(conn_id: &str) -> Value {
+    let Some(bin) = ask_bin_path() else {
+        return Value::Array(Vec::new());
+    };
+    let Some(addr) = ASK_LISTENER.get().map(|l| l.addr.clone()) else {
+        return Value::Array(Vec::new());
+    };
+    let token = ask_token_for(conn_id);
+    json!([{
+        "type": "stdio",
+        "name": "lightr-ask",
+        "command": bin.to_string_lossy(),
+        "args": ["--socket", addr, "--token", token, "--conn-id", conn_id],
+        "env": []
+    }])
+}
+
+/// 处理一条伴生进程回连：读一行 `{kind:"ask", token, connId, arguments}` →
+/// 校验 → 映射成 `Question` → 存 pending（Mcp 后端）+ emit `acp://question` →
+/// 阻塞等用户答复 → 写回 `{declined, answer}` 并关闭。
+fn handle_ask_connection(app: AppHandle, stream: std::net::TcpStream) {
+    let mut reader = BufReader::new(match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    });
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() {
+        return;
+    }
+    let req: Value = match serde_json::from_str(line.trim()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let token = req.get("token").and_then(Value::as_str).unwrap_or("");
+    let conn_id = req.get("connId").and_then(Value::as_str).unwrap_or("");
+    let arguments = req.get("arguments").cloned().unwrap_or(Value::Null);
+
+    // 校验 token（仅本机；防串会话）
+    let ok = ASK_LISTENER
+        .get()
+        .and_then(|l| l.tokens.lock().unwrap().get(conn_id).cloned())
+        .map(|t| t == token)
+        .unwrap_or(false);
+    if !ok {
+        let _ = write_ask_response(&stream, true, "");
+        return;
+    }
+    let conn = match get_conn(conn_id) {
+        Some(c) => c,
+        None => {
+            let _ = write_ask_response(&stream, true, "");
+            return;
+        }
+    };
+
+    let questions = questions_from_mcp_args(&arguments);
+    if questions.is_empty() {
+        // 参数不合法（缺 question）→ 直接 declined，模型据此继续
+        let _ = write_ask_response(&stream, true, "");
+        return;
+    }
+
+    let request_id = conn.q_next.fetch_add(1, Ordering::SeqCst).to_string();
+    let (tx, rx) = mpsc::channel::<AskOutcome>();
+    conn.pending_question
+        .lock()
+        .unwrap()
+        .insert(request_id.clone(), (QuestionReply::Mcp(tx), questions.clone()));
+    let questions_json = serde_json::to_value(&questions).unwrap_or(Value::Array(Vec::new()));
+    let _ = app.emit(
+        "acp://question",
+        json!({
+            "connId": conn_id,
+            "requestId": request_id,
+            "sessionId": "",   // MCP 来源无 agent-side sessionId（用 connId 路由）
+            "questions": questions_json,
+        }),
+    );
+    eprintln!("[acp] emitted acp://question (mcp) requestId={request_id}");
+
+    // 阻塞等用户答复（会话关闭/取消时由 decline_elicitation_inner/清理回 declined）
+    match rx.recv() {
+        Ok(outcome) => {
+            let _ = write_ask_response(&stream, outcome.declined, &outcome.answer);
+        }
+        Err(_) => {
+            // sender 被丢弃（连接死/会话清）→ 回 declined
+            let _ = write_ask_response(&stream, true, "");
+        }
+    }
+}
+
+/// 写回一行应答并关闭连接。
+fn write_ask_response(
+    mut stream: &std::net::TcpStream,
+    declined: bool,
+    answer: &str,
+) -> std::io::Result<()> {
+    let resp = json!({ "declined": declined, "answer": answer });
+    let mut line = resp.to_string();
+    line.push('\n');
+    stream.write_all(line.as_bytes())?;
+    stream.flush()
+}
+
+/// 纯函数：MCP `ask_user_question` 参数 → `Question`（一次一问，对齐 ACP 分类产物）。
+/// 形如 `{ question, options[], multiSelect, header }`；`options` 空 = 自由文本。
+fn questions_from_mcp_args(args: &Value) -> Vec<Question> {
+    use crate::acp_question::{QuestionKind, QuestionOption};
+    let question = args
+        .get("question")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if question.is_empty() {
+        return Vec::new();
+    }
+    let options: Vec<QuestionOption> = args
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| o.as_str())
+                .map(|s| QuestionOption {
+                    value: s.to_string(),
+                    label: s.to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let multi = args
+        .get("multiSelect")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let kind = if options.is_empty() {
+        QuestionKind::Text
+    } else if multi {
+        QuestionKind::Multi
+    } else {
+        QuestionKind::Single
+    };
+    vec![Question {
+        id: "answer".to_string(),
+        prompt: question,
+        kind,
+        options,
+    }]
+}
+
 /// 空闲回收循环：每 ~15s 扫描所有连接，杀掉 `空闲超时 且 无挂起请求` 的连接（design §8.2）。
 /// 「忙」判据 = pending（prompt 等挂起请求）或 pending_perm 非空，避免长生成中被误杀。
 fn idle_sweep_loop(app: AppHandle) {
@@ -755,6 +1027,11 @@ fn connect_inner(app: AppHandle, conn_id: String, engine: AgentType) -> Result<S
         .unwrap()
         .insert(conn_id.clone(), conn.clone());
 
+    // 登记 ask token（注入的提问 MCP 伴生进程回连校验用；仅本机）。
+    // 监听器在此确保启动（拿到 127.0.0.1:<port>）；session/new 注入时复用同一 addr。
+    ensure_ask_listener(&app);
+    register_ask_token(&conn_id, &ask_token_for(&conn_id));
+
     std::thread::spawn(move || drain_stderr(stderr, stderr_tail));
     {
         let reader_app = app.clone();
@@ -814,6 +1091,7 @@ fn disconnect_conn(app: &AppHandle, conn_id: &str, conn: &Arc<AcpConn>, reason: 
     for request_id in doomed_q {
         let _ = decline_elicitation_inner(conn, &request_id);
     }
+    unregister_ask_token(conn_id);
     // 关 stdin（drop writer）触发 opencode <1s 干净退出
     *conn.stdin.lock().unwrap() = None;
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -1352,7 +1630,12 @@ pub async fn acp_session_new(conn_id: String, cwd: String) -> Result<SessionResu
         let conn = require_conn(&conn_id)?;
         // cwd 必须存在（协议 §9 绝对路径）；tmpsession 目录首次使用时自动创建
         std::fs::create_dir_all(&cwd).map_err(|e| format!("创建会话目录失败: {}", e))?;
-        let result = rpc_call(&conn, "session/new", json!({ "cwd": cwd, "mcpServers": [] }))?;
+        // 注入我们的提问 MCP 服务器（任意引擎可提问；无法定位 bin 时为空数组，零回归）
+        let result = rpc_call(
+            &conn,
+            "session/new",
+            json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&conn_id) }),
+        )?;
         touch_activity(&conn);
         parse_session_result(&result, None)
     })
@@ -1374,7 +1657,7 @@ pub async fn acp_session_load(
         let result = rpc_call(
             &conn,
             "session/load",
-            json!({ "sessionId": acp_session_id, "cwd": cwd, "mcpServers": [] }),
+            json!({ "sessionId": acp_session_id, "cwd": cwd, "mcpServers": mcp_servers_for(&conn_id) }),
         )?;
         touch_activity(&conn);
         parse_session_result(&result, Some(id))
@@ -1550,7 +1833,7 @@ pub fn acp_answer_elicitation(
         return Ok(());
     }
     let entry = conn.pending_question.lock().unwrap().remove(&request_id);
-    let Some((rpc_id, questions)) = entry else {
+    let Some((reply, questions)) = entry else {
         // 请求不存在或已答复：安全 no-op（不报错，避免 UI 因迟到答复弹错）
         return Ok(());
     };
@@ -1558,25 +1841,70 @@ pub fn acp_answer_elicitation(
         .into_iter()
         .map(|a| (a.field_id, a.values))
         .collect();
-    let result = build_elicitation_result(&questions, &pairs, false);
-    eprintln!("[acp] answer elicitation requestId={request_id}");
-    send_line(
-        &conn,
-        &json!({ "jsonrpc": "2.0", "id": rpc_id, "result": result }),
-    )
+    eprintln!("[acp] answer question requestId={request_id}");
+    match reply {
+        // 原生 ACP elicitation：回写 JSON-RPC 响应
+        QuestionReply::Acp(rpc_id) => {
+            let result = build_elicitation_result(&questions, &pairs, false);
+            send_line(
+                &conn,
+                &json!({ "jsonrpc": "2.0", "id": rpc_id, "result": result }),
+            )
+        }
+        // MCP ask 工具：把答案文本经 socket 回传（伴生进程包成工具结果）
+        QuestionReply::Mcp(tx) => {
+            let answer = render_answer_text(&questions, &pairs);
+            let _ = tx.send(AskOutcome {
+                declined: false,
+                answer,
+            });
+            Ok(())
+        }
+    }
 }
 
 /// 内部：对某挂起 elicitation 回 `{"action":"decline"}` 并移除（找不到则 no-op）。
-/// 供 cancel / disconnect 清理与「跳过」答复复用。
+/// 供 cancel / disconnect 清理与「跳过」答复复用。MCP 来源则经 socket 回 declined。
 fn decline_elicitation_inner(conn: &AcpConn, request_id: &str) -> Result<(), String> {
     let entry = conn.pending_question.lock().unwrap().remove(request_id);
-    let Some((rpc_id, _questions)) = entry else {
+    let Some((reply, _questions)) = entry else {
         return Ok(());
     };
-    send_line(
-        conn,
-        &json!({ "jsonrpc": "2.0", "id": rpc_id, "result": { "action": "decline" } }),
-    )
+    match reply {
+        QuestionReply::Acp(rpc_id) => send_line(
+            conn,
+            &json!({ "jsonrpc": "2.0", "id": rpc_id, "result": { "action": "decline" } }),
+        ),
+        QuestionReply::Mcp(tx) => {
+            let _ = tx.send(AskOutcome {
+                declined: true,
+                answer: String::new(),
+            });
+            Ok(())
+        }
+    }
+}
+
+/// 把用户答案渲染成给模型看的文本：单选用其值，多选以顿号连接。
+/// 值可能缺失（模型未见过的字段）→ 跳过。
+fn render_answer_text(questions: &[Question], pairs: &[(String, Vec<String>)]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for (field_id, values) in pairs {
+        if values.is_empty() {
+            continue;
+        }
+        let label = questions
+            .iter()
+            .find(|q| &q.id == field_id)
+            .map(|q| q.prompt.clone())
+            .unwrap_or_else(|| field_id.clone());
+        parts.push(format!("{}：{}", label, values.join("、")));
+    }
+    if parts.is_empty() {
+        "（用户未提供具体答案）".to_string()
+    } else {
+        parts.join("\n")
+    }
 }
 
 // ---------- 单元测试（协议路由 / 超时矩阵 / pending 清理 / shim 解析） ----------
@@ -1584,6 +1912,57 @@ fn decline_elicitation_inner(conn: &AcpConn, request_id: &str) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp_question::QuestionKind;
+
+    #[test]
+    fn mcp_args_single_select() {
+        let qs = questions_from_mcp_args(&json!({
+            "question": "部署到哪个环境？",
+            "options": ["dev", "prod"]
+        }));
+        assert_eq!(qs.len(), 1);
+        assert_eq!(qs[0].prompt, "部署到哪个环境？");
+        assert_eq!(qs[0].kind, QuestionKind::Single);
+        assert_eq!(qs[0].options.len(), 2);
+        assert_eq!(qs[0].options[1].value, "prod");
+    }
+
+    #[test]
+    fn mcp_args_multi_select_and_free_text() {
+        let multi = questions_from_mcp_args(&json!({
+            "question": "启用哪些功能？", "options": ["a", "b"], "multiSelect": true
+        }));
+        assert_eq!(multi[0].kind, QuestionKind::Multi);
+        let text = questions_from_mcp_args(&json!({ "question": "项目名？" }));
+        assert_eq!(text[0].kind, QuestionKind::Text);
+        assert!(text[0].options.is_empty());
+    }
+
+    #[test]
+    fn mcp_args_missing_question_is_empty() {
+        assert!(questions_from_mcp_args(&json!({ "options": ["a"] })).is_empty());
+        assert!(questions_from_mcp_args(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn render_answer_text_joins_labels() {
+        let qs = vec![Question {
+            id: "answer".into(),
+            prompt: "部署到哪个环境？".into(),
+            kind: QuestionKind::Single,
+            options: Vec::new(),
+        }];
+        let text = render_answer_text(&qs, &[("answer".to_string(), vec!["prod".to_string()])]);
+        assert_eq!(text, "部署到哪个环境？：prod");
+        // 多选顿号连接
+        let multi = render_answer_text(&qs, &[("answer".to_string(), vec!["a".into(), "b".into()])]);
+        assert_eq!(multi, "部署到哪个环境？：a、b");
+        // 空答案
+        assert_eq!(
+            render_answer_text(&qs, &[("answer".to_string(), vec![])]),
+            "（用户未提供具体答案）"
+        );
+    }
 
     #[test]
     fn inject_raw_input_start_line_leaves_non_patch_untouched() {
