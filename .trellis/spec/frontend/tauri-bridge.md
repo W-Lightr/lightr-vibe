@@ -370,6 +370,50 @@ Unknown / unhandled kinds still fall through to the default branch (safe no-op);
 AIR-heavy kinds (steering/goal/sessionFailure/contextCompaction/fork/delegation/
 background) remain out of scope.
 
+### Stream control — stop / empty-reply / reconnect (task 10-14-acp-stream-control)
+
+The turn lifecycle is driven by the `acp_prompt` promise's `stopReason`. Frontend
+contract (`useConversation.ts`, `acpMock.ts`, `src/types/session.ts`):
+
+- **Empty-reply failure inference (D2, PRD R1).** A `prompt` that resolves with
+  `stopReason === 'end_turn'` **and** whose turn has *zero content* is a silent
+  failure, not success → push an assistant card
+  `{type:'error', errorKind:'empty', content:'Agent 未返回任何内容（可能已失败），请重试'}`.
+  - `turnHasContent(sessionId, turnId)` is the single owner of "has content".
+    Content = any **assistant** message on that `turnId` with non-empty `content`
+    (text or thinking), `toolCalls.length`, or `type:'error'`. `user` messages
+    never count (the sender's own bubble would always make a turn look non-empty).
+  - Trigger is **only** `end_turn`: `cancelled` stays `stopped`, `refusal` already
+    has its own card — neither is judged empty.
+  - Judgement is **conservative**: any tool call or thinking content makes the turn
+    non-empty (a pure-tool or pure-thinking turn is never flagged).
+  - Defensive drain: before pushing the empty card, any residual `status:'streaming'`
+    message on that `turnId` is patched to `status:'error'` so no empty `done`
+    bubble coexists with the failure card (normal empty replies have none).
+- **`stop()` semantics** (three things): `session/cancel` + `cancelQueued`
+  (permissions) + `cancelQueuedQuestions` (elicitation). It converges the current
+  turn; a late `end_turn` must **not** flip an already-`stopped` message back to
+  `done` (`finalStatus` applies only while `status === 'streaming'`).
+- **Retry ≠ failure.** While a retry is in flight (`hasRetryMeta`/`parseRetryState`)
+  the amber **retry banner** shows and the empty/error failure card must **not**
+  also appear — a prompt still pending is not a failure. The two are mutually
+  exclusive.
+- **Thinking-only turns keep their actions** (AC10 fix). A turn that produced only a
+  `thinking` message renders in the thinking branch of `MessageItem.vue`, which is
+  separate from the text branch. Both branches must expose the action toolbar
+  (重新生成 / 从此分叉) once the turn converges (`!isStreaming`) — otherwise a
+  thinking-only turn shows no 重新生成 button. The two branches are mutually
+  exclusive (`v-else-if` / `v-else`), so there is never a duplicate toolbar.
+- **`reconnect()` first converges a generating session.** If the local session is
+  generating, `reconnect()` calls `stop(sessionId)` **before** `disconnect()`;
+  reconnect kills the old process, so an in-flight `prompt` would otherwise never
+  resolve (its turn would hang forever).
+
+> **Gotcha**: `stop()` only cancels the current turn. Do **not** reuse it to mean
+> "tear down the connection" — that is `closeConnection()` (see per-session
+> invariants, item 3). Reconnecting while generating requires *both*, in the order
+> `stop()` → `disconnect()`.
+
 Other ACP behaviors worth keeping:
 
 - `tool_call_update.content` is **cumulative replacement** — overwrite, never append.
@@ -379,8 +423,21 @@ Other ACP behaviors worth keeping:
   safe no-op; cancel must also resolve that session's pending permissions.
 - Permission option selection must match by `kinds` (`allow_once` before
   `allow_always`), never by array position.
-- Timeouts: initialize 10s / `session/new` 30s / `prompt` 300s / other 30s.
+- Timeouts: initialize 60s / `session/new` 30s / `prompt` 300s / other 30s.
   The first `session/new` on a cold agent takes 8–13s (model enumeration).
+  Initialize is 60s (raised 10s→60s, AC10 real-machine feedback, matching codeg's
+  `connection.rs` 60s): claude-agent-acp preheats Claude Code's MCP servers before
+  answering initialize, so a tight bound surfaced as `timeout:10s initialize` on
+  reconnect. The adapter itself answers in 0.6–2.2s.
+- **node-shim spawn trap (`engine.rs::extract_exe_from_shim`).** npm-installed
+  adapters (`claude-agent-acp`, `codex-acp`) ship a `.cmd` shim whose real command
+  is `node <…\dist\index.js>` — the exe token is a bare `node.exe` interpreter and
+  the script is a **separate argument**. Extracting only the `.exe` spawns bare
+  `node`, which reads the JSON-RPC line as JavaScript and throws a SyntaxError →
+  initialize never answers (symptom: `timeout:… initialize`, intermittent by which
+  shim resolves). The extractor must **reject a node/node.exe interpreter** and
+  return `None` → `CmdFallback` (`cmd /C <bare_bin>`), which runs the shim correctly
+  (~1.8s handshake). Only a single self-contained `.exe` target is extractable.
 - Always `create_dir_all(cwd)` before `session/new` — the protocol requires an
   existing absolute cwd.
 - Command surface (all take `connId`, camelCase params): `acp_connect`,

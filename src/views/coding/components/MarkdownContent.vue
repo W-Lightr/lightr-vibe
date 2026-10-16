@@ -8,6 +8,8 @@ const props = defineProps<{ content: string }>()
 const html = computed(() =>
   marked.parse(props.content, { async: false, breaks: true }) as string,
 )
+
+// 链接外部打开由 main.ts 的全局 capture 监听统一处理（避免本地+全局重复触发开两次）。
 </script>
 
 <template>

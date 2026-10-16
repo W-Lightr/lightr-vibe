@@ -9,6 +9,18 @@ import { initAppData } from './utils/appData'
 import { useProjectStore } from './stores/project'
 import { useSessionStore } from './stores/session'
 import { initAcpListeners } from './services/acpService'
+import { handleExternalLinkClick } from './utils/externalLink'
+
+// 全局唯一入口：任何 <a href> 点击都以外部方式打开（默认浏览器 / 新标签页），
+// 阻止 Tauri WebView 就地导航把应用界面替换掉。仅此一处处理链接，
+// 组件内不要再加局部点击处理（否则同一次点击开两个标签）。
+document.addEventListener(
+  'click',
+  (e) => {
+    handleExternalLinkClick(e)
+  },
+  true,
+)
 
 // ---- Monaco Editor worker 配置（Vite ?worker 语法）----
 // 注意：monaco-editor 0.57+ 的 exports 映射为 "./*.js" -> "./esm/vs/*.js"，

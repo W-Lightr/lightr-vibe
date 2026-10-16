@@ -9,7 +9,6 @@ import {
   RefreshCw,
   GitBranch,
   AlertCircle,
-  Square,
   Settings,
 } from 'lucide-vue-next'
 import type { Message } from '../../../types/session'
@@ -22,7 +21,7 @@ const props = defineProps<{ message: Message }>()
 
 const workspace = useWorkspaceStore()
 const router = useRouter()
-const { regenerate, stop, fork } = useConversation()
+const { regenerate, fork } = useConversation()
 
 const copied = ref(false)
 const isUser = computed(() => props.message.role === 'user')
@@ -82,6 +81,27 @@ function onFork() {
     >
       {{ message.content }}
     </div>
+    <!-- 纯思考回合也要能重新生成/分叉：思考完毕且非流式时显示工具栏 -->
+    <div v-if="!isStreaming" class="mt-1 flex items-center gap-0.5">
+      <button
+        class="flex h-7 cursor-pointer items-center gap-1 rounded-md px-1.5 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
+        title="重新生成"
+        :disabled="generating"
+        :class="generating && 'cursor-not-allowed opacity-40'"
+        @click="regenerate(message.sessionId, message.id)"
+      >
+        <RefreshCw class="h-3.5 w-3.5" />
+        重新生成
+      </button>
+      <button
+        class="flex h-7 cursor-pointer items-center gap-1 rounded-md px-1.5 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
+        title="从此分叉"
+        @click="onFork"
+      >
+        <GitBranch class="h-3.5 w-3.5" />
+        从此分叉
+      </button>
+    </div>
   </div>
 
   <!-- 错误提示（PRD R4：dead / 凭据 / timeout 错误卡 + 「去设置」按钮） -->
@@ -136,15 +156,6 @@ function onFork() {
       >
         <GitBranch class="h-3.5 w-3.5" />
         从此分叉
-      </button>
-      <button
-        v-if="generating"
-        class="flex h-7 cursor-pointer items-center gap-1 rounded-md px-1.5 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
-        title="停止生成"
-        @click="stop(message.sessionId)"
-      >
-        <Square class="h-3 w-3" />
-        停止
       </button>
     </div>
   </div>

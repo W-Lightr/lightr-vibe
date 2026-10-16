@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核对 ACP 不变量未破坏：connId 路由、错误串前缀、cancel 语义"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对错误串前缀在 Rust↔TS 两端一致；空回复判定边界"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "核对复用 classifyAcpError/stop/reconnect，无重复实现"}
+{"file": ".trellis/tasks/10-14-acp-stream-control/prd.md", "reason": "逐条核对 AC1-AC10，尤其 AC7 opencode 零回归、AC8 无引擎名分支"}
+{"file": ".trellis/tasks/10-14-acp-stream-control/design.md", "reason": "核对空回复推断与停/重连复核实现一致"}
+{"file": ".trellis/tasks/10-14-acp-stream-control/implement.md", "reason": "核对 checklist 完成度与验证命令是否全跑"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/research/codeg-acp-stream-ui.md", "reason": "核对未引入 AIR 重型；流控制事实一致"}

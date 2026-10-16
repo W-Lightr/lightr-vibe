@@ -173,6 +173,16 @@ export const acpMock = {
     let permissionTriggered = false
     const isWrite = text.includes('写')
 
+    // mock：手动触发「空回复」样例（输入含「空回复」）——不发任何 delta/工具/思考，
+    // 直接 end_turn；供浏览器 dev 验证空回复失败推断（errorKind:'empty'，AC2/AC9）。
+    if (text.includes('空回复')) {
+      activeControllers.delete(connId)
+      // 空回复须等一次微任务让当前 turn 完成入库（turns/turnId 已设），再返回。
+      await Promise.resolve()
+      if (controller.signal.aborted) return { stopReason: 'cancelled', usage: null }
+      return { stopReason: 'end_turn', usage: null }
+    }
+
     // mock：演示本期新增的 session/update 种类（真实引擎收到才发，此处主动发一次）。
     // available_commands_update：会话可用命令（供 `/` 菜单/面板，AC7）
     dispatchUpdate({

@@ -290,6 +290,23 @@ export function classifyAcpError(err: unknown, authText?: string): { kind: Messa
   return { kind: 'generic', text: `生成失败：${text}` }
 }
 
+/** 本 turn 是否有「内容」（空回复判定，design §2.1）。
+ *  有内容的定义：存在属于本 turnId 的任一 assistant 消息且满足其一 ——
+ *  · 文本消息 content 非空；· 思考消息 content 非空；· 有工具调用（toolCalls.length）；
+ *  · 已有 error 卡（refusal 等）。
+ *  保守：工具或思考任一存在即算非空（纯工具回合/纯思考回合不判空，design §8 风险）。
+ *  user 消息不计入（发送方本身就有一条，不作为 agent 产出内容）。 */
+function turnHasContent(sessionId: string, turnId: string): boolean {
+  const session = useSessionStore().get(sessionId)
+  for (const m of session?.messages ?? []) {
+    if (m.turnId !== turnId || m.role !== 'assistant') continue
+    if (m.type === 'error') return true
+    if (m.toolCalls?.length) return true
+    if (m.content.trim() !== '') return true
+  }
+  return false
+}
+
 /** 按引擎 wire 给出认证引导文案（R6：不写死 opencode auth login）。 */
 function authHintFor(engineId: string): string {
   switch (engineId) {
@@ -680,6 +697,26 @@ export function useConversation() {
           turnId,
         })
       }
+      // 空回复静默失败推断（D2，PRD R1）：agent 报成功（end_turn）但本 turn 零内容
+      // （无文本/思考/工具/error）→ 推失败卡而非空的 done，避免「看起来成功了却什么都没有」。
+      // 仅 end_turn 触发：cancelled（照旧 stopped）与 refusal（已有专门卡）均不判空。
+      if (result.stopReason === 'end_turn' && !turnHasContent(sessionId, turnId)) {
+        // 防御（design §2.1）：本 turn 若有残留 streaming 消息（如空内容 chunk），
+        // 一并收尾为 error，避免留下空的 done 气泡与失败卡并存；正常空回复无此消息。
+        for (const m of sessionStore.get(sessionId)?.messages ?? []) {
+          if (m.turnId === turnId && m.status === 'streaming') {
+            sessionStore.patchMessage(sessionId, m.id, { status: 'error' })
+          }
+        }
+        sessionStore.pushMessage(sessionId, {
+          role: 'assistant',
+          type: 'error',
+          content: 'Agent 未返回任何内容（可能已失败），请重试',
+          status: 'error',
+          errorKind: 'empty',
+          turnId,
+        })
+      }
       // prompt response 的 usage（opencode 扩展：inputTokens/outputTokens，缓存量可能缺省）
       if (result.usage) {
         sessionStore.addUsage(sessionId, {
@@ -893,6 +930,9 @@ export function useConversation() {
     reconnectingSessions.add(sessionId)
     recomputeAcpConnecting()
     try {
+      // 重连前若本会话正在生成：先 cancel 收敛本 turn（R4/design §5），避免旧进程旧 turn
+      // 悬挂（重连会杀死该进程，在途 prompt 的响应将永不返回）。
+      if (workspace.isGenerating(sessionId)) stop(sessionId)
       // 杀掉旧进程（可能已死/不存在，幂等），再全新建连
       await acpService.disconnect(sessionId).catch(() => undefined)
       liveAcpSessions.delete(sessionId)

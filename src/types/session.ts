@@ -9,8 +9,9 @@ export type MessageStatus = 'pending' | 'streaming' | 'done' | 'stopped' | 'erro
 export type SessionStatus = 'idle' | 'generating' | 'error'
 export type ExecutionMode = 'auto' | 'confirm' | 'plan'
 
-/** 错误消息卡类别：决定文案与「去设置」按钮（PRD R4） */
-export type MessageErrorKind = 'dead' | 'auth' | 'timeout' | 'generic'
+/** 错误消息卡类别：决定文案与「去设置」按钮（PRD R4）。
+ *  'empty' = agent 报成功（end_turn）但本 turn 零内容：静默失败推断（D2，PRD R1）。 */
+export type MessageErrorKind = 'dead' | 'auth' | 'timeout' | 'generic' | 'empty'
 
 export interface ToolCall {
   id: string

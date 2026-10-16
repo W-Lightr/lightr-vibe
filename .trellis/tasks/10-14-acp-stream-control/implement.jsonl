@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "ACP 不变量：connId 路由、错误串前缀契约、cancel 语义、命令面；本任务改 stop/reconnect/错误推断须遵守"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "MessageErrorKind 扩 'empty'、Message 形状一致性"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "session store patchMessage/setStatus/setRetry 用法；live 标记复位"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层：错误串前缀 frontend↔Rust 契约；空回复推断的边界"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "复用既有 classifyAcpError/stop/reconnect；不重复实现"}
+{"file": ".trellis/tasks/10-14-acp-stream-control/prd.md", "reason": "本任务需求、AC、Out of Scope"}
+{"file": ".trellis/tasks/10-14-acp-stream-control/design.md", "reason": "空回复推断判定、停/重连复核设计"}
+{"file": ".trellis/tasks/10-14-acp-stream-control/implement.md", "reason": "有序执行 checklist、验证命令、回滚点"}
+{"file": ".trellis/tasks/10-13-acp-claude-codex/research/codeg-acp-stream-ui.md", "reason": "codeg §5 流控制事实（cancel 下发权限卡、空回复推断、重试与失败分离）"}

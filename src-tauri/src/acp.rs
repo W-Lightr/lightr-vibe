@@ -49,11 +49,16 @@ fn idle_timeout_secs() -> u64 {
     }
 }
 
-/// 请求超时矩阵（PRD R1）：initialize 10s / session/new、load 30s（首调实测
-/// 7.6-8.9s，probe §2）/ prompt 300s / 其余 30s
+/// 请求超时矩阵（PRD R1）：initialize 60s / session/new、load 30s（首调实测
+/// 7.6-8.9s，probe §2）/ prompt 300s / 其余 30s。
+///
+/// initialize 由 10s 放宽到 60s（AC10 实机反馈，对齐 codeg connection.rs 的 60s）：
+/// Claude Code（经 claude-agent-acp）冷启动时会先预热其 MCP 服务器
+/// （~/.claude.json 配置的 context7 / 远程 http 等），就绪前 initialize 无响应。
+/// 健康适配器本身仅 0.6-2.2s 应答，60s 只作冷启动/MCP 预热的容忍余量。
 fn timeout_for(method: &str) -> Duration {
     match method {
-        "initialize" => Duration::from_secs(10),
+        "initialize" => Duration::from_secs(60),
         "session/new" | "session/load" => Duration::from_secs(30),
         "session/prompt" => Duration::from_secs(300),
         _ => Duration::from_secs(30),
@@ -1048,7 +1053,7 @@ fn connect_inner(app: AppHandle, conn_id: String, engine: AgentType) -> Result<S
         std::thread::spawn(move || reader_loop(reader_app, reader_conn, stdout));
     }
 
-    // initialize 握手（10s 超时；D2：不声明 fs/terminal capability，缺省=不支持）
+    // initialize 握手（60s 超时，对齐 codeg，容忍 claude MCP 预热；D2：不声明 fs/terminal capability，缺省=不支持）
     let result = rpc_call(
         &conn,
         "initialize",
@@ -2099,7 +2104,7 @@ mod tests {
 
     #[test]
     fn timeout_matrix_matches_prd() {
-        assert_eq!(timeout_for("initialize"), Duration::from_secs(10));
+        assert_eq!(timeout_for("initialize"), Duration::from_secs(60));
         assert_eq!(timeout_for("session/new"), Duration::from_secs(30));
         assert_eq!(timeout_for("session/load"), Duration::from_secs(30));
         assert_eq!(timeout_for("session/prompt"), Duration::from_secs(300));

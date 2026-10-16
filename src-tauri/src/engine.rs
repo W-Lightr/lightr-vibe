@@ -231,6 +231,12 @@ pub fn resolve_bin(meta: &AcpAgentMeta) -> Option<String> {
 /// 从 Windows .cmd shim 文本提取真身 exe 路径（version-fox 形态：
 /// `"%dp0%\node_modules\opencode-ai\bin\opencode.exe" %*`，probe §0）。
 /// 支持 `%dp0%` 与 `%~dp0` 两种占位符；替换后统一为单个路径分隔符。
+///
+/// **不提取 `node`/`node.exe` 解释器**（npm 形态 shim：`"%_prog%" "…\dist\index.js" %*`
+/// 或 `"%dp0%\node.exe" "…\index.js"`）：那种 shim 的真身是 `node <脚本>`，脚本在
+/// **另一个参数**里，只取 node.exe 会丢掉脚本 → spawn 裸 node，收到 JSON-RPC 行当作 JS
+/// 抛 SyntaxError、initialize 永不响应（表现为 `timeout:10s initialize`）。此时返回
+/// `None` → 上层走 `cmd /C` 回退（由 cmd 正确执行 shim，实测 ~1.8s 完成握手）。
 pub fn extract_exe_from_shim(shim_text: &str, shim_dir: &str) -> Option<String> {
     let dir = shim_dir.trim_end_matches(['\\', '/']);
     let with_sep = format!("{}\\", dir);
@@ -245,6 +251,10 @@ pub fn extract_exe_from_shim(shim_text: &str, shim_dir: &str) -> Option<String> 
                         .replace("%~dp0", &with_sep)
                         .replace("%dp0%\\", &with_sep)
                         .replace("%dp0%", &with_sep);
+                    // node 解释器：真身在脚本参数里，不能只取解释器（见文档注释）。
+                    if is_node_interpreter(&resolved) {
+                        return None;
+                    }
                     return Some(resolved);
                 }
                 token.clear();
@@ -255,6 +265,17 @@ pub fn extract_exe_from_shim(shim_text: &str, shim_dir: &str) -> Option<String> 
         }
     }
     None
+}
+
+/// 该路径是否为 node/node.exe 解释器（按文件名判定，忽略大小写）。
+/// 出现即说明 shim 是「解释器 + 脚本」两段式，不能只取解释器。
+fn is_node_interpreter(path: &str) -> bool {
+    let name = path
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+    name == "node" || name == "node.exe"
 }
 
 /// 引擎 spawn 解析结果。
@@ -635,5 +656,29 @@ mod tests {
             )
         );
         assert_eq!(extract_exe_from_shim("echo hello", "C:\\d"), None);
+    }
+
+    /// npm 形态 shim（claude-agent-acp）：真身是 `node <脚本>`，只取 node.exe 会丢脚本。
+    /// 必须返回 None（→ cmd /C 回退），否则 spawn 裸 node 导致 initialize 永不响应。
+    #[test]
+    fn shim_exe_extraction_rejects_bare_node_interpreter() {
+        // npm 直接形态：%dp0%\node.exe + 另一参数里的 index.js
+        let npm_shim = "@echo off\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n)\r\n\"%_prog%\" \"%dp0%\\node_modules\\@agentclientprotocol\\claude-agent-acp\\dist\\index.js\" %*\r\n";
+        assert_eq!(
+            extract_exe_from_shim(npm_shim, "C:\\Users\\u\\AppData\\Roaming\\npm\\"),
+            None
+        );
+        // 裸 node 词元也不提取
+        let bare = "\"node\" \"C:\\x\\index.js\" %*\r\n";
+        assert_eq!(extract_exe_from_shim(bare, "C:\\d"), None);
+    }
+
+    #[test]
+    fn node_interpreter_detection() {
+        assert!(is_node_interpreter("C:\\a\\node.exe"));
+        assert!(is_node_interpreter("node"));
+        assert!(is_node_interpreter("C:\\x\\NODE.EXE"));
+        assert!(!is_node_interpreter("C:\\a\\opencode.exe"));
+        assert!(!is_node_interpreter("C:\\a\\nodejs\\claude-agent-acp.cmd"));
     }
 }
