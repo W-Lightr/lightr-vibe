@@ -442,6 +442,20 @@ contract (`useConversation.ts`, `acpMock.ts`, `src/types/session.ts`):
   generating, `reconnect()` calls `stop(sessionId)` **before** `disconnect()`;
   reconnect kills the old process, so an in-flight `prompt` would otherwise never
   resolve (its turn would hang forever).
+- **Every failure card that says「请重试」must offer the retry button**
+  (`MessageItem.vue::showRetry`). The error branch is `v-else-if="isError"` and is
+  mutually exclusive with the text/thinking branches that own the action toolbar, so
+  a card promising a retry with no entry point is a dead end. `regenerate()` looks the
+  user message up by `turnId` and works for any assistant-side card that carries one
+  (empty / generic / refusal), which is why `showRetry` gates on `turnId` +
+  `errorKind ∈ {empty, generic}` — `dead`/`auth` need the environment fixed first
+  (「去设置」only) and `timeout` keeps the user's decision.
+- **Turn-boundary retry clearing must be a real state change.** `setRetry(sessionId,
+  null)` assigns `undefined`; assigning the *same* `undefined` over `undefined` makes
+  Vue's reactive setter bail out (`hasChanged` false) and no dependent recomputes — so
+  a banner whose last update touched nothing else in the session would stay visible.
+  Write only when `get(sessionId)?.retryState !== undefined`, so the `null → undefined`
+  write is the change that clears it.
 
 > **Gotcha**: `stop()` only cancels the current turn. Do **not** reuse it to mean
 > "tear down the connection" — that is `closeConnection()` (see per-session

@@ -38,6 +38,14 @@ const showSettingsLink = computed(
   () => props.message.errorKind === 'dead' || props.message.errorKind === 'auth',
 )
 
+/** 错误卡「重试」按钮：空回复（文案即「请重试」）与 generic 失败可直接重发本回合。
+ *  dead/auth 需先修复环境，只给「去设置」；timeout 保留错误态等用户决定。 */
+const showRetry = computed(
+  () =>
+    !!props.message.turnId &&
+    (props.message.errorKind === 'empty' || props.message.errorKind === 'generic'),
+)
+
 async function copy() {
   try {
     await navigator.clipboard.writeText(props.message.content)
@@ -111,6 +119,17 @@ function onFork() {
   >
     <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
     <span class="min-w-0 flex-1 break-words">{{ message.content || '生成失败' }}</span>
+    <button
+      v-if="showRetry"
+      class="flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md border border-red-200 bg-white px-2 text-xs text-red-600 hover:bg-red-100"
+      title="重新生成"
+      :disabled="generating"
+      :class="generating && 'cursor-not-allowed opacity-40'"
+      @click="regenerate(message.sessionId, message.id)"
+    >
+      <RefreshCw class="h-3 w-3" />
+      重试
+    </button>
     <button
       v-if="showSettingsLink"
       class="flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md border border-red-200 bg-white px-2 text-xs text-red-600 hover:bg-red-100"

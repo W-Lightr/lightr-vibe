@@ -856,8 +856,13 @@ export function useConversation() {
       }
       turns.delete(sessionId)
       workspace.setGenerating(sessionId, false)
-      // turn 边界：可重试状态清除（成功/失败/取消任一路径，避免横幅悬挂，AC5）
-      sessionStore.setRetry(sessionId, null)
+      // turn 边界：可重试状态清除（成功/失败/取消任一路径，避免横幅悬挂，AC5）。
+      // 显式 `Object.assign` 同一 `null` 值不触发 Vue patch（setter 早退），若最后一条
+      // session_info_update 未再改本会话任何字段，横幅会一直挂着；故仅在确有重试态时才写入
+      // （写入 null 是一次真实状态变更）。
+      if (sessionStore.get(sessionId)?.retryState !== undefined) {
+        sessionStore.setRetry(sessionId, null)
+      }
       if (sessionStore.get(sessionId)?.status === 'generating') {
         sessionStore.setStatus(sessionId, 'idle')
       }
