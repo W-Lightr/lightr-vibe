@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "校验跨 store 协作没有引入环依赖"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "四门禁检查项"}
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "校验新增命令契约"}
+{"file": ".trellis/tasks/10-17-task-board/design.md", "reason": "核对会话联动与 runSeq 防串实现一致"}
+{"file": ".trellis/tasks/10-17-task-review-session/prd.md", "reason": "逐条核对 AC1-AC8，特别是 AC7 零回归"}

@@ -1,0 +1,10 @@
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "views/tasks 与 feature-local components 的放置规则；无全局 components 目录"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "组件 props/emits 与 script setup 约定"}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "useTaskDrag composable 的清理与事件解绑约定"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "卡片、chip、列的视觉语言"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "switch 穷举 TaskStatus"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令"}
+{"file": ".trellis/tasks/10-17-task-board/prd.md", "reason": "决策 D2（4 列）与 D3（三条跨列拖拽）"}
+{"file": ".trellis/tasks/10-17-task-board/design.md", "reason": "§4 列映射、§5 拖拽、§6 UI 结构"}
+{"file": ".trellis/tasks/10-17-task-board/research/codeg-task-board.md", "reason": "codeg 拖拽实现要点（Teleport 预览、指针矩形判定、click 抑制）"}
+{"file": ".trellis/tasks/10-17-task-board-ui/prd.md", "reason": "本子任务 R1-R5 与 AC1-AC8"}

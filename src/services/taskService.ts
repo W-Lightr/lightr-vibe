@@ -1,0 +1,97 @@
+// 任务服务层：task_* 命令的唯一入口（tauri-bridge spec §2 边界）。
+// isTauri() 双通道：Tauri 走 Rust invoke（~/.lightr-vibe/lightr-vibe/tasks.json），
+// 浏览器 dev 走 taskMock 内存实现。组件 / store 永远不直接 invoke（prd AC8）。
+// 参数一律 camelCase，与 Rust #[serde(rename_all = "camelCase")] 对齐（prd PAC2）。
+
+import { invoke } from '@tauri-apps/api/core'
+import type {
+  TaskDetails,
+  TaskDraft,
+  TaskPatch,
+  TaskStatus,
+  WorkTask,
+  WorkTaskEvent,
+} from '../types/task'
+import type { EngineWire } from '../types/engine'
+import { isTauri } from '../utils/isTauri'
+import {
+  mockArchive,
+  mockAttachSession,
+  mockCreate,
+  mockDelete,
+  mockEvents,
+  mockList,
+  mockReorder,
+  mockTransition,
+  mockUpdate,
+} from './taskMock'
+
+export const taskService = {
+  /** 列出任务；projectId 省略 = 全部（按 updatedAt 倒序） */
+  async list(projectId?: string): Promise<WorkTask[]> {
+    if (!isTauri()) return mockList(projectId)
+    return invoke<WorkTask[]>('task_list', { projectId: projectId ?? null })
+  },
+
+  /** 新建任务（status = todo，追加到该项目列尾） */
+  async create(draft: TaskDraft): Promise<TaskDetails> {
+    if (!isTauri()) return mockCreate(draft)
+    return invoke<TaskDetails>('task_create', { draft })
+  },
+
+  /** 编辑任务（仅 todo / failed 允许） */
+  async update(id: string, patch: TaskPatch): Promise<WorkTask> {
+    if (!isTauri()) return mockUpdate(id, patch)
+    return invoke<WorkTask>('task_update', { id, patch })
+  },
+
+  /** 删除任务及其时间线 */
+  async remove(id: string): Promise<void> {
+    if (!isTauri()) {
+      mockDelete(id)
+      return
+    }
+    await invoke('task_delete', { id })
+  },
+
+  /**
+   * 状态转移（CAS）：expectedFrom 与实际不符 → 'stale'；
+   * 转换表不允许 → 'illegal-transition: <from>-><to>'（前端只做提示，权威在 Rust）。
+   */
+  async transition(
+    id: string,
+    to: TaskStatus,
+    expectedFrom: TaskStatus | null,
+  ): Promise<WorkTask> {
+    if (!isTauri()) return mockTransition(id, to, expectedFrom)
+    return invoke<WorkTask>('task_transition', { id, to, expectedFrom })
+  },
+
+  /** 列内重排：按 index 写 sortOrder（项目内语义） */
+  async reorder(projectId: string, orderedIds: string[]): Promise<WorkTask[]> {
+    if (!isTauri()) return mockReorder(projectId, orderedIds)
+    return invoke<WorkTask[]>('task_reorder', { projectId, orderedIds })
+  },
+
+  /** 绑定 ACP 会话（一对一；启动链路用） */
+  async attachSession(
+    id: string,
+    sessionId: string,
+    engineId: EngineWire | null,
+  ): Promise<WorkTask> {
+    if (!isTauri()) return mockAttachSession(id, sessionId, engineId)
+    return invoke<WorkTask>('task_attach_session', { id, sessionId, engineId })
+  },
+
+  /** 归档 / 取消归档（仅终态可归档） */
+  async archive(id: string, archived: boolean): Promise<WorkTask> {
+    if (!isTauri()) return mockArchive(id, archived)
+    return invoke<WorkTask>('task_archive', { id, archived })
+  },
+
+  /** 任务时间线（升序） */
+  async events(id: string): Promise<WorkTaskEvent[]> {
+    if (!isTauri()) return mockEvents(id)
+    return invoke<WorkTaskEvent[]>('task_events', { id })
+  },
+}

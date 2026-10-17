@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "attach_session / transition 命令契约与错误串"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "session store 与 task store 的跨 store 协作边界"}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "useConversation 新增可选回调的兼容写法"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "详情/编辑器弹窗的 props 与事件约定"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "弹窗与时间线视觉"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令"}
+{"file": ".trellis/tasks/10-17-task-board/prd.md", "reason": "决策 D4（一任务一会话）与 PAC7（零回归）"}
+{"file": ".trellis/tasks/10-17-task-board/design.md", "reason": "§7 会话联动细节与 runSeq 防串"}
+{"file": ".trellis/tasks/10-17-task-review-session/prd.md", "reason": "本子任务 R1-R7 与 AC1-AC8"}

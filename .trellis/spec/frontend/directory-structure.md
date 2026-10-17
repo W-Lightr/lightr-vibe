@@ -57,6 +57,31 @@ src/
   call mock APIs directly, they go through `conversationService` via a
   composable or store.
 
+### Feature-local state, and the `views/<feature>/*.ts` slot
+
+Task board (10-17-task-board) added a second full feature next to `coding`:
+
+```
+src/views/tasks/
+├── TasksView.vue          # page
+├── boardColumns.ts        # feature-local PURE logic (status → column mapping)
+└── components/            # TaskCard, TaskColumn, dialogs, useTaskDrag.ts
+src/types/task.ts          # domain model (shared by service, store, views)
+src/services/taskService.ts + taskMock.ts
+src/stores/task.ts
+```
+
+- A feature may keep **pure, feature-only** modules directly beside its page
+  (`boardColumns.ts`). They are not promoted to `src/utils/` because nothing
+  outside the feature imports them — `utils/` stays cross-feature only.
+- A feature-scoped composable lives in `views/<feature>/components/` next to
+  the components that use it (`useTaskDrag.ts`), not in the global
+  `src/composables/`, which is reserved for cross-feature state (`useConversation`).
+- Domain types still go to `src/types/` even when one feature owns them —
+  the service/store boundary must be able to import them without pulling in a
+  view module.
+
+
 ---
 
 ## Naming

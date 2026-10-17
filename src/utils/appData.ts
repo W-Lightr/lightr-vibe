@@ -34,6 +34,11 @@ export function sessionsIndexFileSync(): string {
   return `${appNamespaceDirSync()}/sessions-index.json`
 }
 
+/** 任务看板数据文件：~/.lightr-vibe/lightr-vibe/tasks.json（task 10-17-task-board） */
+export function tasksIndexFileSync(): string {
+  return `${appNamespaceDirSync()}/tasks.json`
+}
+
 /** 会话消息落盘目录：~/.lightr-vibe/lightr-vibe/sessions/ */
 export function sessionsDirSync(): string {
   return `${appNamespaceDirSync()}/sessions`

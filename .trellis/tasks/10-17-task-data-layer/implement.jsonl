@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "camelCase 契约、错误串分类、原子写与双通道 service 规范"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TaskStatus 联合类型与 nullability 约定"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Pinia setup store 的边界与 ID 生成"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令"}
+{"file": ".trellis/tasks/10-17-task-board/prd.md", "reason": "父任务四项已确认决策（JSON / 4 列 / 三条跨列 / 一任务一会话）"}
+{"file": ".trellis/tasks/10-17-task-board/design.md", "reason": "数据模型 §2、状态机 §3、兼容与风险 §8/§9"}
+{"file": ".trellis/tasks/10-17-task-board/research/codeg-task-board.md", "reason": "codeg 状态机与 service 分层参考"}
+{"file": ".trellis/tasks/10-17-task-data-layer/prd.md", "reason": "本子任务 R1-R6 与 AC1-AC8"}

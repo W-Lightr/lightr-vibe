@@ -828,6 +828,110 @@ Remaining, documented edge cases (not bugs, but keep them in mind when adding en
   gate evaluating a stale/absent result. Values resolve after the in-flight detect
   completes — acceptable today, revisit if detect becomes slow for a third engine.
 
+## Task commands (`src-tauri/src/task.rs`, task 10-17-task-data-layer)
+
+The work-task board's data layer: one JSON document under the app namespace, mutated
+only through `task_*` commands. This is the **only** place `tasks.json` is touched.
+
+### 1. Scope / Trigger
+
+Applies when adding/altering a `task_*` command, the `TaskStatus` state machine, the
+`tasks.json` on-disk shape, or anything in `src/stores/task.ts` / `taskService.ts`.
+
+### 2. Signatures (all camelCase results, `Result<T, String>`)
+
+```rust
+task_list          { projectId?: string }                    -> WorkTask[]
+task_create        { draft: TaskDraft }                      -> TaskDetails { task, events }
+task_update        { id, patch: TaskPatch }                  -> TaskDetails   // todo/failed only
+task_delete        { id }                                    -> ()
+task_transition    { id, to, expectedFrom }                  -> TaskDetails
+task_reorder       { projectId, orderedIds: int[] }          -> WorkTask[]    // project's rows
+task_attach_session{ id, sessionId, engineId? }              -> TaskDetails
+task_archive       { id, archived: bool }                    -> TaskDetails   // terminal only
+task_events        { id }                                    -> WorkTaskEvent[]
+```
+
+- `TaskDetails` (`{task, events}`) is the create/update/transition return shape: the
+  detail sheet needs the timeline on the same round trip, so no second call.
+- `task_events` on an unknown id returns `[]`, not `not-found` — a concurrently deleted
+  task must not surface as an error in a dialog that is just closing.
+- Timestamps are **`i64` milliseconds**; the crate does not depend on `chrono`.
+
+### 3. Contracts
+
+- **File**: `~/.lightr-vibe/lightr-vibe/tasks.json` (app-namespace hard rule above).
+  `{ "version": 1, "tasks": [...], "events": [...] }`. Events are kept ascending and
+  capped at **200 per task**, trimmed on both `push_event` and `save_serialized`.
+- **State machine** is the single authority (`TRANSITIONS` const table +
+  `can_transition(from, to)`; `design.md` §3.1 of task 10-17-task-board). `done` and
+  `merging` have **no** out-edges. `review → todo` (打回) exists here and does not exist
+  in codeg.
+- **Transition side effects**: entering `queued` → `runSeq += 1` and `startedAt` if null;
+  entering `review`/`failed` → `settledAt`; entering `done`/`canceled` → `finishedAt`.
+  Every accepted transition appends a `status_changed` event with `payload {from, to}`.
+- **Error strings** (frontend classifies by this exact vocabulary):
+  `not-found` · `stale` · `illegal-transition: <from>-><to>` · `io: <message>`.
+  Business rejections that are not about identity or ordering (e.g. archiving a
+  non-terminal task) use the `io:` prefix — it is the only code that carries a message.
+- **CAS**: `expectedFrom` is compared **before** the table lookup and **before** any
+  event is pushed, so a stale write mutates nothing at all.
+
+### 4. Validation & Error Matrix
+
+| Condition | Behavior |
+|---|---|
+| File absent | Empty data, no error, no file created until the first write |
+| JSON corrupt | Read returns empty data + warn; the damaged text is copied to `tasks.json.bak` **before** the next write overwrites it (never after) |
+| `expectedFrom` ≠ row status | `stale`, row and events untouched |
+| Edge not in `TRANSITIONS` | `illegal-transition: <from>-><to>`, untouched |
+| `task_update` on `running` | `io: ...` rejection (only `todo`/`failed` are editable) |
+| `task_archive` on non-terminal | `io: ...` rejection |
+| `task_reorder` ids from another project | Silently ignored — no error, no change (ordering is project-scoped) |
+| Unknown top-level key in `tasks.json` | Preserved across a read/write round trip |
+
+### 5. Good/Base/Bad Cases
+
+- Good: store action → `taskService` (`isTauri()` branch) → `invoke('task_*')` → typed
+  camelCase `TaskDetails` → store replaces that row → board re-renders.
+- Base: `transition()` returns the new row; the store never guesses the new status.
+- Bad: a component computing the "next status" itself and writing it with `task_update`;
+  a store doing an optimistic status write before `await`; anyone calling `invoke`
+  outside `src/services/taskService.ts`.
+
+### 6. Tests Required
+
+- `TRANSITIONS` exhaustiveness: all 10×10 pairs asserted, and `TRANSITIONS.len()` equals
+  the status count, so adding a status without filing it fails.
+- `illegal-transition` strings for `todo->review` and `done->todo`; `stale` writes no event.
+- `task_reorder` through the real command with foreign ids.
+- 250 transitions → 200 events.
+- Corrupt file: `.bak` written **before** the overwrite (ordering assertion, not just
+  "a .bak exists").
+- Command-layer tests must serialize: the store is a process-global singleton, so tests
+  go through `lock_store()` / `point_store_at()` / `reset_store()` helpers. Without this
+  they interleave and fail at random.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// 先覆盖再备份：.bak 里是刚写的新内容，损坏的原文永久丢失
+save_serialized(&store, &next)?;
+backup_corrupt(&store.path, &snapshot.raw)?;
+```
+
+#### Correct
+
+```rust
+// 备份发生在覆盖之前，且备份失败不阻断写入
+if snapshot.corrupt {
+    backup_corrupt(&store.path, &snapshot.raw);
+}
+save_serialized(&store, &next)?;
+```
+
 ## Gotchas
 
 > **Warning**: `getCurrentWindow()` throws in a plain browser dev server.

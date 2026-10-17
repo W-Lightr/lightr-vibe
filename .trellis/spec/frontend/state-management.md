@@ -182,3 +182,18 @@ const sessionStore = useSessionStore()
   granular mutators.
 - Do not add `async` actions that call services directly inside stores; keep
   the composable seam.
+
+**Exception: the task store (`stores/task.ts`, task 10-17-task-data-layer).**
+Its mutations are `async` and call `taskService` directly. This is deliberate:
+the Rust side owns the state machine, so every mutation's result — the new row
+plus its timeline — is the only valid source of truth. Conditions:
+
+- **No optimistic updates.** Always `await` the service, then replace that row
+  with what came back. The frontend never invents a status or a timestamp.
+- Failures propagate to the caller (the view shows the error); the store does
+  not swallow or retry.
+- `load()` is idempotent and guarded by `loaded`, so mounting a view twice does
+  not re-read the file.
+- Read-side helpers (`byProject`, `eventsOf`) stay synchronous over the loaded
+  array.
+

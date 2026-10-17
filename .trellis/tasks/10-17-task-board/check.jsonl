@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "校验命令命名、camelCase 契约与错误串分类是否与既有规范一致"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "四门禁检查项"}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "校验新增文件位置与既有分层不冲突"}
+{"file": ".trellis/tasks/10-17-task-board/prd.md", "reason": "逐条核对 PAC1-PAC7 验收标准"}
+{"file": ".trellis/tasks/10-17-task-board/design.md", "reason": "核对实现与设计一致性（状态机表、列映射、拖拽约束）"}
+{"file": ".trellis/tasks/10-17-task-board/research/codeg-gap.md", "reason": "确认没有把明确不实现的能力偷偷实现一半"}

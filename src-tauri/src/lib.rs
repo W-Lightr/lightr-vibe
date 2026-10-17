@@ -5,6 +5,7 @@ mod agent;
 mod agent_type;
 mod engine;
 mod fs;
+mod task;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -34,6 +35,15 @@ pub fn run() {
             fs::fs_write_file,
             fs::fs_read_text,
             fs::fs_write_text,
+            task::task_list,
+            task::task_create,
+            task::task_update,
+            task::task_delete,
+            task::task_transition,
+            task::task_reorder,
+            task::task_attach_session,
+            task::task_archive,
+            task::task_events,
             acp::acp_connect,
             acp::acp_disconnect,
             acp::acp_status,

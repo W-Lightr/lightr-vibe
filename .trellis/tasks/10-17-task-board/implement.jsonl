@@ -1,0 +1,10 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "新增 Rust 命令与双通道 service 的契约规范（camelCase、错误串、原子写）"}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "views/tasks 与 services 的放置规则、无全局 components 目录"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Pinia setup store 边界与 ID 约定"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TaskStatus 穷举与 nullability 约定"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "看板卡片与状态 chip 的视觉语言"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令与禁止模式"}
+{"file": ".trellis/tasks/10-17-task-board/prd.md", "reason": "父任务需求与四项已确认决策"}
+{"file": ".trellis/tasks/10-17-task-board/design.md", "reason": "数据模型、状态机、拖拽与分层的技术设计"}
+{"file": ".trellis/tasks/10-17-task-board/research/codeg-task-board.md", "reason": "codeg 参考实现的路径与行号"}
+{"file": ".trellis/tasks/10-17-task-board/research/codeg-gap.md", "reason": "明确不实现的 codeg 能力清单"}
