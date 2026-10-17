@@ -183,6 +183,21 @@ export const acpMock = {
       return { stopReason: 'end_turn', usage: null }
     }
 
+    // mock：「通知」触发一条 ACP 1.9 Session Notice（warning）——浏览器 dev 验证
+    // notice → toast 链路（warning 提示、不入 transcript）。
+    if (text.includes('通知')) {
+      dispatchUpdate({
+        connId,
+        sessionId,
+        update: {
+          sessionUpdate: 'notice',
+          severity: 'warning',
+          title: '模拟网关警告',
+          description: '这是 mock 的 session notice（仅浏览器 dev 可见）。',
+        },
+      })
+    }
+
     // mock：演示本期新增的 session/update 种类（真实引擎收到才发，此处主动发一次）。
     // available_commands_update：会话可用命令（供 `/` 菜单/面板，AC7）
     dispatchUpdate({
@@ -374,8 +389,14 @@ export const acpMock = {
     // mock 通道无真实 agent，答复即完成
   },
 
-  /** 浏览器 mock：固定的模型上下文窗口表；未命中返回 null */
-  modelContextWindow(provider: string, model: string, _engineId?: string): number | null {
+  /** 浏览器 mock：固定的模型上下文窗口表；未命中返回 null。
+   *  `_hint` 仅为与 acpService 的 4 参签名保持一致（mock 不消费）。 */
+  modelContextWindow(
+    provider: string,
+    model: string,
+    _engineId?: string,
+    _hint?: string,
+  ): number | null {
     const key = `${provider}/${model}`
     const map: Record<string, number> = {
       'mock/gpt-mini': 128_000,

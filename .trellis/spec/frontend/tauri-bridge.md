@@ -370,6 +370,33 @@ Unknown / unhandled kinds still fall through to the default branch (safe no-op);
 AIR-heavy kinds (steering/goal/sessionFailure/contextCompaction/fork/delegation/
 background) remain out of scope.
 
+### `notice` — ACP 1.9 Session Notices (task 10-14-acp-stream-control, AC10 real-machine fix)
+
+`claude-agent-acp` on a gateway (nexus365.cc) rendered a long `**Warning:** We're
+changing auto mode…` block **as assistant chat text** — a capability gap, not a stream
+bug. With `initialize.clientCapabilities.session.notices` advertised, claude sends the
+warning as its own wire kind instead of degrading into `agent_message_chunk`.
+
+- **Capability** (`acp.rs::client_capabilities()`): emits
+  `{ "session": { "notices": {} } }` **unconditionally** (no engine branch, PAC1).
+  `notices` must be an **object** (adapters test `typeof session.notices === "object"`).
+  Accepted tradeoff (same as codeg): claude stops sending `level === "info"` frames.
+- **`session.compaction` is deliberately NOT advertised.** codeg advertises both, but its
+  compaction consumer maps `compaction_update` back into `_meta.contextCompaction`; we
+  have **no** compaction consumer, so advertising it makes claude stop sending the
+  existing synthetic compaction tool call → pure regression. Rust test
+  `client_capabilities_advertises_session_notices_only` pins both facts.
+- **Wire shape**: `{ sessionUpdate: 'notice', severity?, title?, description? }`; Rust
+  needs **no routing change** (`reader_loop` forwards `params.update` verbatim).
+- **Frontend**: `src/utils/sessionNotice.ts` is the **single owner** of decoding
+  (`noticeLevel` severity→level, unknown ⇒ `info`; `splitHeadline` first non-empty line;
+  `noticeToast` returns `null` for a title-less notice — codeg drops those). `applyUpdate`
+  `case 'notice'` writes `sessionNoticeState` (seq-based module slot, same pattern as
+  `configRejectedNotice`) and **must not** touch the transcript. `MessageComposer.vue`
+  watches it (filtered by `connId`) and calls `message[level](text, {...})` — the existing
+  naive-ui toast, no new toast system.
+- Mock: `acpMock` emits one `warning` notice when the input contains 「通知」.
+
 ### Stream control — stop / empty-reply / reconnect (task 10-14-acp-stream-control)
 
 The turn lifecycle is driven by the `acp_prompt` promise's `stopReason`. Frontend
@@ -404,6 +431,13 @@ contract (`useConversation.ts`, `acpMock.ts`, `src/types/session.ts`):
   (重新生成 / 从此分叉) once the turn converges (`!isStreaming`) — otherwise a
   thinking-only turn shows no 重新生成 button. The two branches are mutually
   exclusive (`v-else-if` / `v-else`), so there is never a duplicate toolbar.
+- **Thinking and text chunks may share one `messageId`** (AC10 fix, claude-agent-acp).
+  The adapter emits `agent_thought_chunk` **and** `agent_message_chunk` with the
+  **same** `messageId` (one `chatcmpl-…` for the whole turn). Keying the local message
+  by `messageId` alone therefore merges the answer into the thinking bubble — the
+  symptom is「只有思考内容、没有正文」. The local id must carry the kind:
+  `` `${messageId}:thinking` `` / `` `${messageId}:text` ``, and the lookup must also
+  match `type`. Never key assistant chunk messages by `messageId` alone.
 - **`reconnect()` first converges a generating session.** If the local session is
   generating, `reconnect()` calls `stop(sessionId)` **before** `disconnect()`;
   reconnect kills the old process, so an in-flight `prompt` would otherwise never
@@ -526,6 +560,36 @@ split on the **first** `/` only (the modelId itself may contain `/`, e.g.
 `magpie/workbuddy-ai/deepseek-v4.1-flash`). On model switch the composer writes
 the resolved window to `tokenUsage.contextWindow` immediately (best-effort,
 never blocks); the live `usage_update.size` still refines it per turn.
+
+**Engine-agnostic fallback (task 10-14-acp-stream-control, AC10 fix).** Claude Code
+and Codex declare `ContextWindowSource::None` (no config/catalog lookup), so the
+above opencode sources don't apply. For them the resolver falls back to
+`infer_context_window_from_model(model)` (ported from codeg
+`parsers::infer_context_window_max_tokens`), then to a UI **hint**:
+
+1. **Capacity suffix** — `[1M]` / `[500k]` / `[1.5m]` in the model id; authoritative,
+   works for gateway names like `deepseek-v4.1-flash[1M]`.
+2. **Claude family heuristic** — `claude*` with a `\b1m\b` id token OR a natively-1M
+   family (all fable/mythos; opus ≥ 4.7; sonnet ≥ 5; haiku ≥ 5.5) → 1_000_000, else
+   200_000.
+3. **UI hint text** — `agent_model_context_window(provider, model, engineId?, hint?)`
+   takes an optional `hint` = the selected model option's `name` + `description`
+   (`"deepseek-v4.1-flash Custom Sonnet model (1M context)"`). `parse_context_hint_text`
+   sniffs `1M`/`500k`/`1,000,000`/bare ≥100000 out of it. This is why the frontend
+   passes the option label: Claude's model option **value** is a bare name (`fable`,
+   `sonnet`) with no provider prefix and no suffix — the capacity lives only in the
+   label/description. `provider` may be empty (the opencode branch skips).
+
+The composer resolves this **on session open and on `[modelOption.id, model]` change**
+(`resolveContextWindow`), not only on manual model switch, so the denominator isn't
+stranded at the 128k placeholder. `resolveContextWindow` bails when `session.model` is
+unset — never fall back to `workspace.selectedModel` (another engine's default).
+
+**Monotonic denominator.** `sessionStore.setContextUsage` takes the **max** of the
+current and incoming `usage_update.size` (only grows). Claude/Codex report an
+unstable size within one session (observed 800000 → 1000000), and a smaller value
+would flicker/regress the gauge; capacity is a session-level constant, so growing it
+is always right and shrinking is adapter noise.
 
 ## Agent / engine registry (`src-tauri/src/agent_type.rs` + `engine.rs`, task 10-13-acp-multi-engine, extended by 10-13-acp-claude-codex)
 

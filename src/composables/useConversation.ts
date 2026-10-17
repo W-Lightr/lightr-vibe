@@ -31,6 +31,7 @@ import { useAcpQuestion } from './useAcpQuestion'
 import { isTauri } from '../utils/isTauri'
 import { tmpSessionDirSync } from '../utils/appData'
 import { hasRetryMeta, parseRetryState } from '../utils/sessionUpdateMeta'
+import { noticeToast, type NoticeToast } from '../utils/sessionNotice'
 
 /** 本进程内已建立连接的本地会话 id 集合（connId = 本地会话 id，design §8.3 每会话一进程）。
  * 关标签 → 杀该会话进程并从集合移除；重启后为空 → 首次发送走 connect + load-or-new 重连。 */
@@ -394,6 +395,12 @@ export const configRejectedNotice = ref<{ seq: number } & AcpConfigRejectedEvent
   actual: '',
 })
 
+/** 最近一条 session notice（ACP 1.9）：供 MessageComposer 监听后弹 toast。
+ *  seq 递增使重复内容也能触发；notice **绝不入 transcript**。 */
+export const sessionNoticeState = ref<
+  { seq: number; connId: string } & NoticeToast
+>({ seq: 0, connId: '', level: 'info', title: '', description: '' })
+
 function applyUpdate(event: AcpUpdateEvent): void {
   const sessionStore = useSessionStore()
   const sessionId = event.connId
@@ -477,6 +484,20 @@ function applyUpdate(event: AcpUpdateEvent): void {
       sessionStore.setCurrentMode(sessionId, update.currentModeId)
       break
     }
+    // notice：ACP 1.9 Session Notices（已声明 session.notices 能力）。
+    // agent 的网关警告等**只转 toast**，绝不入 transcript（不进 pushMessage/patchMessage）；
+    // 解码（首行标题 / severity 映射 / 无标题丢弃）由 sessionNotice.ts 单一 owner 负责。
+    case 'notice': {
+      const toast = noticeToast(update)
+      if (toast) {
+        sessionNoticeState.value = {
+          ...toast,
+          seq: sessionNoticeState.value.seq + 1,
+          connId: sessionId,
+        }
+      }
+      break
+    }
     // 未知/未消费种类：安全忽略（AC8，不崩、不误渲染）
     default:
       break
@@ -540,6 +561,75 @@ function collectOptionValues(options: AcpConfigOption['options']): string[] {
  * 共享同一建连，避免重复 spawn/session-new 产生两个进程/会话 */
 const connectInFlight = new Map<string, Promise<string>>()
 
+/** 思考强度配置项的定位规则（id 或 category 为 effort）——**单一定义**，避免两处漂移。
+ *  不涉及任何引擎名判断（PAC1：差异只在 agent 返回的数据里）。 */
+function findEffortOption(
+  session: { configOptions?: AcpConfigOption[] },
+): AcpConfigOption | undefined {
+  return session.configOptions?.find((o) => o.id === 'effort' || o.category === 'effort')
+}
+
+/** 按 agent 回包写回 effort 的当前值。
+ *  真实 `claude-agent-acp` 的 `session/set_config_option` 回包**只带被改的那一项**
+ *  （实测：只有 effort），所以不能把回包整体当全量 configOptions 赋值（会丢 model/mode 项
+ *  → 下拉变空）。这里按「以本地项为基础叠加回包项」合并；回包缺 effort 项时保留用户选择。 */
+function applyEffortOptions(
+  session: { configOptions?: AcpConfigOption[] },
+  opts: AcpConfigOption[] | null | undefined,
+  wanted: string,
+): void {
+  if (Array.isArray(opts) && opts.length) {
+    const eff = opts.find((o) => o.id === 'effort' || o.category === 'effort')
+    const local = session.configOptions ?? []
+    if (eff) {
+      const idx = local.findIndex((o) => o.id === eff.id)
+      session.configOptions = idx >= 0
+        ? local.map((o, i) => (i === idx ? { ...o, ...eff } : o))
+        : [...local, eff]
+      return
+    }
+    // 回包不含 effort：保留用户选择（乐观值），不整体替换本地配置项
+    return
+  }
+  const eff = findEffortOption(session)
+  if (eff) eff.currentValue = wanted
+}
+
+/** 回放结果：`pending` = 请求已投递但未确认（agent 超时未应答），此时**不得**回滚用户选择。 */
+type EffortReplay = { ok: boolean; pending: boolean }
+
+/** 建连（new/load）后回放用户选定的思考强度。
+ *  agent 每次 `session/new` / `session/load` 都把 effort 重置为 default，
+ *  若不回放，用户在未建连时（或重连后）选的「极高」会被静默丢弃 →
+ *  表现为「思考强度不生效」。仅当值在 agent 暴露的选项内才发。
+ *  **任何异常都不逃出**（本函数被 await 在建连路径上，抛出会断言 load/session-new 失败）。 */
+async function replayPreferredEffort(
+  session: { configOptions?: AcpConfigOption[]; preferredEffort?: string },
+  sessionId: string,
+  acpSessionId: string,
+): Promise<EffortReplay> {
+  try {
+    const effortOpt = findEffortOption(session)
+    const wanted = session.preferredEffort
+    if (!effortOpt || !wanted) return { ok: true, pending: false }
+    if (!collectOptionValues(effortOpt.options).includes(wanted)) return { ok: true, pending: false }
+    if (effortOpt.currentValue === wanted) return { ok: true, pending: false }
+    const opts = await acpService.setConfig(sessionId, acpSessionId, effortOpt.id, wanted)
+    applyEffortOptions(session, opts, wanted)
+    return { ok: true, pending: false }
+  } catch (err) {
+    // 超时：请求已投递但 agent 未应答 → 视为「已受理、未确认」，保留用户选择
+    // （回滚成 default 正是本 bug 的症状）。
+    return { ok: false, pending: isAcpTimeoutError(err) }
+  }
+}
+
+/** 复用既有错误串契约：Rust 超时固定为 `timeout:<n>s <method>` 前缀 */
+function isAcpTimeoutError(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err)
+  return text.includes('timeout:')
+}
+
 /** 确保 ACP 会话可用（connId = 本地会话 id）：connect(幂等) → live 直接复用；
  * 否则 load → 失败 new + 标题「（已重连）」。同会话并发调用共享同一 in-flight Promise */
 function ensureAcpSession(sessionId: string): Promise<string> {
@@ -585,6 +675,8 @@ async function ensureAcpSessionInner(sessionId: string): Promise<string> {
       session.acpSessionId = loaded.sessionId
       if (Array.isArray(loaded.configOptions) && loaded.configOptions.length) {
         session.configOptions = loaded.configOptions
+        // load 同样会重置 effort → 回放用户选择（失败绝不断言 load 失败）
+        await replayPreferredEffort(session, sessionId, loaded.sessionId)
       }
       liveAcpSessions.add(sessionId)
       syncLiveSessions()
@@ -622,6 +714,8 @@ async function ensureAcpSessionInner(sessionId: string): Promise<string> {
     }
     const modeOpt = created.configOptions.find((o) => o.id === 'mode' || o.category === 'mode')
     if (modeOpt && typeof modeOpt.currentValue === 'string') session.mode = modeOpt.currentValue
+    // session/new 每次都把 effort 重置为 default → 回放用户选择（失败绝不断言建连失败）
+    await replayPreferredEffort(session, sessionId, created.sessionId)
   }
   liveAcpSessions.add(sessionId)
   syncLiveSessions()
@@ -823,25 +917,47 @@ export function useConversation() {
    * 模型 value 形如 `provider/modelId`，modelId 自身可能含 `/`（如 magpie/workbuddy/xxx），
    * 故仅按第一个 `/` 切分。set_config_option 回包不含 limit.context，须本地查 config/catalog。 */
   async function refreshContextWindow(
-    session: { tokenUsage: { contextWindow: number }; engineId: string },
+    session: { tokenUsage: { contextWindow: number }; engineId: string; configOptions?: AcpConfigOption[] },
     modelValue: string,
+    hint?: string,
   ): Promise<void> {
+    // Claude 的 model 选项 value 是单名（`fable`/`sonnet`，无 provider 前缀）——
+    // 不能因缺 `/` 就早退，否则永远拿不到 Claude 的窗口（一直停在 128k 占位）。
     const slash = modelValue.indexOf('/')
-    if (slash <= 0 || slash === modelValue.length - 1) return
-    const provider = modelValue.slice(0, slash)
-    const model = modelValue.slice(slash + 1)
+    const provider = slash > 0 ? modelValue.slice(0, slash) : ''
+    const model = slash > 0 ? modelValue.slice(slash + 1) : modelValue
+    if (!model) return
     try {
-      const win = await acpService.modelContextWindow(provider, model, session.engineId)
+      const win = await acpService.modelContextWindow(provider, model, session.engineId, hint)
       if (typeof win === 'number' && win > 0) session.tokenUsage.contextWindow = win
     } catch {
       // 静默：查不到就保持既有分母（usage_update.size 仍会覆盖）
     }
   }
 
+  /** 取模型选项 name+description 作为容量提示（含 `[1M]` / `(1M context)` 等后缀）。
+   *  options 可能是扁平值或分组，逐一匹配 value。 */
+  function modelCapacityHint(
+    session: { configOptions?: AcpConfigOption[] },
+    modelValue: string,
+  ): string {
+    const opt = session.configOptions?.find((o) => o.id === 'model' || o.category === 'model')
+    const flat: { value?: string; name?: string; description?: string }[] = []
+    for (const c of opt?.options ?? []) {
+      if ('value' in c) flat.push(c)
+      else if ('options' in c) for (const sub of c.options ?? []) flat.push(sub)
+    }
+    const choice = flat.find((c) => c.value === modelValue)
+    return [choice?.name, choice?.description].filter(Boolean).join(' ')
+  }
+
   /** 通用会话配置切换（set_config_option）：model / effort 等 select 项共用。
    * 乐观更新：先写 in-memory currentValue（chip/标签即时反馈），成功后用 ACP 回包
    * 覆盖；失败（如需凭据模型 -32602）→ 回退旧值 + 错误卡而非静默（AC7）。
-   * 未建 ACP 会话时仅做本地写入（首个 prompt 建连后 acp_set_config 才可用）。 */
+   * 未建 ACP 会话时仅做本地写入（首个 prompt 建连后 acp_set_config 才可用）。
+   * **effort 额外记入 `preferredEffort`**：`session/new` / `session/load` 每次都把它重置为
+   * default，建连后由 `replayPreferredEffort` 回放。不回放的话，用户在未建连时选的
+   * 「极高」会被静默重置成 default（=「思考强度不生效」）。 */
   async function setConfigOption(
     sessionId: string,
     configId: string,
@@ -849,17 +965,27 @@ export function useConversation() {
   ): Promise<void> {
     const session = sessionStore.get(sessionId)
     if (!session) return
-    const opt = session.configOptions?.find((o) => o.id === configId)
-    const prevValue = opt?.currentValue
+    const effortOpt = findEffortOption(session)
+    const isEffort = !!effortOpt && effortOpt.id === configId
+    const prevValue = session.configOptions?.find((o) => o.id === configId)?.currentValue
+    // 回滚快照必须在乐观写入**之前**取（失败时恢复用户原先的选择）
+    const prevPreferred = session.preferredEffort
     // 乐观写入（model 额外同步 session.model 字段）
     applyOptionValue(session, configId, value)
     if (configId === 'model') session.model = value
+    if (isEffort) session.preferredEffort = value
 
     // 切换模型即刷新上下文窗口分母（不等下一条 usage_update；best-effort 不阻塞）
-    if (configId === 'model') void refreshContextWindow(session, value)
+    if (configId === 'model') void refreshContextWindow(session, value, modelCapacityHint(session, value))
 
     if (!session.acpSessionId || !liveAcpSessions.has(sessionId)) {
-      // 未建连：本地生效即可（首个 prompt 走 session/new 时再以 configOptions 为准）
+      // 未建连：本地生效即可。effort 已记入 preferredEffort：首个 prompt 走 session/new
+      // （或对已绑定旧 acpSessionId 走 session/load）后由 replayPreferredEffort 回放；
+      // 若进程仍在（仅 live 标记缺失），下一条 prompt 会复用同一 acpSessionId、
+      // 不重建会话 → 这里顺手 best-effort 补发一次（失败静默，不阻断）。
+      if (isEffort && session.acpSessionId) {
+        void replayPreferredEffort(session, sessionId, session.acpSessionId)
+      }
       sessionStore.touch(sessionId)
       return
     }
@@ -867,17 +993,26 @@ export function useConversation() {
       const opts = await acpService.setConfig(sessionId, session.acpSessionId, configId, value)
       if (configId === 'model') session.model = value
       if (opts) {
-        session.configOptions = opts
+        if (isEffort) {
+          // effort 回包只含被改项 → 合并（不能整体替换，否则丢 model/mode 项）
+          applyEffortOptions(session, opts, value)
+        } else {
+          session.configOptions = opts
+        }
       } else {
         // 回包未含 options：保留乐观值
         applyOptionValue(session, configId, value)
       }
       sessionStore.touch(sessionId)
     } catch (err) {
-      // 失败：回退到旧值（model 同步回退 session.model）
+      // 失败：回退到旧值（model 同步回退 session.model；effort 回退记住的选择）
       if (typeof prevValue === 'string') {
         applyOptionValue(session, configId, prevValue)
         if (configId === 'model') session.model = prevValue
+      }
+      if (isEffort) {
+        if (prevPreferred) session.preferredEffort = prevPreferred
+        else delete session.preferredEffort
       }
       const { kind, text } = classifyAcpError(err)
       const raw = err instanceof Error ? err.message : String(err)
@@ -955,6 +1090,15 @@ export function useConversation() {
     return sessionStore.forkSession(sessionId, messageId)
   }
 
+  /** 主动解析并写入当前会话的上下文窗口分母（会话打开/模型项就绪时调用，best-effort）。
+   * 仅在 `session.model` 有值时解析：会话未定模型时不能回退用 workspace.selectedModel
+   * （那是另一个引擎的默认值，写错分母后会被单调取大永久保留）。 */
+  function resolveContextWindow(sessionId: string): void {
+    const session = sessionStore.get(sessionId)
+    if (!session?.model) return
+    void refreshContextWindow(session, session.model, modelCapacityHint(session, session.model))
+  }
+
   /** 重新生成：移除该回合全部消息（含用户消息，send 会重新入库避免重复气泡），重发 */
   function regenerate(sessionId: string, assistantMessageId: string) {
     const session = sessionStore.get(sessionId)
@@ -966,7 +1110,7 @@ export function useConversation() {
     if (userMsg) void send(sessionId, userMsg.content)
   }
 
-  return { send, stop, closeConnection, regenerate, setModel, setConfigOption, fork, reconnect, reconnecting, ensureConnected }
+  return { send, stop, closeConnection, regenerate, setModel, setConfigOption, fork, reconnect, reconnecting, ensureConnected, resolveContextWindow }
 }
 
 /** ACP update 类型收窄辅助（组件/测试可复用） */

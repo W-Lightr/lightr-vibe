@@ -100,6 +100,10 @@ export interface Session {
   currentModeId?: string
   /** ACP 会话 mode（D3：仅记录不暴露 UI，恒 build） */
   mode?: string
+  /** 用户选定的思考强度（effort option 的 value）。
+   *  `session/new` / `session/load` 每次都返回 default，故单独记住并在建连后回放，
+   *  避免「建连前选的强度」被静默重置。仅内存态，不落索引（SessionIndexEntry 无此字段）。 */
+  preferredEffort?: string
   /** 消息是否已从磁盘懒加载（索引恢复后打开标签才读，design §4） */
   messagesLoaded?: boolean
 }

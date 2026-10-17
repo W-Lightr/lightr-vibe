@@ -40,6 +40,7 @@ import {
   setDraftInput,
   clearDraftInput,
   configRejectedNotice,
+  sessionNoticeState,
 } from '../../../composables/useConversation'
 import type { AcpConfigOption, AcpConfigOptionGroup, AcpConfigOptionValue } from '../../../types/acp'
 import { formatTokens } from '../../../utils/time'
@@ -61,7 +62,7 @@ const { pending: pendingQuestions } = useAcpQuestion()
 const questionQueue = computed(() =>
   pendingQuestions.value.filter((e) => e.connId === props.sessionId),
 )
-const { send, stop, setModel, setConfigOption, reconnect, reconnecting, ensureConnected, closeConnection } =
+const { send, stop, setModel, setConfigOption, reconnect, reconnecting, ensureConnected, closeConnection, resolveContextWindow } =
   useConversation()
 const { healthOf, acpConnectingSessionIds, acpLiveSessionIds, refreshAcpStatus } = useAcpHealth()
 const message = useMessage()
@@ -340,6 +341,28 @@ watch(
   },
 )
 
+// session notice（ACP 1.9 Session Notices）：agent 的网关警告等 → 右上角 toast。
+// 只按本会话路由（connId）弹出；**不入 transcript**（applyUpdate 已保证）。
+watch(
+  () => sessionNoticeState.value.seq,
+  () => {
+    const notice = sessionNoticeState.value
+    if (!notice.seq || notice.connId !== props.sessionId) return
+    const text = notice.description ? `${notice.title}\n${notice.description}` : notice.title
+    message[notice.level](text, { duration: 6000, closable: true })
+  },
+)
+
+// 模型项 / 当前模型变化（探针异步返回、打开历史会话）时重解析上下文窗口分母，
+// 避免分母长期停在 128k 占位或跨模型不更新。
+// 不带 immediate：watch 在 setup 期早于 onMounted 求值，首帧由 onMounted 兜底。
+watch(
+  () => [modelConfig.value?.id, currentModel.value] as const,
+  ([id]) => {
+    if (id) resolveContextWindow(props.sessionId)
+  },
+)
+
 /** 重新连接：杀死该会话进程 + 全新 spawn + load-or-new */
 async function onReconnect() {
   await reconnect(props.sessionId)
@@ -401,6 +424,8 @@ onMounted(() => {
   void refreshAcpStatus(props.sessionId)
   // 打开会话即自动建连（不等发送；连上后 configOptions/模型列表即可用）
   void ensureConnected(props.sessionId)
+  // 解析上下文窗口分母（模型项就绪即可算，避免长期停在 128k 占位）
+  resolveContextWindow(props.sessionId)
 })
 
 function submit() {

@@ -180,9 +180,16 @@ export const acpService = {
   },
 
   /** 按 provider/model 解析上下文窗口（limit.context），策略来自引擎声明。查不到返回 null
-   * （调用方保持既有分母，不臆造）。纯文件读取，不涉 ACP 进程。engineId 缺省回退 opencode。 */
-  async modelContextWindow(provider: string, model: string, engineId?: string): Promise<number | null> {
+   * （调用方保持既有分母，不臆造）。纯文件读取，不涉 ACP 进程。engineId 缺省回退 opencode。
+   * hint = 模型选项 name/description（含 `[1M]` / `(1M context)` 等容量后缀），供 Claude/Codex
+   * 无配置来源时兜底解析。 */
+  async modelContextWindow(
+    provider: string,
+    model: string,
+    engineId?: string,
+    hint?: string,
+  ): Promise<number | null> {
     if (!isTauri()) return acpMock.modelContextWindow(provider, model, engineId)
-    return invoke<number | null>('agent_model_context_window', { provider, model, engineId })
+    return invoke<number | null>('agent_model_context_window', { provider, model, engineId, hint })
   },
 }

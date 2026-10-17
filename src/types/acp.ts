@@ -110,6 +110,15 @@ export interface AcpConfigOptionUpdateEvent {
   configOptions?: AcpConfigOption[]
 }
 
+/** notice：ACP 1.9 Session Notices（agent 的网关警告等）。
+ *  只有声明了 `session.notices` 能力才会以该种类下发；前端转 toast，不入 transcript。 */
+export interface AcpNoticeUpdateEvent {
+  sessionUpdate: 'notice'
+  severity?: string
+  title?: string
+  description?: string
+}
+
 export type AcpUpdate =
   | AcpContentChunk
   | AcpToolCallEvent
@@ -119,6 +128,7 @@ export type AcpUpdate =
   | AcpSessionInfoUpdateEvent
   | AcpAvailableCommandsEvent
   | AcpCurrentModeUpdateEvent
+  | AcpNoticeUpdateEvent
 
 export interface AcpUpdateEvent {
   /** 连接 id = 本地会话 id（ses-xxxxxxxx）：事件按此路由到本地会话（design §8.1） */

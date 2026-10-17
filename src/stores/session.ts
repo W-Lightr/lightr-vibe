@@ -464,7 +464,9 @@ export const useSessionStore = defineStore('session', () => {
   function setContextUsage(sessionId: string, used: number, size?: number) {
     const s = get(sessionId)
     if (!s) return
-    if (size && size > 0) s.tokenUsage.contextWindow = size
+    // size **只增不减**：Claude 等适配器同一会话内会把 size 从 800k 跳到 1M（甚至回落），
+    // 单调取大避免分母抖动/回落（容量是会话级常量，变大必是真值，变小是适配器噪声）。
+    if (size && size > 0) s.tokenUsage.contextWindow = Math.max(s.tokenUsage.contextWindow, size)
     s.tokenUsage.total = used
   }
 

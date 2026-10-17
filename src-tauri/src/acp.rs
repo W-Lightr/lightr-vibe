@@ -75,10 +75,25 @@ fn timeout_for(method: &str) -> Duration {
 ///   收到非法/不支持形状仍由处理器 `Decline`（不 hang）。
 ///
 /// 该函数不按引擎分支（连"声明"也无需引擎名）；**协议路由亦不含引擎名**（AC9）。
+///
+/// - session 通知（ACP schema 1.9 Session Notices，10-14-acp-stream-control AC10 实机修复）：
+///   **无条件**声明 `session.notices = {}`（必须是对象，适配器按
+///   `typeof session.notices === "object"` 判断）。声明后 `claude-agent-acp` 把网关警告
+///   等以独立 `session/update {sessionUpdate:"notice"}` 下发，而不是降级塞进
+///   `agent_message_chunk` 被当成聊天正文渲染；前端 `applyUpdate` 的 `notice` 分支
+///   转成 toast（不入 transcript）。
+///   已知取舍（codeg 同样接受）：声明 notices 后 claude 不再下发 `level === "info"`
+///   的纯信息帧（仅在 Claude Code 自身 transcript 模式可见），可接受。
+///
+///   **不声明 `session.compaction`**：codeg 有 compaction 消费者把 `compaction_update`
+///   翻译回 `_meta.contextCompaction`；本项目**没有** compaction 消费者（grep 确认），
+///   一旦声明，claude 会停止发送现有的 `_meta.contextCompaction` 合成工具调用 →
+///   纯回归。故此处刻意只开 notices。后续若新增 compaction 消费面再同步开启。
 fn client_capabilities() -> Value {
     json!({
         "fs": { "readTextFile": false, "writeTextFile": false },
-        "elicitation": { "form": {} }
+        "elicitation": { "form": {} },
+        "session": { "notices": {} }
     })
 }
 
@@ -1481,19 +1496,190 @@ fn opencode_catalog_path() -> Option<PathBuf> {
     Some(PathBuf::from(cache_root).join("opencode").join("models.json"))
 }
 
+/// 从模型名字串里的容量后缀取窗口：`[1M]` / `[500k]` / `[1.5m]`（照 codeg
+/// `parsers::parse_model_capacity_suffix`）。大小写不敏感，允许中间空格。
+/// 这是**引擎无关**的权威信号：网关自定义模型（如 `deepseek-v4.1-flash[1M]`）
+/// 会把容量直接写进名字，读它比任何家族启发式都准。
+fn parse_model_capacity_suffix(model: &str) -> Option<u64> {
+    let m = model.trim();
+    let end = m.strip_suffix(']')?;
+    let open = end.rfind('[')?;
+    let inner = end[open + 1..].trim();
+    let unit = inner.chars().last()?;
+    let mult = match unit.to_ascii_lowercase() {
+        'm' => 1_000_000f64,
+        'k' => 1_000f64,
+        _ => return None,
+    };
+    let num = inner[..inner.len() - unit.len_utf8()].trim().parse::<f64>().ok()?;
+    if !num.is_finite() || num <= 0.0 {
+        return None;
+    }
+    let v = (num * mult) as u64;
+    (v > 0).then_some(v)
+}
+
+/// 模型名启发式（照 codeg `parsers::infer_context_window_max_tokens` 的 Claude 分支）：
+/// 后缀优先；否则 `claude*` 型号按家族/`-1m` 判定 1M 或 200k。非 claude 返回 None。
+fn infer_context_window_from_model(model: &str) -> Option<u64> {
+    let raw = model.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(suffixed) = parse_model_capacity_suffix(raw) {
+        return Some(suffixed);
+    }
+    let normalized = raw
+        .rsplit('/')
+        .next()
+        .unwrap_or(raw)
+        .split(':')
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .to_ascii_lowercase();
+    if normalized.starts_with("claude") {
+        if is_claude_one_million_id(&normalized) || is_claude_native_one_million_model(&normalized) {
+            return Some(1_000_000);
+        }
+        return Some(200_000);
+    }
+    None
+}
+
+/// `\b1m\b` 形态的 1M-lane id（`claude-opus-4-6-1m`）；不误命中 `10m`。
+fn is_claude_one_million_id(model: &str) -> bool {
+    let bytes = model.as_bytes();
+    let mut i = 0;
+    while let Some(pos) = model[i..].find("1m") {
+        let at = i + pos;
+        let before_ok = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
+        let after = at + 2;
+        let after_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        i = at + 2;
+    }
+    false
+}
+
+/// `claude-<family>-<major>[.<minor>]`；家族原生 1M：
+/// 所有 fable/mythos、opus≥4.7、sonnet≥5、haiku≥5.5。
+fn is_claude_native_one_million_model(model: &str) -> bool {
+    let rest = match model.strip_prefix("claude-") {
+        Some(r) => r,
+        None => return false,
+    };
+    let family: String = rest.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    let after_family = &rest[family.len()..];
+    let after_family = after_family.strip_prefix('-').unwrap_or(after_family);
+    let major: u32 = after_family
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0);
+    let after_major = after_family.trim_start_matches(|c: char| c.is_ascii_digit());
+    // minor 可用 `.` 或 `-` 分隔（codeg 正则 `[-.](\d{1,2})`）
+    let minor: u32 = after_major
+        .strip_prefix('.')
+        .or_else(|| after_major.strip_prefix('-'))
+        .map(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    match family.as_str() {
+        "fable" | "mythos" => true,
+        "opus" => (major, minor) >= (4, 7),
+        "sonnet" => major >= 5,
+        "haiku" => (major, minor) >= (5, 5),
+        _ => false,
+    }
+}
+
+/// 从 UI 文案里嗅探容量：`(1M context)` / `[1M]` / `1,000,000` 等。
+/// 仅当模型名本身无后缀/非 claude 时才用。数字后缀优先，其次裸大数（≥100000）。
+fn parse_context_hint_text(hint: &str) -> Option<u64> {
+    if let Some(v) = parse_model_capacity_suffix(hint) {
+        return Some(v);
+    }
+    let lower = hint.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut saw_dot = false;
+        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b',' || bytes[i] == b'.')
+        {
+            if bytes[i] == b'.' {
+                saw_dot = true;
+            }
+            i += 1;
+        }
+        let digits: String = lower[start..i]
+            .chars()
+            .filter(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        let unit = bytes.get(i).copied().map(|b| b as char);
+        match unit {
+            Some('m') => {
+                if let Ok(n) = digits.parse::<f64>() {
+                    if n.is_finite() && n > 0.0 {
+                        return Some((n * 1_000_000.0) as u64);
+                    }
+                }
+            }
+            Some('k') => {
+                if let Ok(n) = digits.parse::<f64>() {
+                    if n.is_finite() && n > 0.0 {
+                        return Some((n * 1_000.0) as u64);
+                    }
+                }
+            }
+            _ if !saw_dot => {
+                // 裸数字（含 `1,000,000` / `128000`）：仅 ≥100000 才当容量
+                if let Ok(n) = digits.parse::<u64>() {
+                    if n >= 100_000 {
+                        return Some(n);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// 解析模型上下文窗口（按引擎的 context-window 策略）：opencode 用
-/// 用户配置 → models.dev 缓存目录。无策略的引擎返回 None（前端保持既有分母，不臆造）。
-fn model_context_window_inner(provider: &str, model: &str, engine: AgentType) -> Option<u64> {
-    if provider.trim().is_empty() || model.trim().is_empty() {
+/// 用户配置 → models.dev 缓存目录；Claude/Codex 无配置来源，用模型名后缀 /
+/// claude 家族启发式 / 前端 hint 兜底。都查不到返回 None（前端保持既有分母，不臆造）。
+fn model_context_window_inner(
+    provider: &str,
+    model: &str,
+    engine: AgentType,
+    hint: Option<&str>,
+) -> Option<u64> {
+    // provider 可为空（Claude 的 model 选项 value 是单名如 `fable`，无 provider 前缀）；
+    // 仅 model 必需。opencode 的 config/catalog 查询要求 provider，缺失时该分支自然跳过。
+    if model.trim().is_empty() {
         return None;
     }
     let meta = engine::get_agent_meta(engine);
-    match meta.launch.context_window {
-        ContextWindowSource::OpenCodeConfigAndCatalog => {
-            model_context_window_opencode(provider, model)
+    // 1) 引擎声明的配置/目录来源（opencode：用户配置 → models.dev 缓存）
+    if let ContextWindowSource::OpenCodeConfigAndCatalog = meta.launch.context_window {
+        if let Some(ctx) = model_context_window_opencode(provider, model) {
+            return Some(ctx);
         }
-        ContextWindowSource::None => None,
     }
+    // 2) 引擎无关兜底：模型名容量后缀 / claude 家族启发式，再退到前端 hint
+    //    （选项 name/description，如 `deepseek-v4.1-flash[1m]`、`(1M context)`）。
+    infer_context_window_from_model(model)
+        .or_else(|| hint.and_then(infer_context_window_from_model))
+        .or_else(|| hint.and_then(parse_context_hint_text))
 }
 
 /// opencode 策略：用户 opencode 配置 → models.dev 缓存目录。
@@ -1611,15 +1797,18 @@ pub async fn agent_model_context_window(
     provider: String,
     model: String,
     engine_id: Option<String>,
+    hint: Option<String>,
 ) -> Result<Option<u64>, String> {
     let engine = match engine_id.as_deref() {
         Some(id) => AgentType::from_wire(id)
             .ok_or_else(|| format!("acp:-32602 未知引擎: {}", id))?,
         None => AgentType::OpenCode,
     };
-    tauri::async_runtime::spawn_blocking(move || model_context_window_inner(&provider, &model, engine))
-        .await
-        .map_err(|e| format!("acp 任务执行失败: {}", e))
+    tauri::async_runtime::spawn_blocking(move || {
+        model_context_window_inner(&provider, &model, engine, hint.as_deref())
+    })
+    .await
+    .map_err(|e| format!("acp 任务执行失败: {}", e))
 }
 
 fn parse_session_result(result: &Value, fallback_id: Option<String>) -> Result<SessionResult, String> {
@@ -1963,6 +2152,88 @@ fn render_answer_text(questions: &[Question], pairs: &[(String, Vec<String>)]) -
 mod tests {
     use super::*;
     use crate::acp_question::QuestionKind;
+
+    /// session.notices 必须是**对象**（适配器按 typeof === "object" 判断）；
+    /// 刻意不声明 compaction（本项目无 compaction 消费者，声明会触发回归）。
+    #[test]
+    fn client_capabilities_advertises_session_notices_only() {
+        let caps = client_capabilities();
+        let session = caps.get("session").expect("session member");
+        assert!(session.get("notices").is_some_and(Value::is_object));
+        assert!(session.get("compaction").is_none());
+        // 既有能力保持不变（回归护栏）
+        assert!(caps.get("fs").is_some());
+        assert!(caps.get("elicitation").is_some());
+    }
+
+    #[test]
+    fn capacity_suffix_parses_units() {
+        assert_eq!(parse_model_capacity_suffix("qwen3.8-max-0902[1M]"), Some(1_000_000));
+        assert_eq!(parse_model_capacity_suffix("deepseek-v4.1-flash[1m]"), Some(1_000_000));
+        assert_eq!(parse_model_capacity_suffix("foo[500k]"), Some(500_000));
+        assert_eq!(parse_model_capacity_suffix("foo[1.5m]"), Some(1_500_000));
+        assert_eq!(parse_model_capacity_suffix("foo[1M] "), Some(1_000_000));
+        assert_eq!(parse_model_capacity_suffix("claude-sonnet-4-6"), None);
+        assert_eq!(parse_model_capacity_suffix("foo[0m]"), None);
+        assert_eq!(parse_model_capacity_suffix("foo[xm]"), None);
+    }
+
+    #[test]
+    fn infer_context_window_suffix_beats_family() {
+        assert_eq!(
+            infer_context_window_from_model("deepseek-v4.1-flash[1M]"),
+            Some(1_000_000)
+        );
+        assert_eq!(infer_context_window_from_model("claude-fable-1"), Some(1_000_000));
+        assert_eq!(infer_context_window_from_model("claude-opus-4-7"), Some(1_000_000));
+        assert_eq!(infer_context_window_from_model("claude-opus-4-6-1m"), Some(1_000_000));
+        assert_eq!(infer_context_window_from_model("claude-sonnet-5"), Some(1_000_000));
+        assert_eq!(infer_context_window_from_model("claude-sonnet-4-6"), Some(200_000));
+        assert_eq!(infer_context_window_from_model("claude-opus-4-6"), Some(200_000));
+        assert_eq!(
+            infer_context_window_from_model("claude-opus-4-6-10m-preview"),
+            Some(200_000)
+        );
+        assert_eq!(infer_context_window_from_model("deepseek-chat"), None);
+    }
+
+    #[test]
+    fn context_hint_text_sniffs_capacity() {
+        assert_eq!(parse_context_hint_text("Custom Opus model (1M context)"), Some(1_000_000));
+        assert_eq!(parse_context_hint_text("foo [500k]"), Some(500_000));
+        assert_eq!(parse_context_hint_text("window 1,000,000 tokens"), Some(1_000_000));
+        assert_eq!(parse_context_hint_text("128000 ctx"), Some(128_000));
+        assert_eq!(parse_context_hint_text("Custom Haiku model"), None);
+        assert_eq!(parse_context_hint_text("qwen3.8-max-0902"), None);
+    }
+
+    #[test]
+    fn model_context_window_inner_uses_inference_for_claude() {
+        assert_eq!(
+            model_context_window_inner(
+                "gateway",
+                "deepseek-v4.1-flash[1M]",
+                AgentType::ClaudeCode,
+                None
+            ),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            model_context_window_inner("x", "claude-sonnet-4-6", AgentType::ClaudeCode, None),
+            Some(200_000)
+        );
+        // 模型名无后缀（Claude 选项 value 是单名）→ 退到 hint（选项 name/description）
+        assert_eq!(
+            model_context_window_inner(
+                "",
+                "sonnet",
+                AgentType::ClaudeCode,
+                Some("deepseek-v4.1-flash Custom Sonnet model (1M context)")
+            ),
+            Some(1_000_000)
+        );
+        assert_eq!(model_context_window_inner("", "m", AgentType::ClaudeCode, None), None);
+    }
 
     #[test]
     fn mcp_args_single_select() {
