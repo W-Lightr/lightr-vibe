@@ -12,6 +12,7 @@ import {
   PanelLeftOpen,
   Search,
   Settings,
+  ListTodo,
 } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { ref } from 'vue'
@@ -140,6 +141,10 @@ function notImplemented(label: string) {
       </button>
       <button class="tb" title="设置" @click="router.push('/settings')">
         <Settings class="h-4 w-4" />
+      </button>
+      <!-- 任务看板入口（/tasks，PRD R1） -->
+      <button class="tb" title="任务看板" @click="router.push('/tasks')">
+        <ListTodo class="h-4 w-4" />
       </button>
 
       <div class="mx-1 h-4 w-px bg-neutral-300" />

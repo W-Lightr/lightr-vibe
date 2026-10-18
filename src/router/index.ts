@@ -15,6 +15,11 @@ const router = createRouter({
       component: () => import('../views/settings/SettingsView.vue'),
     },
     {
+      path: '/tasks',
+      name: 'tasks',
+      component: () => import('../views/tasks/TasksView.vue'),
+    },
+    {
       path: '/coding',
       component: () => import('../layouts/WorkspaceLayout.vue'),
       children: [
