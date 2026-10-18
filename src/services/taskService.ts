@@ -9,6 +9,7 @@ import type {
   TaskDraft,
   TaskPatch,
   TaskStatus,
+  TaskTurnOutcome,
   WorkTask,
   WorkTaskEvent,
 } from '../types/task'
@@ -19,9 +20,12 @@ import {
   mockAttachSession,
   mockCreate,
   mockDelete,
+  mockDetachSession,
+  mockDuplicate,
   mockEvents,
   mockList,
   mockReorder,
+  mockSettleTurn,
   mockTransition,
   mockUpdate,
 } from './taskMock'
@@ -93,5 +97,32 @@ export const taskService = {
   async events(id: string): Promise<WorkTaskEvent[]> {
     if (!isTauri()) return mockEvents(id)
     return invoke<WorkTaskEvent[]>('task_events', { id })
+  },
+
+  /**
+   * turn 回流（prd R5）：把一次 agent turn 的结论写回任务。
+   * `runSeq` 必须是**启动时**拿到的值（`transition → queued` 的返回），
+   * 与后端当前值不符即视为迟到回调，后端原样返回当前行（不报错）。
+   */
+  async settleTurn(
+    id: string,
+    runSeq: number,
+    outcome: TaskTurnOutcome,
+    reason: string | null,
+  ): Promise<WorkTask> {
+    if (!isTauri()) return mockSettleTurn(id, runSeq, outcome, reason)
+    return invoke<WorkTask>('task_settle_turn', { id, runSeq, outcome, reason })
+  },
+
+  /** 断开会话（详情动作）：`sessionId` 传当前值做 CAS，生成中后端拒绝 */
+  async detachSession(id: string, sessionId: string): Promise<WorkTask> {
+    if (!isTauri()) return mockDetachSession(id, sessionId)
+    return invoke<WorkTask>('task_detach_session', { id, sessionId })
+  },
+
+  /** 复制任务（同项目 / 同提示词 / 同引擎，回到待办） */
+  async duplicate(id: string): Promise<TaskDetails> {
+    if (!isTauri()) return mockDuplicate(id)
+    return invoke<TaskDetails>('task_duplicate', { id })
   },
 }

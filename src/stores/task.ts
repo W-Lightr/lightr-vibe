@@ -9,6 +9,7 @@ import type {
   TaskDraft,
   TaskPatch,
   TaskStatus,
+  TaskTurnOutcome,
   WorkTask,
   WorkTaskEvent,
 } from '../types/task'
@@ -133,6 +134,36 @@ export const useTaskStore = defineStore('task', () => {
     return taskService.events(id)
   }
 
+  /**
+   * turn 回流（prd R5）：把 agent turn 的结论写回任务。
+   * `runSeq` 由调用方在**启动时**从 `transition → queued` 的返回里取；
+   * 迟到回调（runSeq 不符）后端原样返回当前行，这里不做任何假设。
+   */
+  async function settleTurn(
+    id: string,
+    runSeq: number,
+    outcome: TaskTurnOutcome,
+    reason: string | null,
+  ): Promise<WorkTask> {
+    const row = await taskService.settleTurn(id, runSeq, outcome, reason)
+    upsert(row)
+    return row
+  }
+
+  /** 断开会话（一对一绑定，prd D4；生成中后端拒绝） */
+  async function detachSession(id: string, sessionId: string): Promise<WorkTask> {
+    const row = await taskService.detachSession(id, sessionId)
+    upsert(row)
+    return row
+  }
+
+  /** 复制任务（同项目 / 同提示词 / 同引擎，回到待办） */
+  async function duplicate(id: string): Promise<WorkTask> {
+    const details = await taskService.duplicate(id)
+    upsert(details.task)
+    return details.task
+  }
+
   return {
     tasks,
     loaded,
@@ -148,5 +179,8 @@ export const useTaskStore = defineStore('task', () => {
     archive,
     attachSession,
     eventsOf,
+    settleTurn,
+    detachSession,
+    duplicate,
   }
 })

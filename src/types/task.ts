@@ -111,6 +111,13 @@ export interface TaskDetails {
 }
 
 /**
+ * turn 回流结论（`task_settle_turn` 的 outcome，子任务 3 / prd R5）。
+ * 由前端从 `acp_prompt` 的 stopReason + 错误分类得出；Rust 只做
+ * 「runSeq 防串 + 状态机校验 + 写 failureReason」。
+ */
+export type TaskTurnOutcome = 'ok' | 'error' | 'empty' | 'cancelled'
+
+/**
  * task 命令约定错误串：`not-found` / `stale` / `illegal-transition: <from>-><to>` / `io: <msg>`。
  * 注意 `io:` 段之后是**具体原因**；Rust 侧部分业务拒绝（编辑/归档）也用 `io:` 前缀，
  * 因为 `Result<_, String>` 里只有它约定能带消息。
@@ -169,4 +176,9 @@ export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   done: '已完成',
   failed: '失败',
   canceled: '已取消',
+}
+
+/** 任务编辑态里可改字段的状态（Rust `task_update` 同样只放行这两个） */
+export function isTaskEditable(status: TaskStatus): boolean {
+  return status === 'todo' || status === 'failed'
 }

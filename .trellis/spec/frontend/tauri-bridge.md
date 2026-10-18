@@ -850,6 +850,9 @@ task_reorder       { projectId, orderedIds: int[] }          -> WorkTask[]    //
 task_attach_session{ id, sessionId, engineId? }              -> TaskDetails
 task_archive       { id, archived: bool }                    -> TaskDetails   // terminal only
 task_events        { id }                                    -> WorkTaskEvent[]
+task_settle_turn   { id, runSeq, outcome, reason? }          -> WorkTask      // sub-task 3
+task_detach_session{ id, sessionId }                         -> WorkTask      // sub-task 3
+task_duplicate     { id }                                    -> TaskDetails   // sub-task 3
 ```
 
 - `TaskDetails` (`{task, events}`) is the create/update/transition return shape: the
@@ -876,6 +879,61 @@ task_events        { id }                                    -> WorkTaskEvent[]
   non-terminal task) use the `io:` prefix — it is the only code that carries a message.
 - **CAS**: `expectedFrom` is compared **before** the table lookup and **before** any
   event is pushed, so a stale write mutates nothing at all.
+- **`review|failed → todo` (打回) clears `settledAt`; `queued → todo` and `canceled → todo`
+  do NOT.** The clear is conditional on the *source* status (`apply_entry_effects`
+  takes `from`). An unconditional clear would erase a real settlement time when a
+  failed start chain rolls a task back to `todo`.
+
+### Task ↔ session turn flow-back (task 10-17-task-review-session)
+
+`task_settle_turn` is the **only** way a task leaves `running` without a user action:
+
+| Field | Contract |
+|---|---|
+| `outcome = ok` | `running → review`, clears `lastError` / `failureReason` |
+| `outcome = empty` | `running → failed`, `failureReason = empty_turn`, `lastError` = caller's text (or a default) |
+| `outcome = error` | `running → failed`, `failureReason = agent_error`, `lastError` = caller's text |
+| `outcome = cancelled` | no-op (user stopped; the task stays `running` until the user approves/rejects) |
+| `runSeq ≠ row.runSeq` | late callback → returns the row **unchanged** (never an error) |
+| row status ≠ `running` | conclusion is obsolete (user already rejected/canceled) → unchanged |
+
+- The settle transition and the failure attribution are written in **one** write
+  transaction; the appended `status_changed` event has `actor: "engine"`.
+- `TaskTurnOutcome` is `snake_case` on the wire (`ok` / `error` / `empty` / `cancelled`).
+- `task_detach_session` is CAS on the current `sessionId` (`stale` on mismatch) and
+  refuses while `queued|preparing|running` (`io: ...`); `task_duplicate` re-creates
+  the row through `task_create` (never copies runtime fields).
+
+Frontend side, the whole orchestration lives in **one** feature module,
+`src/views/tasks/taskSessionBridge.ts` (not a composable — it owns a module-level
+subscription, not component state):
+
+- `startTask(id)` = the single start chain (card / detail / retry / drag-drop):
+  `todo|failed → queued` → reuse `sessionId` or `createDraft` → `attachSession` →
+  `queued → preparing → running` → `openSession` → `send(prompt)`. Failures roll back
+  **by stage** (`rollbackStart`): `queued → todo` for an attach/preparing failure,
+  `preparing → failed` for a running failure — no step may leave a row stuck in
+  `queued`/`preparing`. The enqueue step itself touches nothing, so its error is
+  rethrown untouched. An orphan task (project removed) is refused before any write.
+  `runSeq` comes from the `queued` transition's return value.
+- `onTurnSettled(fn)` (in `useConversation.ts`) is an optional **module-level** hook.
+  With no listener registered it is a no-op and `send()` behaves exactly as before
+  (AC7). `main.ts` registers the bridge once at boot — a turn can finish on the
+  coding page after the board unmounted, so the subscription must not depend on
+  `TasksView` being mounted.
+- The listener only reacts to a task whose `sessionId` matches **and** whose status is
+  `running` **and** whose `runSeq` still equals the token captured at start, and whose
+  `startedAt` is not older than that token. Everything else is ignored silently.
+- **`ok` is not enough (R4).** `useConversation` leaves `ok: true` for
+  `stopReason === 'cancelled'`, so the bridge only settles `ok → review` when the turn
+  actually produced content (`turnHasContent`: an assistant message created at/after
+  `startedAt` with non-empty text/thinking, tool calls, or an error card). `ok` + zero
+  content = the user pressed 停止 → the token is dropped and the task **stays
+  `running`**. `empty`/`error` go through `task_settle_turn` with the token's
+  `runSeq`; Rust answers a stale `runSeq` with the row unchanged.
+- Browser-dev `simulateTurnSettle(task, 'ok' | 'stop' | 'empty' | 'error')` feeds the
+  **same** `handleTurnSettled` path; the detail dialog seeds one assistant text
+  message before `'ok'` so the simulation matches a real successful turn.
 
 ### 4. Validation & Error Matrix
 

@@ -55,15 +55,15 @@ Agent 干完后任务自动进入「审核」，用户看结果后通过或打�
 
 ## Acceptance Criteria
 
-- [ ] **AC1** `cargo check` + `cargo test --lib` + `vue-tsc --noEmit` + `pnpm build` 全绿。
-- [ ] **AC2** 新建任务 → 出现在「待办」列；点开始 → 卡片进入「进行中」且右侧出现会话标签。
-- [ ] **AC3** Agent 正常结束 → 卡片自动进入「审核」列。
-- [ ] **AC4** Agent 报空回复（`errorKind:'empty'`）→ 卡片进入「审核」列并以失败样式显示
+- [x] **AC1** `cargo check` + `cargo test --lib` + `vue-tsc --noEmit` + `pnpm build` 全绿。
+- [x] **AC2** 新建任务 → 出现在「待办」列；点开始 → 卡片进入「进行中」且右侧出现会话标签。
+- [x] **AC3** Agent 正常结束 → 卡片自动进入「审核」列。
+- [x] **AC4** Agent 报空回复（`errorKind:'empty'`）→ 卡片进入「审核」列并以失败样式显示
       `failureReason='empty_turn'`；其他错误同理。
-- [ ] **AC5** 「通过」→ 已完成列；「打回」→ 待办列且详情里保留了会话入口。
-- [ ] **AC6** 详情时间线按时间升序显示全部状态变更。
-- [ ] **AC7** 不传 `onTurnSettled` 时 `useConversation` 行为与改动前逐字节一致（opencode 零回归）。
-- [ ] **AC8** 项目被移除后，其任务在「全部项目」视图可见、可按「项目已移除」标记，且可删除/归档。
+- [x] **AC5** 「通过」→ 已完成列；「打回」→ 待办列且详情里保留了会话入口。
+- [x] **AC6** 详情时间线按时间升序显示全部状态变更。
+- [x] **AC7** 不传 `onTurnSettled` 时 `useConversation` 行为与改动前逐字节一致（opencode 零回归）。
+- [x] **AC8** 项目被移除后，其任务在「全部项目」视图可见、可按「项目已移除」标记，且可删除/归档。
 
 ## Out of Scope
 

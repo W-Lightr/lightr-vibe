@@ -1,11 +1,12 @@
 <script setup lang="ts">
 // 任务卡片：状态 chip + 标题（两行截断）+ 项目名 + 相对时间 + 状态动作按钮。
-// 只读任务行，不碰 store / service——所有动作 emit 给 TasksView 决定实现（子任务 3 接会话）。
+// chip 视觉/文案来自 taskChip.ts（与详情抽屉同一来源）；动作全部 emit 给 TasksView，
+// 由它调 taskSessionBridge（启动链路 / 停止 / 审核）——卡片只表达意图。
 // 卡片本体承担拖拽 pointerdown；按钮区 @pointerdown.stop 避免动作按钮误触发拖拽。
 import { computed } from 'vue'
 import { Check, CornerDownLeft, LoaderCircle, Play, Square } from 'lucide-vue-next'
 import { formatRelativeTime } from '../../../utils/time'
-import { TASK_STATUS_LABELS } from '../../../types/task'
+import TaskStatusChip from './TaskStatusChip.vue'
 import type { WorkTask } from '../../../types/task'
 
 const props = defineProps<{
@@ -37,50 +38,6 @@ const emit = defineEmits<{
   primary: []
   secondary: []
 }>()
-
-type ChipKind = 'running' | 'attention' | 'done' | 'failed' | 'neutral'
-
-/** chip 视觉分组（穷举，新增状态必须归组） */
-const chipKind = computed<ChipKind>(() => {
-  switch (props.task.status) {
-    case 'queued':
-    case 'preparing':
-    case 'running':
-    case 'merging':
-      return 'running'
-    case 'awaiting_input':
-    case 'review':
-      return 'attention'
-    case 'done':
-      return 'done'
-    case 'failed':
-      return 'failed'
-    case 'todo':
-    case 'canceled':
-      return 'neutral'
-    default: {
-      const unhandled: never = props.task.status
-      return unhandled
-    }
-  }
-})
-
-const CHIP_CLASS: Record<ChipKind, string> = {
-  running: 'border-blue-200 bg-blue-50 text-blue-600',
-  attention: 'border-amber-200 bg-amber-50 text-amber-700',
-  done: 'border-green-200 bg-green-50 text-green-700',
-  failed: 'border-red-200 bg-red-50 text-red-600',
-  neutral: 'border-neutral-200 bg-neutral-100 text-neutral-500',
-}
-
-/** 运行中 / 队列中显示旋转图标 */
-const spinning = computed(() => chipKind.value === 'running')
-
-/** 失败时优先展示归因文案（被中断单独提示） */
-const chipLabel = computed(() => {
-  if (props.task.status === 'failed' && props.task.failureReason === 'interrupted') return '已中断'
-  return TASK_STATUS_LABELS[props.task.status]
-})
 
 /** 主按钮语义分组：决定图标（开始/停止/通过） */
 const primaryIcon = computed<'start' | 'stop' | 'approve' | null>(() => {
@@ -121,14 +78,7 @@ function setRef(el: unknown): void {
     <div class="px-2.5 py-2" @click="emit('open')">
       <!-- 状态 chip + 相对时间 -->
       <div class="flex items-center gap-1.5">
-        <span
-          class="inline-flex items-center gap-1 rounded-full border px-1.5 py-px text-[10px] leading-4"
-          :class="CHIP_CLASS[chipKind]"
-        >
-          <LoaderCircle v-if="spinning" class="h-2.5 w-2.5 animate-spin" />
-          <Check v-else-if="chipKind === 'done'" class="h-2.5 w-2.5" />
-          {{ chipLabel }}
-        </span>
+        <TaskStatusChip :task="task" />
         <span class="flex-1" />
         <span class="shrink-0 text-[10px] text-neutral-400">
           {{ formatRelativeTime(task.updatedAt) }}

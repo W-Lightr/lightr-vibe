@@ -215,7 +215,9 @@ pub struct WorkTaskEvent {
 }
 
 /// 新建任务入参（prd R3 task_create）
-#[derive(Debug, Clone, Deserialize)]
+/// `Deserialize` 供 `task_create` 使用；`Serialize` 供 `task_duplicate` 入参直接复用
+/// （复制 = 把源行改标题/提示词后重新创建）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskDraft {
     pub project_id: String,
@@ -244,6 +246,22 @@ pub struct TaskPatch {
 pub struct TaskDetails {
     pub task: WorkTask,
     pub events: Vec<WorkTaskEvent>,
+}
+
+/// turn 回流结论（task_settle_turn，子任务 3 / prd R5）。
+/// 由前端从 `acp_prompt` 的 stopReason + 错误分类得出；Rust 侧只负责
+/// 「runSeq 防串 + 状态机校验 + 写 failureReason」，不解释 agent 协议。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskTurnOutcome {
+    /// 正常结束 → review
+    Ok,
+    /// agent 报错 → failed / agent_error
+    Error,
+    /// 空回复 → failed / empty_turn
+    Empty,
+    /// 用户主动停止 → 不做任何状态变更（任务保持 running，交给用户打回/通过）
+    Cancelled,
 }
 
 // ---------- 文件格式 ----------
@@ -609,7 +627,12 @@ fn illegal_transition(from: TaskStatus, to: TaskStatus) -> String {
 
 /// 时间戳副作用（prd R4）：queued → runSeq+1 且 startedAt 首次写入；
 /// review/failed → settledAt；done/canceled → finishedAt。
-fn apply_entry_effects(task: &mut WorkTask, to: TaskStatus, now: i64) {
+///
+/// 数据层对 `todo` 的生效范围（子任务 3 修正）：只有 **从 review / failed 打回** 才清
+/// `settledAt`。`queued → todo`（启动链路失败回退）与 `canceled → todo`（重新打开）
+/// 不是「打回」，`settledAt` 必须保持原值——若在这里无条件 `settled_at = None`，
+/// 一个已结算过的任务在启动回退后时间线会出现「结算时间凭空消失」。
+fn apply_entry_effects(task: &mut WorkTask, to: TaskStatus, now: i64, from: TaskStatus) {
     if to == TaskStatus::Queued {
         task.run_seq += 1;
         if task.started_at.is_none() {
@@ -618,6 +641,9 @@ fn apply_entry_effects(task: &mut WorkTask, to: TaskStatus, now: i64) {
     }
     if matches!(to, TaskStatus::Review | TaskStatus::Failed) {
         task.settled_at = Some(now);
+    }
+    if to == TaskStatus::Todo && matches!(from, TaskStatus::Review | TaskStatus::Failed) {
+        task.settled_at = None;
     }
     if matches!(to, TaskStatus::Done | TaskStatus::Canceled) {
         task.finished_at = Some(now);
@@ -647,7 +673,7 @@ fn transition_task(
     }
     task.status = to;
     task.updated_at = now;
-    apply_entry_effects(task, to, now);
+    apply_entry_effects(task, to, now, from);
     let updated = task.clone();
     push_event(
         file,
@@ -655,6 +681,96 @@ fn transition_task(
         TaskEventKind::StatusChanged,
         TaskActor::User,
         Some(serde_json::json!({ "from": from.as_wire(), "to": to.as_wire() })),
+    );
+    Ok(updated)
+}
+
+/// turn 回流内核（prd R5）：在**一个**写事务里完成「runSeq 校验 → 状态转移 →
+/// lastError / failureReason → status_changed 事件（actor = engine）」。
+/// 不用先 transition 再 update：那样中间会被另一个命令看到「已 review 但还没写归因」的
+/// 半成品行，而 `task_update` 只允许 todo/failed 编辑，路径也走不通。
+fn settle_turn_inner(
+    file: &mut TaskFile,
+    id: &str,
+    run_seq: u64,
+    outcome: TaskTurnOutcome,
+    reason: Option<String>,
+) -> Result<WorkTask, String> {
+    let task = find_task_mut(file, id)?;
+    // 迟到的 turn 回调：runSeq 已推进（任务被重试/再次启动）→ 静默丢弃，不改任何字段
+    if task.run_seq != run_seq {
+        return Ok(task.clone());
+    }
+    if outcome == TaskTurnOutcome::Cancelled {
+        return Ok(task.clone());
+    }
+    // 只结算正在跑的任务；其它状态（用户已打回/取消）说明结论已过期，静默忽略
+    if task.status != TaskStatus::Running {
+        return Ok(task.clone());
+    }
+    let to = if outcome == TaskTurnOutcome::Ok {
+        TaskStatus::Review
+    } else {
+        TaskStatus::Failed
+    };
+    let from = task.status;
+    let now = now_ms();
+    task.status = to;
+    task.updated_at = now;
+    match outcome {
+        TaskTurnOutcome::Ok => {
+            task.failure_reason = None;
+            task.last_error = None;
+        }
+        TaskTurnOutcome::Empty => {
+            task.failure_reason = Some(TaskFailureReason::EmptyTurn);
+            task.last_error = reason.or_else(|| Some("Agent 未返回任何内容".to_string()));
+        }
+        TaskTurnOutcome::Error => {
+            task.failure_reason = Some(TaskFailureReason::AgentError);
+            task.last_error = reason;
+        }
+        TaskTurnOutcome::Cancelled => unreachable!("Cancelled 已在上方提前返回"),
+    }
+    apply_entry_effects(task, to, now, from);
+    let updated = task.clone();
+    push_event(
+        file,
+        id,
+        TaskEventKind::StatusChanged,
+        TaskActor::Engine,
+        Some(serde_json::json!({ "from": from.as_wire(), "to": to.as_wire() })),
+    );
+    Ok(updated)
+}
+
+/// 解绑会话内核（「断开会话」）：一对一绑定，传当前 sessionId 做 CAS。
+/// 生成中拒绝——用户必须先停止，否则会话进程会失去归属。
+fn detach_session_inner(
+    file: &mut TaskFile,
+    id: &str,
+    session_id: &str,
+) -> Result<WorkTask, String> {
+    let now = now_ms();
+    let task = find_task_mut(file, id)?;
+    if task.session_id.as_deref() != Some(session_id) {
+        return Err("stale".into());
+    }
+    if matches!(
+        task.status,
+        TaskStatus::Queued | TaskStatus::Preparing | TaskStatus::Running
+    ) {
+        return Err("io: 任务正在执行，请先停止再断开会话".into());
+    }
+    task.session_id = None;
+    task.updated_at = now;
+    let updated = task.clone();
+    push_event(
+        file,
+        id,
+        TaskEventKind::UserAction,
+        TaskActor::User,
+        Some(serde_json::json!({ "action": "detach_session" })),
     );
     Ok(updated)
 }
@@ -884,6 +1000,53 @@ pub fn task_events(id: String) -> Result<Vec<WorkTaskEvent>, String> {
     })
 }
 
+/// turn 回流（子任务 3 / prd R5）：把一次 agent turn 的结论写回任务。
+/// `run_seq` 是**启动时**任务行的 runSeq（前端从 `transition → queued` 的返回里取）；
+/// 与当前行不符即为迟到回调 → 原样返回当前行（静默忽略，不报错）。
+/// `outcome = cancelled` 一律不改状态（用户主动停止任务保持 running，prd R4）。
+#[tauri::command]
+pub fn task_settle_turn(
+    id: String,
+    run_seq: u64,
+    outcome: TaskTurnOutcome,
+    reason: Option<String>,
+) -> Result<WorkTask, String> {
+    with_file_write(|file| settle_turn_inner(file, &id, run_seq, outcome, reason))
+}
+
+/// 解绑会话（详情「断开会话」）：任务与会话一对一（prd D4），解绑后下次启动走新建。
+/// 生成中的任务先停止再解绑（否则会留下一个没有归属的进程）；`sessionId` 传当前值，
+/// 与既有行不符 → stale（防并发）。
+#[tauri::command]
+pub fn task_detach_session(
+    id: String,
+    session_id: String,
+) -> Result<WorkTask, String> {
+    with_file_write(|file| detach_session_inner(file, &id, &session_id))
+}
+
+/// 复制任务（详情「再做一个」）：同项目、同提示词、同引擎，新行回到 todo。
+/// 返回完整视图，调用方可直接打开新任务详情。
+#[tauri::command]
+pub fn task_duplicate(id: String) -> Result<TaskDetails, String> {
+    let draft = with_file_read(|data| -> Result<TaskDraft, String> {
+        // 复制 = 读源行 → 用同一 draft 形状重新创建（不含任何运行态字段）
+        let source = data
+            .file
+            .tasks
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or_else(|| "not-found".to_string())?;
+        Ok(TaskDraft {
+            project_id: source.project_id.clone(),
+            title: source.title.clone(),
+            prompt: source.prompt.clone(),
+            engine_id: source.engine_id.clone(),
+        })
+    })??;
+    task_create(draft)
+}
+
 // ---------- 状态广播 ----------
 //
 // 变更后由命令层广播 `task://changed`（子任务 3 用它刷新会话联动后的列表）。
@@ -978,6 +1141,130 @@ mod tests {
         task
     }
 
+    /// 把任务推进到 running（启动链路的前半段），返回 queued 时的 runSeq
+    fn drive_to_running(file: &mut TaskFile, id: &str) -> u64 {
+        let queued = transition_task(file, id, TaskStatus::Queued, Some(TaskStatus::Todo)).unwrap();
+        transition_task(file, id, TaskStatus::Preparing, Some(TaskStatus::Queued)).unwrap();
+        transition_task(file, id, TaskStatus::Running, Some(TaskStatus::Preparing)).unwrap();
+        queued.run_seq
+    }
+
+    /// turn 回流：ok → review；empty → failed + empty_turn；error → failed + agent_error（R5）
+    #[test]
+    fn settle_turn_maps_outcomes() {
+        // ok
+        let mut file = fresh();
+        make_task(&mut file, "task-1");
+        let run = drive_to_running(&mut file, "task-1");
+        let t = settle_turn_inner(&mut file, "task-1", run, TaskTurnOutcome::Ok, None).unwrap();
+        assert_eq!(t.status, TaskStatus::Review);
+        assert!(t.settled_at.is_some(), "review 应写 settledAt");
+        assert_eq!(t.failure_reason, None);
+        // 回流写入的 running→review 事件（前面几次转移都是 user，按 actor 取 engine 那条）
+        let settle_event = events_of(&file, "task-1")
+            .into_iter()
+            .find(|e| e.actor == TaskActor::Engine)
+            .expect("回流应写一条 engine 事件");
+        assert_eq!(settle_event.kind, TaskEventKind::StatusChanged);
+        assert_eq!(settle_event.payload.as_ref().unwrap()["to"], "review");
+        assert_eq!(settle_event.payload.as_ref().unwrap()["from"], "running");
+        // empty
+        let mut file = fresh();
+        make_task(&mut file, "task-1");
+        let run = drive_to_running(&mut file, "task-1");
+        let t = settle_turn_inner(&mut file, "task-1", run, TaskTurnOutcome::Empty, None).unwrap();
+        assert_eq!(t.status, TaskStatus::Failed);
+        assert_eq!(t.failure_reason, Some(TaskFailureReason::EmptyTurn));
+        assert!(t.last_error.is_some(), "空回复应留下可读原因");
+
+        // error：保留调用方给的原文
+        let mut file = fresh();
+        make_task(&mut file, "task-1");
+        let run = drive_to_running(&mut file, "task-1");
+        let t = settle_turn_inner(
+            &mut file,
+            "task-1",
+            run,
+            TaskTurnOutcome::Error,
+            Some("生成失败：boom".into()),
+        )
+        .unwrap();
+        assert_eq!(t.status, TaskStatus::Failed);
+        assert_eq!(t.failure_reason, Some(TaskFailureReason::AgentError));
+        assert_eq!(t.last_error.as_deref(), Some("生成失败：boom"));
+    }
+
+    /// runSeq 防串：迟到回调（runSeq 已推进）不改任何字段（R5）
+    #[test]
+    fn settle_turn_drops_stale_run_seq() {
+        let mut file = fresh();
+        make_task(&mut file, "task-1");
+        let old_run = drive_to_running(&mut file, "task-1");
+        // 用户停止 → 取消 → 重新打开 → 再次启动：runSeq 推进
+        transition_task(&mut file, "task-1", TaskStatus::Canceled, Some(TaskStatus::Running)).unwrap();
+        transition_task(&mut file, "task-1", TaskStatus::Todo, Some(TaskStatus::Canceled)).unwrap();
+        let new_run = drive_to_running(&mut file, "task-1");
+        assert_eq!(new_run, old_run + 1);
+
+        let event_count = events_of(&file, "task-1").len();
+        let t = settle_turn_inner(
+            &mut file,
+            "task-1",
+            old_run,
+            TaskTurnOutcome::Error,
+            Some("旧 turn 迟到的失败".into()),
+        )
+        .unwrap();
+        assert_eq!(t.status, TaskStatus::Running, "旧 turn 不得改动新 run 的状态");
+        assert_eq!(t.failure_reason, None);
+        assert_eq!(events_of(&file, "task-1").len(), event_count, "迟到回调不写事件");
+    }
+
+    /// cancelled 不改状态；非 running 状态的回流静默忽略（R4）
+    #[test]
+    fn settle_turn_ignores_cancelled_and_non_running() {
+        let mut file = fresh();
+        make_task(&mut file, "task-1");
+        let run = drive_to_running(&mut file, "task-1");
+        let t = settle_turn_inner(&mut file, "task-1", run, TaskTurnOutcome::Cancelled, None).unwrap();
+        assert_eq!(t.status, TaskStatus::Running, "用户主动停止保持 running");
+        assert_eq!(t.settled_at, None);
+
+        // 用户已打回（review→todo）后 turn 才迟到：属于过去时，不改状态
+        settle_turn_inner(&mut file, "task-1", run, TaskTurnOutcome::Ok, None).unwrap();
+        transition_task(&mut file, "task-1", TaskStatus::Todo, Some(TaskStatus::Review)).unwrap();
+        let t = settle_turn_inner(&mut file, "task-1", run, TaskTurnOutcome::Error, None)
+            .unwrap();
+        assert_eq!(t.status, TaskStatus::Todo, "非 running 忽略回流的失败结论");
+
+        let err = settle_turn_inner(&mut file, "nope", run, TaskTurnOutcome::Ok, None).unwrap_err();
+        assert_eq!(err, "not-found");
+    }
+
+    /// 解绑会话：生成中拒绝（先停止）；sessionId 不符 stale；成功后清空（R2）
+    #[test]
+    fn detach_session_rules() {
+        let mut file = fresh();
+        make_task(&mut file, "task-1");
+        find_task_mut(&mut file, "task-1").unwrap().session_id = Some("ses-1".into());
+
+        // sessionId 不符 → stale（并发保护）
+        assert_eq!(
+            detach_session_inner(&mut file, "task-1", "ses-2").unwrap_err(),
+            "stale"
+        );
+
+        // todo 允许
+        let t = detach_session_inner(&mut file, "task-1", "ses-1").unwrap();
+        assert_eq!(t.session_id, None);
+
+        // running 拒绝
+        find_task_mut(&mut file, "task-1").unwrap().session_id = Some("ses-3".into());
+        drive_to_running(&mut file, "task-1");
+        let err = detach_session_inner(&mut file, "task-1", "ses-3").unwrap_err();
+        assert!(err.starts_with("io: "), "实际 {}", err);
+    }
+
     /// 转换表穷尽：每个 from 的每条出边为真，未列出的目标为假（AC1）
     #[test]
     fn transition_table_is_exhaustive() {
@@ -1039,14 +1326,18 @@ mod tests {
         let t = transition_task(&mut file, "task-1", TaskStatus::Review, Some(TaskStatus::Running))
             .unwrap();
         assert!(t.settled_at.is_some(), "进入 review 应写 settledAt");
+        let settled = t.settled_at;
 
-        // 打回 → 再次入队：runSeq 累加，startedAt 保留首次
-        transition_task(&mut file, "task-1", TaskStatus::Todo, Some(TaskStatus::Review)).unwrap();
+        // 打回 → 再次入队：runSeq 累加，startedAt 保留首次，settledAt 被清（重新开始计时）
+        let t = transition_task(&mut file, "task-1", TaskStatus::Todo, Some(TaskStatus::Review))
+            .unwrap();
+        assert_eq!(t.settled_at, None, "打回待办应清 settledAt");
+        assert!(settled.is_some());
         let t = transition_task(&mut file, "task-1", TaskStatus::Queued, Some(TaskStatus::Todo))
             .unwrap();
         assert_eq!(t.run_seq, 2);
         assert_eq!(t.started_at, first_started, "startedAt 只写首次");
-
+        assert_eq!(t.settled_at, None, "queued→todo 回退不是打回，但此时本就没有 settledAt");
         transition_task(&mut file, "task-1", TaskStatus::Preparing, Some(TaskStatus::Queued))
             .unwrap();
         let t = transition_task(&mut file, "task-1", TaskStatus::Failed, Some(TaskStatus::Preparing))

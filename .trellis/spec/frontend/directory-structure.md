@@ -63,9 +63,11 @@ Task board (10-17-task-board) added a second full feature next to `coding`:
 
 ```
 src/views/tasks/
-├── TasksView.vue          # page
+├── TasksView.vue          # page (toolbar + 4 columns + dialogs)
 ├── boardColumns.ts        # feature-local PURE logic (status → column mapping)
-└── components/            # TaskCard, TaskColumn, dialogs, useTaskDrag.ts
+├── taskSessionBridge.ts   # task ↔ ACP session orchestration (start chain, turn flow-back)
+└── components/            # TaskCard, TaskColumn, TaskStatusChip, TaskEditorDialog,
+                           # TaskDetailDialog, useTaskDrag.ts, taskChip.ts (chip visuals)
 src/types/task.ts          # domain model (shared by service, store, views)
 src/services/taskService.ts + taskMock.ts
 src/stores/task.ts
@@ -77,6 +79,10 @@ src/stores/task.ts
 - A feature-scoped composable lives in `views/<feature>/components/` next to
   the components that use it (`useTaskDrag.ts`), not in the global
   `src/composables/`, which is reserved for cross-feature state (`useConversation`).
+- **Feature orchestration that is not component state** stays beside the page as a
+  plain module: `views/tasks/taskSessionBridge.ts` owns the start chain and the
+  turn flow-back subscription. It is not a composable because it holds a
+  module-level subscription (registered from `main.ts`), not per-component state.
 - Domain types still go to `src/types/` even when one feature owns them —
   the service/store boundary must be able to import them without pulling in a
   view module.

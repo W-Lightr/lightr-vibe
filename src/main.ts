@@ -10,6 +10,7 @@ import { useProjectStore } from './stores/project'
 import { useSessionStore } from './stores/session'
 import { initAcpListeners } from './services/acpService'
 import { handleExternalLinkClick } from './utils/externalLink'
+import { wireTaskSessionBridge } from './views/tasks/taskSessionBridge'
 
 // 全局唯一入口：任何 <a href> 点击都以外部方式打开（默认浏览器 / 新标签页），
 // 阻止 Tauri WebView 就地导航把应用界面替换掉。仅此一处处理链接，
@@ -74,6 +75,9 @@ async function bootstrap() {
     // 会话索引损坏/缺失不阻塞启动：以空会话列表进入
   }
   void initAcpListeners()
+  // 任务看板 ↔ ACP 会话联动：turn 结束回流订阅为模块级单订阅，必须与页面无关地
+  // 在启动时装上（用户从任务页启动后切到编码页，turn 会在编码页结束）
+  wireTaskSessionBridge()
   app.mount('#app')
 }
 

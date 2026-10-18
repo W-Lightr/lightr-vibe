@@ -2,8 +2,8 @@
 // 任务看板页（/tasks）：工具栏（项目筛选 / 隐藏开关 / 新建）+ 四列横向布局。
 // 数据：taskStore（唯一来源，异步变更 await 后重读返回值）；项目名：projectStore。
 // 拖拽：useTaskDrag（Pointer Events），drop 时经本页调 taskStore.transition / reorder。
-// 本轮（子任务 2）动作接线：开始 todo→queued、停止 →canceled、通过 review→done、
-// 打回 review→todo、重试 failed→queued；子任务 3 会把「开始」替换为建会话 + 发提示词。
+// 会话联动（子任务 3）：开始 / 重试 / 停止 / 通过 / 打回全部委托 taskSessionBridge
+// （启动链路唯一实现），本页只负责提示与在途禁用。
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
@@ -17,7 +17,8 @@ import {
   X,
 } from 'lucide-vue-next'
 import TaskColumn from './components/TaskColumn.vue'
-import TaskCreateDialog from './components/TaskCreateDialog.vue'
+import TaskEditorDialog from './components/TaskEditorDialog.vue'
+import TaskDetailDialog from './components/TaskDetailDialog.vue'
 import { useTaskDrag } from './components/useTaskDrag'
 import {
   BOARD_COLUMN_IDS,
@@ -25,11 +26,13 @@ import {
   columnLabel,
   groupTasksByColumn,
 } from './boardColumns'
+import { approveTask, rejectTask, startTask, stopTask } from './taskSessionBridge'
 import { useTaskStore } from '../../stores/task'
 import { useProjectStore } from '../../stores/project'
 import { getAppWindow } from '../../utils/window'
 import { taskErrorMessage } from '../../types/task'
-import type { TaskStatus, WorkTask } from '../../types/task'
+import type { WorkTask } from '../../types/task'
+import type { EngineWire } from '../../types/engine'
 import type { BoardColumnId } from './boardColumns'
 
 const router = useRouter()
@@ -203,21 +206,14 @@ function secondaryLabelOf(task: WorkTask): string | null {
   }
 }
 
-/** 每个动作对应的目标状态（CAS 的 expectedFrom = 当前行状态） */
-const ACTION_TARGETS = {
-  start: 'queued',
-  stop: 'canceled',
-  approve: 'done',
-  reject: 'todo',
-  retry: 'queued',
-} as const satisfies Record<string, TaskStatus>
-
-/** 统一执行一次状态转移：失败（stale / illegal）用 taskErrorMessage 提示 */
-async function moveTo(task: WorkTask, to: TaskStatus): Promise<void> {
-  if (inflight.has(task.id)) return // 双击保护：第二次点击在途时直接忽略
+/** 每个任务的动作（子任务 3）：开始 / 停止 / 通过 / 打回 / 重试全部走会话联动的
+ *  唯一实现（taskSessionBridge），不再只是改状态——「开始」会建会话并发出提示词。
+ *  统一在途禁用：双击不会被处理两次（第二次必然 stale）。 */
+async function withInflight(task: WorkTask, action: () => Promise<void>): Promise<void> {
+  if (inflight.has(task.id)) return
   inflight.add(task.id)
   try {
-    await taskStore.transition(task.id, to, task.status)
+    await action()
   } catch (err) {
     message.error(taskErrorMessage(err))
   } finally {
@@ -225,22 +221,24 @@ async function moveTo(task: WorkTask, to: TaskStatus): Promise<void> {
   }
 }
 
+/** 唯一动作分发表：状态 → 主/次按钮对应的行为 */
 async function onCardPrimary(task: WorkTask): Promise<void> {
   switch (task.status) {
     case 'todo':
-      await moveTo(task, ACTION_TARGETS.start)
+      await withInflight(task, () => startTask(task.id))
       return
     case 'queued':
     case 'preparing':
     case 'running':
     case 'awaiting_input':
-      await moveTo(task, ACTION_TARGETS.stop)
+      await withInflight(task, async () => stopTask(task))
       return
     case 'review':
-      await moveTo(task, ACTION_TARGETS.approve)
+      await withInflight(task, () => approveTask(task))
       return
     case 'failed':
-      await moveTo(task, ACTION_TARGETS.retry)
+      // 重试 = 同一条启动链路（failed → queued → 复用会话）
+      await withInflight(task, () => startTask(task.id))
       return
     default:
       return
@@ -248,7 +246,8 @@ async function onCardPrimary(task: WorkTask): Promise<void> {
 }
 
 async function onCardSecondary(task: WorkTask): Promise<void> {
-  if (task.status === 'review') await moveTo(task, ACTION_TARGETS.reject)
+  if (task.status !== 'review') return
+  await withInflight(task, () => rejectTask(task))
 }
 
 // ---- 拖拽 ----
@@ -302,36 +301,72 @@ const {
 /** 被拖拽卡片 id（原卡片降透明度） */
 const draggingTaskId = computed(() => (drag.value?.active ? drag.value.taskId : null))
 
-/** 卡片点击：拖拽刚结束的 300ms 内抑制（design §5） */
+/** 卡片点击：拖拽刚结束的 300ms 内抑制（design §5），否则打开详情抽屉 */
 function onCardOpen(task: WorkTask): void {
   if (shouldSuppressClick()) return
-  // 子任务 3 接入详情抽屉；本轮只给一条明确反馈，不伪造功能
-  message.info(`「${task.title}」详情将在任务审核子任务中提供`)
+  detailTaskId.value = task.id
+  detailOpen.value = true
 }
 
-// ---- 新建任务（最简弹窗；子任务 3 换成完整编辑器） ----
+// ---- 新建 / 编辑任务（TaskEditorDialog：新建与编辑同一个表单） ----
 
-const createOpen = ref(false)
+const editorOpen = ref(false)
+/** 编辑中的任务（null = 新建） */
+const editingTask = ref<WorkTask | null>(null)
 
 function openCreate(): void {
-  createOpen.value = true
+  editingTask.value = null
+  editorOpen.value = true
 }
 
-async function onCreateSubmit(payload: {
+/** 详情抽屉 / 卡片调用的编辑入口 */
+function openEdit(task: WorkTask): void {
+  if (task.status !== 'todo' && task.status !== 'failed') {
+    message.warning('只有待办 / 失败的任务可以编辑')
+    return
+  }
+  editingTask.value = task
+  detailOpen.value = false
+  editorOpen.value = true
+}
+
+async function onEditorSubmit(payload: {
   projectId: string
   title: string
   prompt: string
+  engineId: EngineWire
 }): Promise<void> {
   try {
-    await taskStore.create({
-      projectId: payload.projectId,
-      title: payload.title,
-      prompt: payload.prompt,
-    })
-    createOpen.value = false
+    if (editingTask.value) {
+      await taskStore.update(editingTask.value.id, {
+        title: payload.title,
+        prompt: payload.prompt,
+        engineId: payload.engineId,
+      })
+    } else {
+      await taskStore.create({
+        projectId: payload.projectId,
+        title: payload.title,
+        prompt: payload.prompt,
+        engineId: payload.engineId,
+      })
+    }
+    editorOpen.value = false
+    editingTask.value = null
   } catch (err) {
     message.error(taskErrorMessage(err))
   }
+}
+
+// ---- 详情抽屉 ----
+
+const detailOpen = ref(false)
+const detailTaskId = ref<string | null>(null)
+
+/** 关闭详情：清空 id，避免下次打开闪现上一个任务 */
+function closeDetail(): void {
+  detailOpen.value = false
+  detailTaskId.value = null
 }
 
 // ---- 生命周期 ----
@@ -543,12 +578,21 @@ function closeProjectDrop(): void {
       </div>
     </Teleport>
 
-    <!-- 新建任务弹窗 -->
-    <TaskCreateDialog
-      :open="createOpen"
+    <!-- 新建 / 编辑任务（同一表单） -->
+    <TaskEditorDialog
+      :open="editorOpen"
+      :task="editingTask"
       :default-project-id="projectFilter"
-      @close="createOpen = false"
-      @submit="onCreateSubmit"
+      @close="editorOpen = false"
+      @submit="onEditorSubmit"
+    />
+
+    <!-- 任务详情：动作区（启动 / 停止 / 通过 / 打回 / 重试 / 归档 / 删除 / 断开会话） -->
+    <TaskDetailDialog
+      :open="detailOpen"
+      :task-id="detailTaskId"
+      @close="closeDetail"
+      @edit="openEdit"
     />
   </div>
 </template>

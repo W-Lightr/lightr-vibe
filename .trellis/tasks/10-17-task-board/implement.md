@@ -15,7 +15,7 @@ pnpm build
 
 - [ ] 建目录 `src/views/tasks/`、`src/views/tasks/components/`
 - [x] `src/utils/appData.ts` 加 `tasksIndexFileSync()`
-- [ ] `.trellis/spec/frontend/directory-structure.md` 补 `views/tasks/` 一节（子任务 3 末尾统一补）
+- [x] `.trellis/spec/frontend/directory-structure.md` 补 `views/tasks/` 一节（子任务 3 末尾统一补）
 
 ## 1 · 子任务 `10-17-task-data-layer`
 
@@ -50,14 +50,14 @@ pnpm build
 
 ## 3 · 子任务 `10-17-task-review-session`
 
-- [ ] `TaskDetailDialog.vue`：标题/提示词/时间线/会话入口/动作区
-- [ ] `TaskEditorDialog.vue`：项目选择 + 标题 + 提示词 + 引擎选择
-- [ ] 启动链路：创建工作区会话 → attach → 发送 prompt → running
-- [ ] `useConversation` 加 `onTurnSettled` 可选回调（不改变现有行为）
-- [ ] task store 订阅回调 → `running → review|failed`
-- [ ] 审核：通过（`review → done`）、打回（`review → todo`）
-- [ ] 归档、删除、失败重试
-- [ ] spec 更新：`tauri-bridge.md`（新增 task 命令契约）、`directory-structure.md`、`state-management.md`
+- [x] `TaskDetailDialog.vue`：标题/提示词/时间线/会话入口/动作区
+- [x] `TaskEditorDialog.vue`：项目选择 + 标题 + 提示词 + 引擎选择
+- [x] 启动链路：创建工作区会话 → attach → 发送 prompt → running
+- [x] `useConversation` 加 `onTurnSettled` 可选回调（不改变现有行为）
+- [x] task store 订阅回调 → `running → review|failed`
+- [x] 审核：通过（`review → done`）、打回（`review → todo`）
+- [x] 归档、删除、失败重试
+- [x] spec 更新：`tauri-bridge.md`（新增 task 命令契约）、`directory-structure.md`、`state-management.md`
 
 **回滚点**：子任务 3 的改动集中在新增组件 + `useConversation` 一个可选钩子。
 

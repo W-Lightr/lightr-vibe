@@ -197,3 +197,18 @@ plus its timeline — is the only valid source of truth. Conditions:
 - Read-side helpers (`byProject`, `eventsOf`) stay synchronous over the loaded
   array.
 
+### Turn flow-back into tasks (task 10-17-task-review-session)
+
+`taskStore.settleTurn(id, runSeq, outcome, reason)` / `detachSession` / `duplicate`
+follow the same async rule (await the service, replace the row). They are called by
+`views/tasks/taskSessionBridge.ts`, which subscribes **once** (from `main.ts`) to
+`onTurnSettled()`:
+
+- match the task **by `sessionId`** and require `status === 'running'`;
+- require the `runSeq` captured at start (`transition → queued` return) and a
+  `startedAt` no older than that start token — otherwise the callback is stale and
+  is dropped;
+- `ok → review`, `empty → failed(empty_turn)`, any other error `→ failed(agent_error)`;
+  Rust validates the same `runSeq` again, so a stale callback is a no-op server-side
+  too (it returns the row unchanged, never an error).
+

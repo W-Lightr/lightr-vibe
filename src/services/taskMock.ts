@@ -10,6 +10,7 @@ import type {
   TaskEventKind,
   TaskPatch,
   TaskStatus,
+  TaskTurnOutcome,
   WorkTask,
   WorkTaskEvent,
 } from '../types/task'
@@ -121,7 +122,7 @@ function seedDemoTasks(): void {
       const from = task.status
       const at = created + Math.round(((step + 1) / (lastStep + 1)) * item.offset * 60_000)
       task.status = to
-      applyEntryEffects(task, to, at)
+      applyEntryEffects(task, to, at, from)
       pushEvent(task.id, 'status_changed', 'user', { from, to })
     })
     if (item.path.length > 0) {
@@ -176,13 +177,16 @@ function eventsOf(taskId: string): WorkTaskEvent[] {
     .map((e) => ({ ...e }))
 }
 
-/** 时间戳副作用（与 Rust apply_entry_effects 对齐，prd R4） */
-function applyEntryEffects(task: WorkTask, to: TaskStatus, now: number): void {
+/** 时间戳副作用（与 Rust apply_entry_effects 对齐，prd R4）。
+ *  todo 的生效范围：只有从 review / failed 打回才清 settledAt；
+ *  queued→todo（启动回退）/ canceled→todo（重新打开）不算打回，保留原结算时间。 */
+function applyEntryEffects(task: WorkTask, to: TaskStatus, now: number, from: TaskStatus): void {
   if (to === 'queued') {
     task.runSeq += 1
     task.startedAt ??= now
   }
   if (to === 'review' || to === 'failed') task.settledAt = now
+  if (to === 'todo' && (from === 'review' || from === 'failed')) task.settledAt = null
   if (to === 'done' || to === 'canceled') task.finishedAt = now
 }
 
@@ -196,7 +200,7 @@ function transitionInner(id: string, to: TaskStatus, expectedFrom: TaskStatus | 
   const now = nowMs()
   task.status = to
   task.updatedAt = now
-  applyEntryEffects(task, to, now)
+  applyEntryEffects(task, to, now, from)
   pushEvent(id, 'status_changed', 'user', { from, to })
   return clone(task)
 }
@@ -318,4 +322,64 @@ export function mockArchive(id: string, archived: boolean): WorkTask {
 export function mockEvents(id: string): WorkTaskEvent[] {
   ensureSeed()
   return eventsOf(id)
+}
+
+/**
+ * turn 回流（与 Rust `task_settle_turn` 同语义）：runSeq 不符 → 原样返回（迟到回调）；
+ * cancelled / 非 running → 不改状态；ok → review，error/empty → failed + 归因。
+ */
+export function mockSettleTurn(
+  id: string,
+  runSeq: number,
+  outcome: TaskTurnOutcome,
+  reason: string | null,
+): WorkTask {
+  ensureSeed()
+  const task = tasks[findIndex(id)]
+  if (task.runSeq !== runSeq) return clone(task)
+  if (outcome === 'cancelled' || task.status !== 'running') return clone(task)
+  const to: TaskStatus = outcome === 'ok' ? 'review' : 'failed'
+  const from = task.status
+  const now = nowMs()
+  task.status = to
+  task.updatedAt = now
+  if (outcome === 'ok') {
+    task.failureReason = null
+    task.lastError = null
+  } else if (outcome === 'empty') {
+    task.failureReason = 'empty_turn'
+    task.lastError = reason ?? 'Agent 未返回任何内容'
+  } else {
+    task.failureReason = 'agent_error'
+    task.lastError = reason
+  }
+  applyEntryEffects(task, to, now, from)
+  pushEvent(id, 'status_changed', 'engine', { from, to })
+  return clone(task)
+}
+
+/** 断开会话（与 Rust 同语义：sessionId CAS + 生成中拒绝） */
+export function mockDetachSession(id: string, sessionId: string): WorkTask {
+  ensureSeed()
+  const task = tasks[findIndex(id)]
+  if (task.sessionId !== sessionId) throw new Error('stale')
+  if (task.status === 'queued' || task.status === 'preparing' || task.status === 'running') {
+    throw new Error('io: 任务正在执行，请先停止再断开会话')
+  }
+  task.sessionId = null
+  task.updatedAt = nowMs()
+  pushEvent(id, 'user_action', 'user', { action: 'detach_session' })
+  return clone(task)
+}
+
+/** 复制任务（同项目 / 同提示词 / 同引擎，回到待办） */
+export function mockDuplicate(id: string): TaskDetails {
+  ensureSeed()
+  const source = tasks[findIndex(id)]
+  return mockCreate({
+    projectId: source.projectId,
+    title: source.title,
+    prompt: source.prompt,
+    engineId: source.engineId,
+  })
 }

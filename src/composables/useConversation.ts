@@ -81,6 +81,40 @@ export function clearDraftInput(sessionId: string): void {
   draftInputs.delete(sessionId)
 }
 
+// ── turn 结束回调（任务看板订阅，prd 10-17-task-review-session R5） ──
+// 模块级单订阅：**未注册时是彻底的空操作**，既有会话路径逐字节不变（AC7）。
+// 由 main.ts 在启动时装上（恒有订阅者）；未注册时 emitTurnSettled 直接返回。
+// 回调抛错也不得影响 send() 的收尾。
+export interface TurnSettledPayload {
+  /** 本地会话 id（任务按 sessionId 反查） */
+  sessionId: string
+  /** 本 turn 是否成功（失败 = 走了错误卡分支，或被判为空回复） */
+  ok: boolean
+  /** 失败类别（ok = true 时为 undefined） */
+  errorKind?: MessageErrorKind
+  /** 可直接落盘的失败原因（错误卡正文） */
+  errorText?: string
+  /** 本 turn 开始的时间戳（毫秒）：任务侧用它丢弃早于本次启动的回调 */
+  startedAt: number
+}
+
+let turnSettledListener: ((payload: TurnSettledPayload) => void) | null = null
+
+/** 注册 turn 结束回调（传 null 取消）。仅供任务看板使用。 */
+export function onTurnSettled(listener: ((payload: TurnSettledPayload) => void) | null): void {
+  turnSettledListener = listener
+}
+
+/** 通知订阅者：未注册时直接返回（零副作用）；回调异常吞掉，绝不打断 send() */
+function emitTurnSettled(payload: TurnSettledPayload): void {
+  if (!turnSettledListener) return
+  try {
+    turnSettledListener(payload)
+  } catch {
+    // 订阅方是 UI 层（任务看板）：它失败不影响对话本身
+  }
+}
+
 
 // ── ACP 连接健康（每会话独立进程，design §8.3） ──
 // 参考 codeg 的 composer 连接健康芯片：连接状态 ready/dead/stopped → 心形图标 + 弹层。
@@ -764,6 +798,12 @@ export function useConversation() {
     await sessionStore.ensureMessages(sessionId)
 
     const turnId = `turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+    // 本 turn 的起止与结论（任务看板按 startedAt 丢弃迟到回调；未注册订阅者时
+    // 这几个局部变量只被赋值、不会被读取，既有行为不变 — AC7）
+    const turnStartedAt = Date.now()
+    let settledOk = true
+    let settledErrorKind: MessageErrorKind | undefined
+    let settledErrorText: string | undefined
     sessionStore.pushMessage(sessionId, { role: 'user', type: 'text', content, status: 'done', turnId })
     sessionStore.applyAutoTitle(sessionId, content)
     sessionStore.setStatus(sessionId, 'generating')
@@ -782,6 +822,9 @@ export function useConversation() {
         }
       }
       if (result.stopReason === 'refusal') {
+        settledOk = false
+        settledErrorKind = 'generic'
+        settledErrorText = 'Agent 拒绝了本次请求'
         sessionStore.pushMessage(sessionId, {
           role: 'assistant',
           type: 'error',
@@ -795,6 +838,9 @@ export function useConversation() {
       // （无文本/思考/工具/error）→ 推失败卡而非空的 done，避免「看起来成功了却什么都没有」。
       // 仅 end_turn 触发：cancelled（照旧 stopped）与 refusal（已有专门卡）均不判空。
       if (result.stopReason === 'end_turn' && !turnHasContent(sessionId, turnId)) {
+        settledOk = false
+        settledErrorKind = 'empty'
+        settledErrorText = 'Agent 未返回任何内容（可能已失败），请重试'
         // 防御（design §2.1）：本 turn 若有残留 streaming 消息（如空内容 chunk），
         // 一并收尾为 error，避免留下空的 done 气泡与失败卡并存；正常空回复无此消息。
         for (const m of sessionStore.get(sessionId)?.messages ?? []) {
@@ -824,6 +870,10 @@ export function useConversation() {
       void sessionStore.persistMessages(sessionId)
     } catch (err) {
       const { kind, text } = classifyAcpError(err, authHintFor(engineId))
+      // turn 结论：错误卡类别（任务看板据此把 running → failed 并归因，R5）
+      settledOk = false
+      settledErrorKind = kind
+      settledErrorText = text
       if (kind === 'dead') {
         liveAcpSessions.delete(sessionId)
         syncLiveSessions()
@@ -867,6 +917,17 @@ export function useConversation() {
         sessionStore.setStatus(sessionId, 'idle')
       }
       sessionStore.touch(sessionId)
+      // turn 结束广播（任务看板订阅）：放在本 turn 所有收尾之后，订阅者看到的是终态；
+      // 未注册订阅者时 emitTurnSettled 立即返回（AC7：既有行为完全不变）。
+      // 用户主动停止（cancelled）：prompt 正常返回 cancelled，settledOk 仍为 true，
+      // 订阅方按任务状态/令牌自行判断是否结算（R4：任务保持 running）。
+      emitTurnSettled({
+        sessionId,
+        ok: settledOk,
+        errorKind: settledErrorKind,
+        errorText: settledErrorText,
+        startedAt: turnStartedAt,
+      })
     }
   }
 
