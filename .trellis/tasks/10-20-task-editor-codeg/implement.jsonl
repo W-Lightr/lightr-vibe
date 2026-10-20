@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "表单/下拉/页脚的视觉语言，naive-ui 使用边界（本项目下拉为手写）"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "SFC 结构、props/emits、v-html 使用限制（引擎图标）"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令与禁止模式"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/design.md", "reason": "§4 编辑器四段布局与引擎 pill 下拉的具体设计"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/research/codeg-ui-details.md", "reason": "codeg task-editor-dialog.tsx 的布局层级与校验顺序"}
+{"file": ".trellis/tasks/10-20-task-editor-codeg/prd.md", "reason": "本子任务 R1-R7 与 AC1-AC10"}

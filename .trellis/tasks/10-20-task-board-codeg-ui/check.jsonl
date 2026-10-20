@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "整体视觉合规性复核（色板、字号、圆角、阴影禁令）"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "四门禁"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/prd.md", "reason": "逐条核对 PAC1-PAC7 与四项决策是否全部落地"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/design.md", "reason": "核对最终实现与设计的一致性（避免偏差累积）"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/implement.md", "reason": "人工验收清单逐项打勾"}

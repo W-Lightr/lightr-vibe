@@ -7,7 +7,7 @@ import type { EngineWire } from './engine'
 /**
  * 任务状态（含 codeg 兼容的 merging：本任务不产生，仅保留枚举以对齐列映射）。
  * todo / queued 归「待办」，preparing / running 归「进行中」，
- * awaiting_input / review / merging / failed 归「审核」，done / canceled 归「已完成」。
+ * awaiting_input / review / merging / failed 归「等你处理」，done / canceled 归「已完成」。
  */
 export type TaskStatus =
   | 'todo'

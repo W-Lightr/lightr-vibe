@@ -24,6 +24,7 @@ import {
   BOARD_COLUMN_IDS,
   STATUSES_BY_COLUMN as COLUMN_STATUSES,
   columnLabel,
+  columnForStatus,
   groupTasksByColumn,
 } from './boardColumns'
 import { approveTask, rejectTask, startTask, stopTask } from './taskSessionBridge'
@@ -261,6 +262,7 @@ const {
   shakingTaskId,
   localOrder,
   dragEnabled,
+  reorderEnabled,
   registerCard,
   registerColumn,
   onCardPointerDown,
@@ -509,9 +511,9 @@ function closeProjectDrop(): void {
 
       <span class="flex-1" />
 
-      <!-- 全部项目视图不可拖拽：显式说明原因，避免用户以为是 bug -->
-      <span v-if="!dragEnabled" class="text-[11px] text-neutral-400">
-        选择具体项目后可拖拽推进
+      <!-- 全部项目视图可跨列拖动，但同列排序没有项目内语义：显式说明 -->
+      <span v-if="!reorderEnabled" class="text-[11px] text-neutral-400">
+        可拖到其它列推进状态 · 排序需选择具体项目
       </span>
       <span v-else class="text-[11px] text-neutral-400">共 {{ totalVisible }} 个任务</span>
 
@@ -525,8 +527,8 @@ function closeProjectDrop(): void {
       </button>
     </div>
 
-    <!-- 四列看板：横向 flex，列最小 280px；窄屏横向滚动 -->
-    <main class="flex min-h-0 flex-1 gap-2 overflow-x-auto p-2">
+    <!-- 四列看板：横向 flex，列最小 280px；窄屏横向滚动。列白底无边框，靠 gap 分隔 -->
+    <main class="flex min-h-0 flex-1 gap-4 overflow-x-auto bg-white p-4">
       <TaskColumn
         v-for="columnId in BOARD_COLUMN_IDS"
         :key="columnId"
@@ -534,6 +536,7 @@ function closeProjectDrop(): void {
         :tasks="renderGrouped[columnId]"
         :all-projects="projectFilter === null"
         :drag-enabled="dragEnabled"
+        :reorder-enabled="reorderEnabled"
         :dragging-task-id="draggingTaskId"
         :shaking-task-id="shakingTaskId"
         :drop-hover="hoverColumn === columnId"
@@ -568,7 +571,7 @@ function closeProjectDrop(): void {
             <span
               class="inline-flex items-center rounded-full border border-neutral-200 bg-neutral-100 px-1.5 py-px text-[10px] leading-4 text-neutral-500"
             >
-              {{ columnLabel(hoverColumn ?? 'todo') }}
+              {{ columnLabel(hoverColumn ?? columnForStatus(drag.status)) }}
             </span>
           </div>
           <p class="mt-1 line-clamp-2 text-[13px] leading-[18px] text-neutral-800">

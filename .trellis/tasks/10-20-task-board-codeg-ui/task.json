@@ -1,0 +1,30 @@
+{
+  "id": "task-board-codeg-ui",
+  "name": "task-board-codeg-ui",
+  "title": "任务看板对齐 codeg UI",
+  "description": "按 codeg 的看板与编辑器视觉重做：列头竖色条、空列虚线框、卡片实心主按钮与错误条、编辑器引擎下拉",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "lightr",
+  "assignee": "lightr",
+  "createdAt": "2026-10-20",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-20-board-chrome",
+    "10-20-task-card-codeg",
+    "10-20-task-editor-codeg"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

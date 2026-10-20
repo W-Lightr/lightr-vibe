@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "核对标题无边框、pill 下拉、页脚按钮层级是否合规"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "四门禁与禁止模式"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/design.md", "reason": "核对 §4 布局与 §4.5 校验顺序实现一致"}
+{"file": ".trellis/tasks/10-20-task-editor-codeg/prd.md", "reason": "逐条核对 AC1-AC10"}

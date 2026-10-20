@@ -6,7 +6,7 @@ import type { TaskColumnId, TaskStatus, WorkTask } from '../../types/task'
 
 export type BoardColumnId = TaskColumnId
 
-/** 列顺序：待办 / 进行中 / 审核 / 已完成（AC3） */
+/** 列顺序：待办 / 进行中 / 等你处理 / 已完成（AC3） */
 export const BOARD_COLUMN_IDS: BoardColumnId[] = ['todo', 'inProgress', 'attention', 'done']
 
 /** 每列收纳的状态（columnForStatus 的规格副本，两者必须一致） */
@@ -19,7 +19,7 @@ export const STATUSES_BY_COLUMN: Record<BoardColumnId, TaskStatus[]> = {
 
 /**
  * 状态 → 列。穷举 switch：漏掉任何状态都会命中 never 分支而编译失败。
- * merging 本任务不产生，但保留归入「审核」（兼容 codeg）。
+ * merging 本任务不产生，但保留归入「等你处理」（兼容 codeg）。
  */
 export function columnForStatus(status: TaskStatus): BoardColumnId {
   switch (status) {
@@ -44,7 +44,7 @@ export function columnForStatus(status: TaskStatus): BoardColumnId {
   }
 }
 
-/** 列标题（中文，AC3） */
+/** 列标题（中文，AC3，与 codeg zh-CN 一致） */
 export function columnLabel(id: BoardColumnId): string {
   switch (id) {
     case 'todo':
@@ -52,7 +52,8 @@ export function columnLabel(id: BoardColumnId): string {
     case 'inProgress':
       return '进行中'
     case 'attention':
-      return '审核'
+      // 「等你处理」比「审核」更准：该列同时装着 failed / awaiting_input / review / merging
+      return '等你处理'
     case 'done':
       return '已完成'
     default: {
@@ -62,17 +63,17 @@ export function columnLabel(id: BoardColumnId): string {
   }
 }
 
-/** 空列提示文案 */
+/** 空列提示文案（与 codeg EMPTY_LABEL_KEYS 对齐） */
 export function emptyColumnHint(id: BoardColumnId): string {
   switch (id) {
     case 'todo':
-      return '暂无待办任务'
+      return '还没有待办任务'
     case 'inProgress':
-      return '没有正在执行的任务'
+      return '暂无进行中的任务'
     case 'attention':
-      return '没有待审核的任务'
+      return '暂无等你处理的任务'
     case 'done':
-      return '还没有完成的任务'
+      return '还没有已完成的任务'
     default: {
       const unhandled: never = id
       return unhandled

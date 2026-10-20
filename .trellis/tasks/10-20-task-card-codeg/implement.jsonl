@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "卡片圆角/padding/字号/悬停规范与语义色使用边界"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "新增 EngineMark 小组件的 props 与图标渲染约定"}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "拖拽 composable 的既有契约，卡片重做时不得破坏"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令、无阴影约定、无 any"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/design.md", "reason": "§3 卡片六段结构（首行/元信息/错误条/摘要/页脚/容器）逐项设计"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/research/codeg-ui-details.md", "reason": "codeg task-card.tsx 原始类名与 CardIconAction 的 hover 显现写法"}
+{"file": ".trellis/tasks/10-20-task-card-codeg/prd.md", "reason": "本子任务 R1-R6 与 AC1-AC10"}

@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "本任务的唯一色板与视觉依据（颜色/字号/圆角/悬停/禁止阴影）"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "组件结构与 naive-ui 边界"}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "拖拽 composable 契约，视觉重做不得破坏"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令与禁止模式"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "类型约定"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/prd.md", "reason": "四项决策 D1-D4 与跨子任务 PAC1-PAC7"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/design.md", "reason": "色板换算表与列/卡片/编辑器三段设计"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/implement.md", "reason": "三个子任务的顺序、回滚点与人工验收清单"}
+{"file": ".trellis/tasks/10-20-task-board-codeg-ui/research/codeg-ui-details.md", "reason": "codeg 原始行号与类名，逐项对照的依据"}
