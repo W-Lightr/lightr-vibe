@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "views/tasks 放置规则、路由懒加载约定"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "新页面 SFC 结构、props/emits"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "项目卡片网格、搜索框、空状态视觉"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "projectStore / taskStore 的读取边界；不得在页面里改 store 契约"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "路由参数类型、null 处理"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令与禁止模式"}
+{"file": ".trellis/tasks/10-21-task-project-picker/prd.md", "reason": "父任务 D2/D3 与 PAC1-PAC6"}
+{"file": ".trellis/tasks/10-21-task-project-picker/design.md", "reason": "§2 路由表、卡片页布局、新建任务默认项目、§4 风险"}
+{"file": ".trellis/tasks/10-21-task-project-picker-ui/prd.md", "reason": "本子任务 R1-R5 与 AC1-AC12"}

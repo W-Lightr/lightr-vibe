@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "本项目唯一色板/字号/圆角/悬停依据——本轮是视觉与交互对齐"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "SFC 结构、props/emits、Tailwind 优先、naive-ui 边界"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "store 边界；本轮不改 store，但需确认不越界"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令与禁止模式"}
+{"file": ".trellis/tasks/10-21-task-project-picker/prd.md", "reason": "父任务范围 D1-D3 与 PAC1-PAC6"}
+{"file": ".trellis/tasks/10-21-task-project-picker/design.md", "reason": "§1 折叠交互设计与 §2 路由/卡片页设计"}
+{"file": ".trellis/tasks/10-21-task-project-picker/implement.md", "reason": "两个子任务的顺序、回滚点与人工验收"}

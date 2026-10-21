@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "核对卡片网格、搜索框、空状态是否合规"}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "核对新页面位置与路由写法"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "四门禁"}
+{"file": ".trellis/tasks/10-21-task-project-picker/design.md", "reason": "核对路由、默认项目锁定、项目已移除分支是否与设计一致"}
+{"file": ".trellis/tasks/10-21-task-project-picker-ui/prd.md", "reason": "逐条核对 AC1-AC12，重点 AC8（项目锁定）与 AC11（看板零回归）"}

@@ -164,6 +164,55 @@ function removeSession(id: string) {
   workspace.forgetSession(id)
 }
 
+// ---- 文件夹折叠（PRD 10-21-sidebar-folder-collapse：R1–R4） ----
+
+const COLLAPSED_KEY = 'lightr.sidebar.collapsedProjects'
+
+/** 同步读取折叠记录；脏数据 / 隐私模式读不到时按「全部展开」处理（R3） */
+function readCollapsed(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_KEY)
+    if (!raw) return new Set()
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return new Set()
+    return new Set(parsed.filter((id): id is string => typeof id === 'string'))
+  } catch {
+    return new Set()
+  }
+}
+
+/** 已收起的项目 id；整体替换而非原地改 Set，保证模板里的读取最直观 */
+const collapsedProjects = ref<Set<string>>(readCollapsed())
+
+function writeCollapsed(set: Set<string>) {
+  try {
+    window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set]))
+  } catch {
+    // 记忆失败不影响当前会话
+  }
+}
+
+/** 仅箭头调用：切换折叠（整行点击仍走 openProject，R1/AC3） */
+function toggleCollapse(projectId: string) {
+  const next = new Set(collapsedProjects.value)
+  if (next.has(projectId)) next.delete(projectId)
+  else next.add(projectId)
+  collapsedProjects.value = next
+  writeCollapsed(next)
+}
+
+/** 搜索中忽略折叠，命中会话一律显示（R4/AC6） */
+const searching = computed(() => query.value.trim().length > 0)
+
+function isCollapsed(projectId: string): boolean {
+  return !searching.value && collapsedProjects.value.has(projectId)
+}
+
+/** 某项目下是否存在生成中的会话（收起时用于计数旁蓝点，R2/AC5） */
+function hasGenerating(list: Session[]): boolean {
+  return list.some((s) => workspace.isGenerating(s.id))
+}
+
 /** 搜索过滤后的会话 */
 function filterSessions(list: Session[]) {
   const q = query.value.trim().toLowerCase()
@@ -172,13 +221,20 @@ function filterSessions(list: Session[]) {
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
-/** 文件夹分组：每个文件夹项目 + 其下会话 */
+/** 文件夹分组：每个文件夹项目 + 其下会话；计数用搜索前的总数，避免折叠/搜索时数字跳动 */
 const folderGroups = computed(() =>
   projectStore.projects
-    .map((project) => ({
-      project,
-      sessions: filterSessions(sessionStore.sessions.filter((s) => s.projectId === project.id)),
-    }))
+    .map((project) => {
+      const all = sessionStore.sessions.filter((s) => s.projectId === project.id)
+      const sessions = filterSessions(all)
+      return {
+        project,
+        sessions,
+        total: all.length,
+        generating: hasGenerating(all),
+        collapsed: isCollapsed(project.id),
+      }
+    })
     .filter((g) => g.sessions.length > 0 || !query.value.trim()),
 )
 
@@ -306,9 +362,36 @@ function openProject(projectId: string) {
           :title="group.project.rootPath"
           @click="openProject(group.project.id)"
         >
+          <!-- 折叠箭头：仅此区域切换折叠，整行点击仍是「打开该项目」 -->
+          <button
+            class="-ml-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-neutral-400 hover:bg-neutral-300/60 hover:text-neutral-700"
+            :title="group.collapsed ? '展开文件夹' : '收起文件夹'"
+            @click.stop="toggleCollapse(group.project.id)"
+          >
+            <ChevronRight
+              class="h-3.5 w-3.5 transition-transform"
+              :class="!group.collapsed && 'rotate-90'"
+            />
+          </button>
           <FolderOpen class="h-4 w-4 shrink-0 text-neutral-500" />
           <span class="min-w-0 flex-1 truncate">{{ group.project.name }}</span>
-          <span class="flex w-4 justify-end text-[10px] text-neutral-400 group-hover/proj:hidden">{{ group.sessions.length }}</span>
+          <!-- 搜索时显示匹配数（R4）；其余时候显示总数 -->
+          <span
+            v-if="searching"
+            class="shrink-0 text-[10px] text-neutral-400"
+          >{{ group.sessions.length }} 个匹配</span>
+          <span
+            v-else
+            class="flex shrink-0 items-center gap-1 text-[10px] text-neutral-400"
+            :class="group.generating && group.collapsed ? '' : 'group-hover/proj:hidden'"
+          >
+            {{ group.total }}
+            <!-- 收起且有生成中会话：蓝点提示（R2/AC5） -->
+            <span
+              v-if="group.generating && group.collapsed"
+              class="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse"
+            />
+          </span>
           <!-- 悬浮操作：在该文件夹下新建会话（不弹窗，直接绑定本项目建草稿，PRD R1） -->
           <button
             class="hidden h-4.5 w-4.5 shrink-0 cursor-pointer items-center justify-center rounded text-neutral-400 hover:bg-neutral-300/60 hover:text-neutral-700 group-hover/proj:flex"
@@ -331,7 +414,8 @@ function openProject(projectId: string) {
             移除项目「{{ group.project.name }}」？磁盘文件不会被删除，其会话将归入「聊天」组。
           </NPopconfirm>
         </div>
-        <div class="ml-4 border-l border-neutral-300/80 pl-1.5">
+        <!-- 收起时不渲染会话列表；仍然保留空项目提示只在展开态出现 -->
+        <div v-if="!group.collapsed" class="ml-4 border-l border-neutral-300/80 pl-1.5">
           <SessionItem
             v-for="s in group.sessions"
             :key="s.id"

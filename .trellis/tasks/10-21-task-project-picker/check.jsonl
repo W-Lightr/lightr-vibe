@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "整体视觉合规复核"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "四门禁"}
+{"file": ".trellis/tasks/10-21-task-project-picker/prd.md", "reason": "逐条核对 PAC1-PAC6 与 D1-D3"}
+{"file": ".trellis/tasks/10-21-task-project-picker/implement.md", "reason": "人工验收清单逐项打勾"}
