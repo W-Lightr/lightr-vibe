@@ -153,10 +153,10 @@ export function useTaskDrag(options: TaskDragOptions) {
     if (wasActive) suppressClickUntil = Date.now() + CLICK_SUPPRESS_MS
   }
 
-  /**
-   * 清理一次拖拽会话：移除全部窗口监听 + 复位状态。
+  /** 清理一次拖拽会话：移除全部窗口监听 + 复位状态。
    * localOrder 归 null，调用方据此回到 store 顺序（回弹）。
-   */
+   * 导出给页面用于「视图切换」（路由参数变化）时强制复位，避免上一次拖拽的
+   * 本地顺序 / 悬停列 / 窗口监听残留到新看板。 */
   function cleanup(): void {
     window.removeEventListener('pointermove', onPointerMove)
     window.removeEventListener('pointerup', onPointerUp)
@@ -314,5 +314,7 @@ export function useTaskDrag(options: TaskDragOptions) {
     registerColumn,
     onCardPointerDown,
     shouldSuppressClick,
+    /** 中止并复位当前拖拽（视图切换时由页面调用） */
+    resetDrag: abortDrag,
   }
 }

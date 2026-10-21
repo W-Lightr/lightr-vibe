@@ -14,10 +14,17 @@ const router = createRouter({
       name: 'settings',
       component: () => import('../views/settings/SettingsView.vue'),
     },
+    // /tasks = 项目选择页；具体项目的看板走 /tasks/:projectId（'all' = 全部项目）
     {
       path: '/tasks',
       name: 'tasks',
+      component: () => import('../views/tasks/ProjectPickerView.vue'),
+    },
+    {
+      path: '/tasks/:projectId',
+      name: 'task-board',
       component: () => import('../views/tasks/TasksView.vue'),
+      props: true,
     },
     {
       path: '/coding',

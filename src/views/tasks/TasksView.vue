@@ -1,15 +1,17 @@
 <script setup lang="ts">
-// 任务看板页（/tasks）：工具栏（项目筛选 / 隐藏开关 / 新建）+ 四列横向布局。
+// 任务看板页（/tasks/:projectId）：工具栏（当前项目 / 隐藏开关 / 新建）+ 四列横向布局。
+// 项目来自路由参数（projectId === 'all' 为全部项目视图），不再读 localStorage 筛选。
 // 数据：taskStore（唯一来源，异步变更 await 后重读返回值）；项目名：projectStore。
 // 拖拽：useTaskDrag（Pointer Events），drop 时经本页调 taskStore.transition / reorder。
 // 会话联动（子任务 3）：开始 / 重试 / 停止 / 通过 / 打回全部委托 taskSessionBridge
 // （启动链路唯一实现），本页只负责提示与在途禁用。
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import {
   ArrowLeft,
-  ChevronDown,
+  ChevronLeft,
+  FolderOpen,
   ListTodo,
   Minus,
   Plus,
@@ -36,6 +38,11 @@ import type { WorkTask } from '../../types/task'
 import type { EngineWire } from '../../types/engine'
 import type { BoardColumnId } from './boardColumns'
 
+const props = defineProps<{
+  /** 路由参数：具体项目 id，或 'all'（全部项目） */
+  projectId: string
+}>()
+
 const router = useRouter()
 const message = useMessage()
 const taskStore = useTaskStore()
@@ -43,9 +50,30 @@ const projectStore = useProjectStore()
 // 浏览器 dev 环境为 null：隐藏窗口三键（与设置页一致）
 const appWindow = getAppWindow()
 
-// ---- 筛选与开关（localStorage 记忆，同步读取保证首帧就是用户上次的选择） ----
+// ---- 项目（唯一来源 = 路由参数，prd R3） ----
 
-const FILTER_KEY = 'lightr.tasks.projectFilter'
+/** 全部项目视图保留 id（与 ProjectPickerView 的「全部项目」卡片一致） */
+const ALL_PROJECTS_ID = 'all'
+
+/** 具体的项目 id（全部项目视图为 null）；拖拽排序语义按它判断 */
+const scopedProjectId = computed<string | null>(() =>
+  props.projectId === ALL_PROJECTS_ID ? null : props.projectId,
+)
+
+/** 是否全部项目视图（卡片显示项目名、禁止同列排序） */
+const allProjects = computed(() => scopedProjectId.value === null)
+
+/** 路由指向的项目已被移除（且不是 all）→ 看板换成「项目已移除」空态 */
+const projectMissing = computed(
+  () => scopedProjectId.value !== null && projectStore.get(scopedProjectId.value) === null,
+)
+
+const boardTitle = computed(() =>
+  scopedProjectId.value === null ? '全部项目' : (projectStore.get(scopedProjectId.value)?.name ?? '项目已移除'),
+)
+
+// ---- 显示开关（localStorage 记忆，同步读取保证首帧就是用户上次的选择） ----
+
 const SHOW_CANCELED_KEY = 'lightr.tasks.showCanceled'
 const SHOW_ARCHIVED_KEY = 'lightr.tasks.showArchived'
 
@@ -67,30 +95,8 @@ function writeBool(key: string, value: boolean): void {
   }
 }
 
-function readProjectFilter(): string | null {
-  try {
-    return window.localStorage.getItem(FILTER_KEY)
-  } catch {
-    return null
-  }
-}
-
-/** 当前项目筛选（null = 全部项目） */
-const projectFilter = ref<string | null>(readProjectFilter())
 const showCanceled = ref(readBool(SHOW_CANCELED_KEY, false))
 const showArchived = ref(readBool(SHOW_ARCHIVED_KEY, false))
-const projectDropOpen = ref(false)
-
-function setProjectFilter(id: string | null): void {
-  projectFilter.value = id
-  projectDropOpen.value = false
-  try {
-    if (id === null) window.localStorage.removeItem(FILTER_KEY)
-    else window.localStorage.setItem(FILTER_KEY, id)
-  } catch {
-    // 同上：记忆失败不阻塞筛选
-  }
-}
 
 function toggleShowCanceled(): void {
   showCanceled.value = !showCanceled.value
@@ -102,23 +108,12 @@ function toggleShowArchived(): void {
   writeBool(SHOW_ARCHIVED_KEY, showArchived.value)
 }
 
-/** 筛选器里的项目已不存在（项目被移除）→ 回落到全部项目，避免看板空白 */
-function normalizeFilter(): void {
-  if (projectFilter.value !== null && !projectStore.get(projectFilter.value)) {
-    setProjectFilter(null)
-  }
-}
-
-const filterLabel = computed(
-  () => projectStore.get(projectFilter.value)?.name ?? '全部项目',
-)
-
 // ---- 分组（唯一派生入口） ----
 
 const visibleTasks = computed(() => {
-  const list = taskStore.tasks
-  if (projectFilter.value === null) return list
-  return list.filter((t) => t.projectId === projectFilter.value)
+  const projectId = scopedProjectId.value
+  if (projectId === null) return taskStore.tasks
+  return taskStore.tasks.filter((t) => t.projectId === projectId)
 })
 
 const grouped = computed(() =>
@@ -253,8 +248,8 @@ async function onCardSecondary(task: WorkTask): Promise<void> {
 
 // ---- 拖拽 ----
 
-/** 当前项目筛选（composable 用 computed 判断是否启用拖拽） */
-const projectFilterRef = computed(() => projectFilter.value)
+/** 当前项目（composable 用 computed 判断是否允许同列排序） */
+const scopedProjectRef = computed(() => scopedProjectId.value)
 
 const {
   drag,
@@ -267,8 +262,9 @@ const {
   registerColumn,
   onCardPointerDown,
   shouldSuppressClick,
+  resetDrag,
 } = useTaskDrag({
-  projectId: projectFilterRef,
+  projectId: scopedProjectRef,
   onMoveToStatus: (taskId, to, from) => {
     const task = taskStore.get(taskId)
     if (!task) return
@@ -291,7 +287,7 @@ const {
       })
   },
   onReorder: (orderedIds) => {
-    const projectId = projectFilter.value
+    const projectId = scopedProjectId.value
     if (projectId === null) return
     // 只提交新顺序；本项目该列里被当前筛选隐藏的行（showCanceled / showArchived 关掉时）
     // 按原 sortOrder 追加到末尾，否则重排会把这些行挤出列表顺序（它们下次显示时顺序错乱）。
@@ -322,6 +318,9 @@ function onCardOpen(task: WorkTask): void {
 const editorOpen = ref(false)
 /** 编辑中的任务（null = 新建） */
 const editingTask = ref<WorkTask | null>(null)
+
+/** 新建时的默认项目：具体项目看板预选并锁定；全部项目 / 卡片页需手动选（prd R4） */
+const defaultProjectId = computed(() => scopedProjectId.value)
 
 function openCreate(): void {
   editingTask.value = null
@@ -381,25 +380,38 @@ function closeDetail(): void {
 // ---- 生命周期 ----
 
 onMounted(async () => {
-  try {
-    await projectStore.load()
-  } catch {
-    // 项目索引读取失败：看板仍可用，全部项目视图下卡片会标「项目已移除」
+  if (!projectStore.loaded) {
+    try {
+      await projectStore.load()
+    } catch {
+      // 项目索引读取失败：看板仍可用，全部项目视图下卡片会标「项目已移除」
+    }
   }
-  normalizeFilter()
   if (!taskStore.loaded) await taskStore.load()
-  // 加载后再次归一（持久化的筛选可能在本次会话里被移除项目）
-  normalizeFilter()
 })
 
-function goBack(): void {
-  if (window.history.state?.back) router.back()
-  else router.push('/')
-}
+// 拖拽「开始 / 重试」走 taskSessionBridge：失败时它自己提示（不抛出），成功时
+// 由 bridge 直接改 store，本页无需再处理返回值。
 
-/** 关闭下拉的透明遮罩（点击文档其它位置收起） */
-function closeProjectDrop(): void {
-  projectDropOpen.value = false
+/**
+ * 路由参数变化（/tasks/a → /tasks/b）时组件会被复用：中止进行中的拖拽（否则会残留
+ * 窗口监听与本地顺序）、重置在途集合，关闭详情 / 编辑器，避免状态串到新看板。
+ * 卡片 / 列 DOM 注册表由 ref 回调在重渲染时自然重建，这里不去动它。
+ */
+watch(
+  () => props.projectId,
+  () => {
+    resetDrag()
+    closeDetail()
+    editorOpen.value = false
+    editingTask.value = null
+    inflight.clear()
+  },
+)
+
+/** 返回项目选择页（prd R2/R3）：看板只在选好项目后进入，固定回 /tasks */
+function goBack(): void {
+  void router.push('/tasks')
 }
 </script>
 
@@ -413,13 +425,15 @@ function closeProjectDrop(): void {
       <div class="flex items-center gap-1.5" data-no-drag>
         <button
           class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
-          title="返回"
+          title="返回项目列表"
           @click="goBack"
         >
           <ArrowLeft class="h-4 w-4" />
         </button>
         <ListTodo class="h-4 w-4 text-neutral-400" />
-        <span class="text-[13px] font-medium text-neutral-800">任务</span>
+        <span class="min-w-0 max-w-[280px] truncate text-[13px] font-medium text-neutral-800">
+          {{ boardTitle }}
+        </span>
       </div>
       <div v-if="appWindow" class="flex items-center gap-0.5" data-no-drag>
         <button
@@ -446,53 +460,18 @@ function closeProjectDrop(): void {
       </div>
     </div>
 
-    <!-- 工具栏：项目筛选 + 显示开关 + 新建 -->
+    <!-- 工具栏：当前项目（返回选择页）+ 显示开关 + 新建 -->
     <div class="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-3 py-2">
-      <!-- 项目筛选（自绘下拉，与新建会话弹窗同款） -->
-      <div class="relative" @mousedown.stop>
-        <button
-          class="flex h-7 min-w-[150px] max-w-[240px] cursor-pointer items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2 text-[12px] text-neutral-700 transition-colors hover:bg-neutral-50"
-          :class="projectDropOpen && 'border-blue-400'"
-          type="button"
-          @click="projectDropOpen = !projectDropOpen"
-        >
-          <span class="min-w-0 flex-1 truncate text-left">{{ filterLabel }}</span>
-          <ChevronDown
-            class="h-3.5 w-3.5 shrink-0 text-neutral-400 transition-transform"
-            :class="projectDropOpen && 'rotate-180'"
-          />
-        </button>
-        <template v-if="projectDropOpen">
-          <div class="fixed inset-0 z-20" @click="closeProjectDrop" />
-          <div
-            class="absolute left-0 top-full z-30 mt-1 max-h-72 w-[240px] overflow-y-auto rounded-md border border-neutral-200 bg-white py-1 shadow-sm"
-          >
-            <button
-              class="flex w-full cursor-pointer items-center px-2.5 py-1.5 text-left text-[12px] transition-colors hover:bg-neutral-100"
-              :class="projectFilter === null && 'bg-blue-50/60 text-neutral-800'"
-              type="button"
-              @click="setProjectFilter(null)"
-            >
-              全部项目
-            </button>
-            <div v-if="projectStore.projects.length > 0" class="my-1 h-px bg-neutral-100" />
-            <button
-              v-for="p in projectStore.projects"
-              :key="p.id"
-              class="flex w-full cursor-pointer items-center px-2.5 py-1.5 text-left text-[12px] transition-colors hover:bg-neutral-100"
-              :class="projectFilter === p.id && 'bg-blue-50/60 text-neutral-800'"
-              :title="p.rootPath"
-              type="button"
-              @click="setProjectFilter(p.id)"
-            >
-              <span class="min-w-0 flex-1 truncate">{{ p.name }}</span>
-            </button>
-            <p v-if="projectStore.projects.length === 0" class="px-2.5 py-1.5 text-[11px] text-neutral-400">
-              暂无项目
-            </p>
-          </div>
-        </template>
-      </div>
+      <!-- 项目已由路由确定（prd R3），旧的「项目下拉筛选」移除；这里只留回选择页的入口 -->
+      <button
+        class="flex h-7 min-w-0 max-w-[240px] cursor-pointer items-center gap-1 rounded-md px-1.5 text-[12px] text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
+        type="button"
+        title="返回项目列表"
+        @click="goBack"
+      >
+        <ChevronLeft class="h-3.5 w-3.5 shrink-0" />
+        <span class="truncate">项目列表</span>
+      </button>
 
       <div class="mx-0.5 h-4 w-px bg-neutral-200" />
 
@@ -535,13 +514,28 @@ function closeProjectDrop(): void {
     </div>
 
     <!-- 四列看板：横向 flex，列最小 280px；窄屏横向滚动。列白底无边框，靠 gap 分隔 -->
-    <main class="flex min-h-0 flex-1 gap-4 overflow-x-auto bg-white p-4">
+    <!-- 路由指向的项目已被移除：给出口而不是空白看板（prd AC10） -->
+    <main
+      v-if="projectMissing"
+      class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 bg-white p-4 text-center"
+    >
+      <FolderOpen class="h-6 w-6 text-neutral-300" />
+      <p class="text-xs text-neutral-400">项目已移除</p>
+      <button
+        class="flex h-7 cursor-pointer items-center gap-1 rounded-md border border-neutral-200 px-2.5 text-[12px] text-neutral-600 transition-colors hover:bg-neutral-100"
+        @click="goBack"
+      >
+        <ChevronLeft class="h-3.5 w-3.5" />
+        返回项目列表
+      </button>
+    </main>
+    <main v-else class="flex min-h-0 flex-1 gap-4 overflow-x-auto bg-white p-4">
       <TaskColumn
         v-for="columnId in BOARD_COLUMN_IDS"
         :key="columnId"
         :column-id="columnId"
         :tasks="renderGrouped[columnId]"
-        :all-projects="projectFilter === null"
+        :all-projects="allProjects"
         :drag-enabled="dragEnabled"
         :reorder-enabled="reorderEnabled"
         :dragging-task-id="draggingTaskId"
@@ -592,7 +586,8 @@ function closeProjectDrop(): void {
     <TaskEditorDialog
       :open="editorOpen"
       :task="editingTask"
-      :default-project-id="projectFilter"
+      :default-project-id="defaultProjectId"
+      :project-locked="!allProjects"
       @close="editorOpen = false"
       @submit="onEditorSubmit"
     />

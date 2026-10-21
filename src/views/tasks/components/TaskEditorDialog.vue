@@ -18,6 +18,11 @@ const props = defineProps<{
   task: WorkTask | null
   /** 新建时的初始项目（父级按当前筛选预置；null = 取第一个项目） */
   defaultProjectId: string | null
+  /**
+   * 新建时项目是否锁定（从具体项目看板进入时该任务必然属于此项目，prd R4）。
+   * 编辑态本来就锁项目；此开关只影响新建。
+   */
+  projectLocked?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -39,10 +44,13 @@ const submitting = ref(false)
 
 const editing = computed(() => props.task !== null)
 
-/** 编辑态下项目锁定（任务迁移项目不在本期范围，避免 session 的 cwd 与项目脱节） */
-const projectLocked = computed(() => editing.value)
+/** 编辑态或父级要求锁定（项目看板新建）时项目不可改 */
+const projectLocked = computed(() => editing.value || props.projectLocked === true)
 
-/** 打开时重置表单：新建取默认项目 + 默认引擎；编辑回填任务字段 */
+/**
+ * 打开时重置表单：新建取默认项目 + 默认引擎；编辑回填任务字段。
+ * 项目锁定由父级显式传入（projectLocked），默认项目不会被「取第一个项目」的兜底覆盖。
+ */
 watch(
   () => props.open,
   (open) => {
@@ -59,7 +67,14 @@ watch(
       title.value = props.task.title
       prompt.value = props.task.prompt
       engineId.value = props.task.engineId ?? engineStore.preselectedEngineId
+    } else if (projectLocked.value) {
+      // 锁定（项目看板新建）：必须用父级给的项目，不回落第一个，避免建到别的项目下
+      projectId.value = props.defaultProjectId ?? null
+      title.value = ''
+      prompt.value = ''
+      engineId.value = engineStore.preselectedEngineId
     } else {
+      // 未锁定（卡片页 / 全部项目）：预置项目仅作初值，用户可改
       projectId.value = props.defaultProjectId ?? projectStore.projects[0]?.id ?? null
       title.value = ''
       prompt.value = ''
@@ -193,6 +208,12 @@ function onKeydown(e: KeyboardEvent): void {
       </div>
       <p v-if="projectStore.projects.length === 0" class="mt-1.5 text-[11px] text-neutral-400">
         还没有项目，请先在编码工作区打开一个文件夹
+      </p>
+      <p
+        v-else-if="!editing && projectLocked"
+        class="mt-1.5 text-[11px] text-neutral-400"
+      >
+        任务将创建在当前项目中
       </p>
 
       <!-- 标题 -->
