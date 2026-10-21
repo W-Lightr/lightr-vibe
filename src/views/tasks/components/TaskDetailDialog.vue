@@ -213,7 +213,7 @@ function onStart(): void {
 function onStop(): void {
   const t = task.value
   if (!t) return
-  run(() => stopTask(t))
+  void run(() => stopTask(t))
 }
 
 function onApprove(): void {

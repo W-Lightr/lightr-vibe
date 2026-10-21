@@ -232,7 +232,7 @@ async function onCardPrimary(task: WorkTask): Promise<void> {
     case 'preparing':
     case 'running':
     case 'awaiting_input':
-      await withInflight(task, async () => stopTask(task))
+      await withInflight(task, () => stopTask(task))
       return
     case 'review':
       await withInflight(task, () => approveTask(task))
@@ -273,6 +273,13 @@ const {
     const task = taskStore.get(taskId)
     if (!task) return
     if (inflight.has(taskId)) return
+    // 「待办 → 进行中」不是一次状态转移，而是启动整条会话链路：
+    // 只写 queued 会让任务停在排队中永远不执行（卡片还留在待办列）。
+    // 其余跨列转移（通过 / 打回）仍是纯状态变更。
+    if (to === 'queued') {
+      void withInflight(task, () => startTask(taskId))
+      return
+    }
     inflight.add(taskId)
     void taskStore
       .transition(taskId, to, from)

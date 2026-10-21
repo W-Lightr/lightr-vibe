@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { NPopconfirm, useMessage } from 'naive-ui'
 import {
   PanelLeftClose,
@@ -31,6 +32,7 @@ const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
 const { closeConnection } = useConversation()
 const message = useMessage()
+const router = useRouter()
 
 /** 原生目录对话框仅桌面端可用；浏览器 dev 环境按钮禁用态（R1） */
 const pickAvailable = canPickFolder()
@@ -70,12 +72,22 @@ function removeProject(projectId: string) {
 type NavKey = 'chat' | 'automation' | 'todos' | 'repo' | 'canvas'
 const activeNav = ref<NavKey>('chat')
 
-const navItems: { key: NavKey; label: string; icon: typeof Zap; implemented: boolean }[] = [
-  { key: 'automation', label: '自动化', icon: Zap, implemented: false },
-  { key: 'todos', label: '待办任务', icon: ListTodo, implemented: false },
-  { key: 'repo', label: '仓库面板', icon: GitBranch, implemented: false },
-  { key: 'canvas', label: '无限画布', icon: InfinityIcon, implemented: false },
+/** 已接入的导航项走 `to` 路由跳转；其余为占位（侧栏内显示「尚未接入」） */
+const navItems: { key: NavKey; label: string; icon: typeof Zap; to?: string }[] = [
+  { key: 'automation', label: '自动化', icon: Zap },
+  { key: 'todos', label: '待办任务', icon: ListTodo, to: '/tasks' },
+  { key: 'repo', label: '仓库面板', icon: GitBranch },
+  { key: 'canvas', label: '无限画布', icon: InfinityIcon },
 ]
+
+/** 点击导航项：已接入的直接跳转（侧栏在 /coding 下，任务看板在 /tasks） */
+function onNavClick(item: { key: NavKey; to?: string }) {
+  if (item.to) {
+    router.push(item.to)
+    return
+  }
+  activeNav.value = item.key
+}
 
 // 搜索（开关状态提升到 workspace store，侧栏隐藏时顶栏搜索按钮可联动打开）
 const searchOpen = computed({
@@ -251,11 +263,11 @@ function openProject(projectId: string) {
         :key="item.key"
         class="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-[13px]"
         :class="activeNav === item.key ? 'bg-neutral-200/70 text-neutral-800' : 'text-neutral-700 hover:bg-neutral-200/60'"
-        @click="activeNav = item.key"
+        @click="onNavClick(item)"
       >
         <component :is="item.icon" class="h-4 w-4 text-neutral-500" />
         {{ item.label }}
-        <span v-if="!item.implemented" class="ml-auto rounded bg-neutral-200 px-1 text-[10px] text-neutral-400">
+        <span v-if="!item.to" class="ml-auto rounded bg-neutral-200 px-1 text-[10px] text-neutral-400">
           待接入
         </span>
       </button>

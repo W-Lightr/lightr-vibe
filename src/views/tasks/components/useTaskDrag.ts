@@ -81,8 +81,12 @@ export function useTaskDrag(options: TaskDragOptions) {
   let suppressClickUntil = 0
   let shakeTimer: number | null = null
 
-  /** 全部项目视图禁止拖拽（排序是项目内语义） */
-  const dragEnabled = computed(() => options.projectId.value !== null)
+  /** 拖拽始终可用：跨列转移与项目无关；同列排序只在单项目视图提交
+   *  （sortOrder 是项目内语义，混合视图没有可持久化的顺序）。 */
+  const dragEnabled = computed(() => true)
+
+  /** 同列排序是否可提交（全部项目视图下拖拽只做跨列转移） */
+  const reorderEnabled = computed(() => options.projectId.value !== null)
 
   /** 卡片根元素注册 / 注销（TaskCard 用 ref 回调写入） */
   function registerCard(taskId: string, el: HTMLElement | null): void {
@@ -127,6 +131,8 @@ export function useTaskDrag(options: TaskDragOptions) {
     if (!columnId) return
     const currentColumn = columnForStatus(candidate.status)
     if (columnId === currentColumn) {
+      // 全部项目视图：顺序没有跨项目语义，同列拖动视为取消（回弹，不发请求）
+      if (!reorderEnabled.value) return
       const ordered = previewOrder ?? readColumnOrder(candidate.taskId)
       if (ordered && ordered.length > 0) options.onReorder(ordered)
       return
@@ -232,6 +238,8 @@ export function useTaskDrag(options: TaskDragOptions) {
    * 只算「顺序」，不动 DOM——顺序由调用方交给 v-for 渲染，Vue 负责移动节点。
    */
   function reorderPreview(taskId: string, status: TaskStatus, x: number, y: number): void {
+    // 全部项目视图不排序：同列拖动不做实时重排（松手直接回弹）
+    if (!reorderEnabled.value) return
     const columnId = hitColumn(x, y)
     if (!columnId || columnId !== columnForStatus(status)) return
     const order = localOrder.value ?? readColumnOrder(taskId)
@@ -300,6 +308,8 @@ export function useTaskDrag(options: TaskDragOptions) {
     /** 同列拖拽中的本地顺序（null = 用 store 顺序） */
     localOrder,
     dragEnabled,
+    /** 同列排序是否可用（全部项目视图为 false：可跨列拖，不排序） */
+    reorderEnabled,
     registerCard,
     registerColumn,
     onCardPointerDown,

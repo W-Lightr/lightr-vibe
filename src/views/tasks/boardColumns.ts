@@ -9,10 +9,12 @@ export type BoardColumnId = TaskColumnId
 /** 列顺序：待办 / 进行中 / 等你处理 / 已完成（AC3） */
 export const BOARD_COLUMN_IDS: BoardColumnId[] = ['todo', 'inProgress', 'attention', 'done']
 
-/** 每列收纳的状态（columnForStatus 的规格副本，两者必须一致） */
+/** 每列收纳的状态（columnForStatus 的规格副本，两者必须一致）。
+ *  queued 归「进行中」而非「待办」：它表示任务已被认领、正在等启动，
+ *  放在待办会让拖拽过去后卡片先留在原列，看起来像拖拽失败。 */
 export const STATUSES_BY_COLUMN: Record<BoardColumnId, TaskStatus[]> = {
-  todo: ['todo', 'queued'],
-  inProgress: ['preparing', 'running'],
+  todo: ['todo'],
+  inProgress: ['queued', 'preparing', 'running'],
   attention: ['awaiting_input', 'review', 'merging', 'failed'],
   done: ['done', 'canceled'],
 }
@@ -24,8 +26,8 @@ export const STATUSES_BY_COLUMN: Record<BoardColumnId, TaskStatus[]> = {
 export function columnForStatus(status: TaskStatus): BoardColumnId {
   switch (status) {
     case 'todo':
-    case 'queued':
       return 'todo'
+    case 'queued':
     case 'preparing':
     case 'running':
       return 'inProgress'

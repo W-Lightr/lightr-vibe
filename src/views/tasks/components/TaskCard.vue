@@ -66,46 +66,40 @@ function setRef(el: unknown): void {
 <template>
   <article
     :ref="setRef"
-    class="group relative cursor-grab overflow-hidden rounded-md border border-neutral-200 bg-white transition-colors hover:border-neutral-300 active:cursor-grabbing"
+    class="group relative cursor-grab overflow-hidden rounded-lg border border-transparent bg-white transition-all hover:border-neutral-200 hover:shadow-[0_1px_2px_rgba(0,0,0,0.04)] active:cursor-grabbing"
     :class="[!dragEnabled && 'cursor-default', dragging && 'opacity-40', shaking && 'animate-shake']"
     :data-task-id="task.id"
     @pointerdown="emit('pointer-down', $event)"
   >
-    <!-- 顶部细色条：仅失败 / 待审核做轻提示 -->
-    <div v-if="task.status === 'failed'" class="h-0.5 w-full bg-red-400" />
-    <div v-else-if="task.status === 'review'" class="h-0.5 w-full bg-amber-400" />
-
-    <div class="px-2.5 py-2" @click="emit('open')">
-      <!-- 状态 chip + 相对时间 -->
-      <div class="flex items-center gap-1.5">
-        <TaskStatusChip :task="task" />
-        <span class="flex-1" />
-        <span class="shrink-0 text-[10px] text-neutral-400">
-          {{ formatRelativeTime(task.updatedAt) }}
-        </span>
-      </div>
-
-      <!-- 标题：最多两行 -->
-      <p class="mt-1.5 line-clamp-2 text-[13px] leading-[18px] text-neutral-800" :title="task.title">
+    <div class="px-3 py-2.5" @click="emit('open')">
+      <!-- 标题：最多两行，codex 风格以标题为主视觉 -->
+      <p class="line-clamp-2 text-[13px] leading-[18px] font-medium text-neutral-800" :title="task.title">
         {{ task.title }}
       </p>
 
-      <!-- 项目名 / 项目已移除提示 -->
-      <div v-if="projectName || projectMissing" class="mt-1 flex min-w-0 items-center gap-1">
+      <!-- 元信息行：状态 chip + 项目名 + 相对时间 -->
+      <div class="mt-2 flex min-w-0 items-center gap-1.5">
+        <TaskStatusChip :task="task" />
         <span
           v-if="projectMissing"
           class="shrink-0 rounded bg-neutral-100 px-1 py-px text-[10px] text-neutral-400"
         >
           项目已移除
         </span>
-        <span v-else class="truncate text-[11px] text-neutral-500">{{ projectName }}</span>
+        <span v-else-if="projectName" class="min-w-0 truncate text-[11px] text-neutral-500">
+          {{ projectName }}
+        </span>
+        <span class="flex-1" />
+        <span class="shrink-0 text-[10px] tabular-nums text-neutral-400">
+          {{ formatRelativeTime(task.updatedAt) }}
+        </span>
       </div>
     </div>
 
-    <!-- 动作区：每状态至多一主一次（PRD R4 矩阵）；阻止冒泡避免触发拖拽/打开详情 -->
+    <!-- 动作区：默认隐藏，悬停/聚焦时显现（codex 的克制感），避免卡片常驻重按钮 -->
     <div
       v-if="primaryLabel || secondaryLabel"
-      class="flex items-center gap-1.5 px-2.5 pb-2"
+      class="flex items-center gap-1.5 px-3 pb-2.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
       @pointerdown.stop
       @click.stop
     >

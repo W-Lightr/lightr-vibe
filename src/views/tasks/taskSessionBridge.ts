@@ -151,12 +151,27 @@ export async function startTask(taskId: string): Promise<void> {
   }
 }
 
-/** 停止（prd R4）：只 cancel 当前 turn，**不改任务状态**——保持 running，
- *  由用户决定「通过」还是「打回」。 */
-export function stopTask(task: WorkTask): void {
-  if (!task.sessionId) return
-  useConversation().stop(task.sessionId)
-  useMessage().info('已停止，可打回或通过')
+/** 停止（prd R4）：cancel 当前 turn **并**把任务打回待办。
+ *
+ *  只 cancel 而不改状态时，任务会永远停在 running/queued：按钮一直是「停止」，
+ *  用户看到的就是「点了没反应」。而 queued 阶段还没有 acpSessionId，
+ *  cancel 本身也会直接空转——所以状态必须由这里推进。
+ *
+ *  已取消（canceled）是终态且可重新启动（canceled → todo → 启动），
+ *  打回待办等于给用户一个「重新来一次」的出口。 */
+export async function stopTask(task: WorkTask): Promise<void> {
+  // 1 · 先止血：有活动会话才 cancel（草稿 / 未建连时 acpSessionId 为空，stop 内部自会跳过）
+  if (task.sessionId) useConversation().stop(task.sessionId)
+  // 2 · 状态回退：queued / preparing / running / awaiting_input 都允许 → canceled
+  try {
+    await useTaskStore().transition(task.id, 'canceled', task.status)
+  } catch (err) {
+    // 状态已经被引擎推进（例如刚好结算成 review）：cancel 仍有效，不当作失败报错
+    if (!taskErrorMessage(err).includes('stale')) throw err
+    useMessage().info('任务状态已变化，已尝试停止当前执行')
+    return
+  }
+  useMessage().info('已停止，可从待办重新开始')
 }
 
 /**
