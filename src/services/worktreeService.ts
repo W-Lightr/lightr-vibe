@@ -5,9 +5,11 @@
 //
 // 错误串（Rust 侧）：worktree-not-repo / path-not-absolute / path-not-utf8 /
 // worktree-path-exists / worktree-add: … / worktree-detached / worktree-base-branch: …
+// worktree-missing / git status: … / git add: … / git commit: …
 
 import { invoke } from '@tauri-apps/api/core'
 import type {
+  CommitWorktreeResult,
   CreateWorktreeRequest,
   CreatedWorktree,
   RepoInfo,
@@ -52,6 +54,26 @@ export const worktreeService = {
   async create(req: CreateWorktreeRequest): Promise<CreatedWorktree> {
     if (!isTauri()) return mockCreate(req)
     return invoke<CreatedWorktree>('worktree_create', { req })
+  },
+
+  /**
+   * 把工作树里的未提交改动提交到任务分支（task 10-26-worktree-autocommit）。
+   *
+   * **必须在 `remove` 之前调用**：`git worktree remove --force` 删的是工作目录，
+   * 未提交的改动不在 git 对象库里，目录一删就永久丢失（分支保留也救不回来）。
+   *
+   * 干净工作区不产生空提交 → `{ committed: false, sha: null, branch }`。缺 git 身份
+   * （user.name / email）时会抛 `git commit: <stderr>`，由调用方决定是否阻断。
+   */
+  async commitAll(
+    worktreePath: string,
+    message: string,
+  ): Promise<CommitWorktreeResult> {
+    // 浏览器里没有 git：假装「没有改动」，UI 不会出现自动提交失败
+    if (!isTauri()) return { committed: false, sha: null, branch: null }
+    return invoke<CommitWorktreeResult>('worktree_commit_all', {
+      req: { worktreePath, message },
+    })
   },
 
   /**

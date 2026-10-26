@@ -1,6 +1,12 @@
 // git worktree 隔离层（task 10-26-worktree-backend / design §2）：
-// 仓库信息探测、工作树创建、工作树删除。仅用 std::process::Command 调 git，
-// 不引入新 crate、不加 tauri capability。**全仓唯一调用 git 的地方**（PAC2）。
+// 仓库信息探测、工作树创建、未提交改动的自动提交、工作树删除。仅用
+// std::process::Command 调 git，不引入新 crate、不加 tauri capability。
+// **全仓唯一调用 git 的地方**（PAC2）。
+//
+// 为什么删除前要自动提交（task 10-26-worktree-autocommit）：
+// `git worktree remove --force` 删除的是**工作目录**，目录里的未提交改动不在 git 对象库，
+// 删掉即永久丢失——保留分支也救不回来，因为分支上根本没有那些内容。所以终态清理必须
+// **先 commit 再 remove**（顺序不能反：反了目录已消失，`git add` 无从谈起）。
 //
 // 规格见 .trellis/spec/frontend/tauri-bridge.md，三条不可妥协的安全约束：
 // 1. `base_sha` 必须在 `git worktree add` **之前**解析（创建期间有人切分支会让基准漂移）；
@@ -13,7 +19,8 @@
 //
 // 错误串：`worktree-not-repo` / `path-not-absolute` / `path-not-utf8` /
 // `worktree-path-exists` / `worktree-add: <stderr>` / `worktree-detached` /
-// `worktree-remove: <stderr>` / `git: <stderr>`（其余 git 失败）。
+// `worktree-missing` / `git status: <stderr>` / `git add: <stderr>` /
+// `git commit: <stderr>` / `worktree-remove: <stderr>` / `git: <stderr>`（其余 git 失败）。
 
 use serde::{Deserialize, Serialize};
 use std::io::Read;
@@ -458,6 +465,106 @@ fn run_init_command(cwd: &Path, command_line: &str) -> Result<(), String> {
     }
 }
 
+// ---------- 自动提交 ----------
+
+/// `worktree_commit_all` 的入参。与 `worktree_remove` 一样用结构体：Tauri 对裸函数参数
+/// 只支持内置属性，serde 相关的东西必须落在 `Deserialize` 结构体上。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitWorktreeRequest {
+    pub worktree_path: String,
+    /// 提交信息（调用方给，建议带任务标题）。trim 后为空则用默认文案。
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitWorktreeResult {
+    /// 是否真的产生了提交（工作区本来就干净 → false，不产生空提交）
+    pub committed: bool,
+    /// 新提交的 sha；`committed: false` 时省略
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+    /// 提交落在哪条本地分支上（`git symbolic-ref --short HEAD`）。前端据此确认
+    /// **只落在 `task/*` 上**，绝不碰项目主分支（prd 约束）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+/// message 的兜底文案：调用方漏传时不至于让 `git commit -m ""` 失败
+const DEFAULT_COMMIT_MESSAGE: &str = "chore(task): 自动提交未保存改动";
+
+/// 把工作区里的未提交改动提交到当前分支（detail 见 design §2.2 的六步）。
+///
+/// **必须在 `worktree remove` 之前调用**：目录删掉后工作区改动就不在磁盘上了，
+/// `git add` 无从谈起。分支是这次任务的产品，提交落上去才能被用户 `git log` 找回。
+///
+/// 不做的事（设计约束）：不加 `--no-verify`（用户配的 hook 该生效）、不 `git config`
+/// 任何东西（缺身份就是失败，交给用户）、不 `--amend`、不 push、绝不碰主分支
+/// （`git -C <worktree>` 的 HEAD 就是 `task/<id>`）。
+fn commit_all_inner(req: &CommitWorktreeRequest) -> Result<CommitWorktreeResult, String> {
+    // 1) 路径安全：与 remove 同一套校验，非法路径在**任何 git 命令之前**返回
+    let abs = require_absolute(&req.worktree_path)?;
+    let abs = abs_str(&abs)?;
+
+    // 2) 目录必须存在（目录已删就没什么可提交的）
+    if !Path::new(&abs).is_dir() {
+        return Err("worktree-missing".into());
+    }
+    let root = Path::new(&abs);
+
+    // 3) 必须挂在本地分支上（detached HEAD 时提交会变成一个**没有任何 ref 指向**的
+    //    游离提交：目录一删就永久丢失，正是本任务要消灭的那种数据丢失）。
+    //    `symbolic-ref --quiet HEAD` 在 detached 时返回非 0——与 `create_inner` 的
+    //    `worktree-detached` 校验同一套判定，但这里在 `add -A` 之前就拒绝，不改工作区。
+    let branch = match git_stdout(root, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        Ok(b) if !b.is_empty() => b,
+        _ => return Err("worktree-detached".into()),
+    };
+
+    // 4) 探测是否干净：`--porcelain` 为空 = 没有改动 → 直接返回，绝不产生空提交
+    let status = run_git(root, &["status", "--porcelain"])?;
+    if !status.ok {
+        return Err(format!("git status: {}", status.tail()));
+    }
+    if status.stdout.trim().is_empty() {
+        return Ok(CommitWorktreeResult {
+            committed: false,
+            sha: None,
+            branch: Some(branch),
+        });
+    }
+
+    // 5) 全部加入（遵守 .gitignore：node_modules 这类不会进提交）
+    let added = run_git_write(root, &["add", "-A"])?;
+    if !added.ok {
+        return Err(format!("git add: {}", added.tail()));
+    }
+
+    // 6) 提交（典型失败：缺 user.name / email）
+    let message = {
+        let trimmed = req.message.trim();
+        if trimmed.is_empty() {
+            DEFAULT_COMMIT_MESSAGE
+        } else {
+            trimmed
+        }
+    };
+    let committed = run_git_write(root, &["commit", "-m", message])?;
+    if !committed.ok {
+        return Err(format!("git commit: {}", committed.tail()));
+    }
+
+    // 7) 新提交的 sha（只读命令）
+    let sha = git_stdout(root, &["rev-parse", "HEAD"])
+        .map_err(|e| format!("git rev-parse: {}", e))?;
+    Ok(CommitWorktreeResult {
+        committed: true,
+        sha: Some(sha),
+        branch: Some(branch),
+    })
+}
+
 // ---------- 删除 ----------
 
 /// 分支是否存在（完整 ref 判定，不受同名 tag 干扰）
@@ -605,6 +712,14 @@ pub struct RemoveWorktreeRequest {
     /// 只删工作树、保留分支（任务终态清理用）。省略 = false（启动失败回滚用）
     #[serde(default)]
     pub keep_branch: bool,
+}
+
+/// 把工作树里的未提交改动提交到任务分支。**终态清理必须在 `worktree_remove` 之前调用**，
+/// 否则目录一删改动就永久丢失（即使分支保留也救不回来）。
+/// 干净工作区不产生空提交（`committed: false`）。
+#[tauri::command]
+pub fn worktree_commit_all(req: CommitWorktreeRequest) -> Result<CommitWorktreeResult, String> {
+    commit_all_inner(&req)
 }
 
 /// 删除工作树：默认（`keepBranch` 省略 / false）在分支无未落地提交时顺带删掉任务分支。
@@ -1179,6 +1294,232 @@ mod tests {
         )
         .unwrap();
         assert!(!work_branch_exists(&root, &created.work_branch), "空路径也要删掉分支");
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    /// 自动提交（task 10-26-worktree-autocommit / AC1 / AC2 / AC7）：
+    /// 改动 = 一个修改过的跟踪文件 + 一个未跟踪文件 → 一次提交落到 **task 分支**，
+    /// message 生效，提交后工作区干净，目录里之后 `git log` 能看到它。
+    #[test]
+    fn commit_all_commits_dirty_worktree() {
+        if run_git(Path::new("."), &["--version"]).is_err() {
+            eprintln!("跳过：找不到 git");
+            return;
+        }
+        let (parent, root, root_str) = init_real_repo("commitdirty");
+        let created = create_inner(&CreateWorktreeRequest {
+            root_path: root_str.clone(),
+            base_branch: None,
+            task_id: "dirty-1".into(),
+            init_command: None,
+        })
+        .expect("创建应成功");
+        let wt = Path::new(&created.worktree_path);
+
+        // Agent 只改文件、不 commit（真实场景：忘了提交）
+        fs::write(wt.join("README.md"), "agent edited, uncommitted").unwrap();
+        fs::write(wt.join("new.txt"), "untracked output").unwrap();
+        let message = "chore(task): 自动提交未保存改动 — 任务标题";
+
+        let result = commit_all_inner(&CommitWorktreeRequest {
+            worktree_path: created.worktree_path.clone(),
+            message: message.into(),
+        })
+        .expect("有改动时提交应成功");
+
+        assert!(result.committed, "有改动必须真的提交");
+        let sha = result.sha.expect("提交后应有 sha");
+        assert!(!sha.is_empty());
+        // 提交落在任务分支上，message 原样保留
+        assert_eq!(
+            git_stdout(&root, &["log", "-1", "--format=%s", "task/dirty-1"]).unwrap(),
+            message
+        );
+        assert_eq!(git_stdout(&root, &["rev-parse", "task/dirty-1"]).unwrap(), sha);
+        // 工作区已干净：不会再产生第二次提交
+        assert!(git_stdout(wt, &["status", "--porcelain"]).unwrap().is_empty());
+
+        // 收尾：目录删掉、分支保留（终态语义）
+        remove_inner(
+            &root_str,
+            &created.worktree_path,
+            &created.work_branch,
+            Some(created.base_branch.clone()),
+            Some(created.base_sha.clone()),
+            true,
+        )
+        .unwrap();
+        assert!(!wt.exists());
+        let kept = git_stdout(&root, &["branch", "--list", "task/dirty-1"]).unwrap();
+        assert!(kept.contains("task/dirty-1"), "自动提交的分支必须保留");
+        // 目录删掉也不影响：提交已在对象库里（AC1 的最终目的）
+        assert_eq!(git_stdout(&root, &["log", "-1", "--format=%s", "task/dirty-1"]).unwrap(), message);
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    /// 自动提交（AC3 / AC7）：干净工作区 → `committed: false`，不产生空提交。
+    #[test]
+    fn commit_all_skips_a_clean_worktree() {
+        if run_git(Path::new("."), &["--version"]).is_err() {
+            eprintln!("跳过：找不到 git");
+            return;
+        }
+        let (parent, _root, root_str) = init_real_repo("commitclean");
+        let created = create_inner(&CreateWorktreeRequest {
+            root_path: root_str.clone(),
+            base_branch: None,
+            task_id: "clean-1".into(),
+            init_command: None,
+        })
+        .expect("创建应成功");
+        let wt = Path::new(&created.worktree_path);
+        let before = git_stdout(wt, &["rev-list", "--count", "HEAD"]).unwrap();
+
+        let result = commit_all_inner(&CommitWorktreeRequest {
+            worktree_path: created.worktree_path.clone(),
+            message: "不该出现".into(),
+        })
+        .expect("干净工作区不是错误");
+
+        assert!(!result.committed, "干净工作区不得产生提交");
+        assert!(result.sha.is_none(), "没提交就没有 sha");
+        assert_eq!(
+            git_stdout(wt, &["rev-list", "--count", "HEAD"]).unwrap(),
+            before,
+            "提交条数必须不变"
+        );
+        assert_eq!(
+            git_stdout(wt, &["log", "-1", "--format=%s"]).unwrap(),
+            "init",
+            "HEAD 仍应是原来的提交"
+        );
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    /// 自动提交的安全校验（AC6）：相对路径 / 盘符相对路径在**执行任何 git 命令之前**拒绝；
+    /// 目录不存在报 `worktree-missing`。
+    #[test]
+    fn commit_all_rejects_relative_path() {
+        assert_eq!(
+            commit_all_inner(&CommitWorktreeRequest {
+                worktree_path: "relative/wt".into(),
+                message: "x".into(),
+            })
+            .unwrap_err(),
+            "path-not-absolute"
+        );
+        assert_eq!(
+            commit_all_inner(&CommitWorktreeRequest {
+                worktree_path: "C:wt".into(),
+                message: "x".into(),
+            })
+            .unwrap_err(),
+            "path-not-absolute"
+        );
+        assert_eq!(
+            commit_all_inner(&CommitWorktreeRequest {
+                worktree_path: "  ".into(),
+                message: "x".into(),
+            })
+            .unwrap_err(),
+            "path-not-absolute"
+        );
+        // 绝对但不存在：直接判 worktree-missing，不调用 git
+        let parent = tmp_dir("commitmissing");
+        let missing = parent.join("nope").to_string_lossy().into_owned();
+        assert_eq!(
+            commit_all_inner(&CommitWorktreeRequest {
+                worktree_path: missing,
+                message: "x".into(),
+            })
+            .unwrap_err(),
+            "worktree-missing"
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    /// 自动提交只落在任务分支上（prd 约束「绝不能碰项目主分支」）：结果里的 `branch`
+    /// 必须就是 `task/<id>`，且**改动前后主分支的 HEAD 完全不动**。
+    #[test]
+    fn commit_all_reports_task_branch_and_leaves_main_untouched() {
+        if run_git(Path::new("."), &["--version"]).is_err() {
+            eprintln!("跳过：找不到 git");
+            return;
+        }
+        let (parent, root, root_str) = init_real_repo("commitbranch");
+        let main_branch = git_stdout(&root, &["symbolic-ref", "--short", "HEAD"]).unwrap();
+        let main_before = git_stdout(&root, &["rev-parse", "HEAD"]).unwrap();
+        let created = create_inner(&CreateWorktreeRequest {
+            root_path: root_str.clone(),
+            base_branch: None,
+            task_id: "branch-1".into(),
+            init_command: None,
+        })
+        .expect("创建应成功");
+        fs::write(Path::new(&created.worktree_path).join("new.txt"), "x").unwrap();
+
+        let result = commit_all_inner(&CommitWorktreeRequest {
+            worktree_path: created.worktree_path.clone(),
+            message: "chore(task): 自动提交未保存改动 — 分支校验".into(),
+        })
+        .expect("提交应成功");
+
+        assert_eq!(
+            result.branch.as_deref(),
+            Some("task/branch-1"),
+            "提交必须落在任务分支上"
+        );
+        assert_eq!(
+            git_stdout(&root, &["rev-parse", &main_branch]).unwrap(),
+            main_before,
+            "主分支 HEAD 绝不能因为自动提交而移动"
+        );
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    /// detached HEAD 的 worktree 拒接自动提交：那里的提交没有任何 ref 指向，
+    /// 删目录后同样是永久丢失（与本任务要消灭的数据丢失一模一样）。
+    #[test]
+    fn commit_all_refuses_detached_head_without_touching_the_tree() {
+        if run_git(Path::new("."), &["--version"]).is_err() {
+            eprintln!("跳过：找不到 git");
+            return;
+        }
+        let (parent, root, root_str) = init_real_repo("commitdetached");
+        let created = create_inner(&CreateWorktreeRequest {
+            root_path: root_str.clone(),
+            base_branch: None,
+            task_id: "detached-1".into(),
+            init_command: None,
+        })
+        .expect("创建应成功");
+        let wt = Path::new(&created.worktree_path);
+        let out = run_git(wt, &["checkout", "--detach"]).unwrap();
+        assert!(out.ok, "detach 应成功: {}", out.tail());
+        fs::write(wt.join("new.txt"), "x").unwrap();
+
+        assert_eq!(
+            commit_all_inner(&CommitWorktreeRequest {
+                worktree_path: created.worktree_path.clone(),
+                message: "x".into(),
+            })
+            .unwrap_err(),
+            "worktree-detached"
+        );
+        // 没有 `add -A`：未跟踪文件仍在工作区（没被偷偷暂存）
+        assert!(
+            git_stdout(wt, &["status", "--porcelain"]).unwrap().contains("new.txt"),
+            "拒绝时必须不改工作区"
+        );
+        // 任务分支没有被移动
+        assert_eq!(
+            git_stdout(&root, &["log", "-1", "--format=%s", "task/detached-1"]).unwrap(),
+            "init"
+        );
 
         let _ = fs::remove_dir_all(&parent);
     }

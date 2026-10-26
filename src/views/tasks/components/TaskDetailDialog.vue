@@ -33,7 +33,7 @@ import { useProjectStore } from '../../../stores/project'
 import { useSessionStore } from '../../../stores/session'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { isTauri } from '../../../utils/isTauri'
-import { SETUP_ERROR_PREFIX, WORKTREE_CLEANUP_FAILED_PREFIX } from './setupErrorPrefix'
+import { SETUP_ERROR_PREFIX, WORKTREE_AUTOCOMMIT_FAILED_PREFIX, WORKTREE_CLEANUP_FAILED_PREFIX } from './setupErrorPrefix'
 import {
   approveTask,
   deleteWorktreeBranch,
@@ -155,6 +155,36 @@ const canDeleteBranch = computed(() => {
   const s = task.value?.status
   const terminal = s === 'done' || s === 'canceled'
   return !!retainedBranch.value && terminal && !task.value?.worktreePath
+})
+
+/**
+ * 自动提交的结果（task 10-26-worktree-autocommit / R4）。
+ *
+ * `unknown` = 这条任务跑的时候还没有自动提交（或还没清理，工作区里可能仍有未提交改动），
+ * 详情不额外提示；`ok` = 终态清理时已经先提交再删目录，成果在分支上；
+ * `failed` = 提交失败（如缺 git 身份），未提交的改动随目录一起丢了。
+ *
+ * 只用 `lastError` 的附注判定：成功路径**不写任何记录**（R2「静默跳过」），所以
+ * 「终态 + 分支保留 + 没有失败附注」就是成功。工作树清理失败的附注里也可能带着自动
+ * 提交失败（先提交、后删除，两步各自独立），两种都按失败处理。
+ */
+const worktreeAutocommit = computed<'failed' | 'ok' | 'unknown'>(() => {
+  const t = task.value
+  if (!t) return 'unknown'
+  const detail = t.lastError ?? ''
+  if (detail.includes(WORKTREE_AUTOCOMMIT_FAILED_PREFIX)) return 'failed'
+  const terminal = t.status === 'done' || t.status === 'canceled'
+  if (terminal && t.workBranch && !t.worktreePath) return 'ok'
+  return 'unknown'
+})
+
+/** 失败原因：截掉前缀与后缀括号，只留 `git commit: …` 这类原因 */
+const worktreeAutocommitReason = computed(() => {
+  const detail = task.value?.lastError ?? ''
+  const at = detail.indexOf(WORKTREE_AUTOCOMMIT_FAILED_PREFIX)
+  if (at === -1) return ''
+  const rest = detail.slice(at + WORKTREE_AUTOCOMMIT_FAILED_PREFIX.length)
+  return rest.replace(/（未提交的改动已丢失）[\s\S]*$/, '').trim() || rest.trim()
 })
 
 /** 删除分支：二次确认由模板里的 NPopconfirm 负责，这里只执行（失败由 run() toast） */
@@ -587,6 +617,28 @@ onBeforeUnmount(() => {
             </span>
             <!-- 清理失败时路径还在：删除分支属于「重试清理」，走下方 amber 区，这里不重复 -->
           </div>
+          <!-- 自动提交失败（task 10-26-worktree-autocommit / R4）：未提交的改动已随目录丢失 -->
+          <div
+            v-if="worktreeAutocommit === 'failed'"
+            class="flex items-start gap-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1.5"
+          >
+            <AlertTriangle class="mt-0.5 h-3 w-3 shrink-0 text-amber-600" />
+            <p class="min-w-0 flex-1 select-text break-words text-[11px] leading-4 text-amber-700">
+              自动提交失败：<span class="font-mono">{{
+                worktreeAutocommitReason || '未知原因'
+              }}</span>
+              （未提交的改动已丢失）。可先配置
+              <span class="font-mono">git config --global user.name / user.email</span>
+              再自行补救。
+            </p>
+          </div>
+          <!-- 自动提交成功（静默路径，只有「终态 + 分支保留」才显示）：成果在分支上 -->
+          <p
+            v-else-if="worktreeAutocommit === 'ok'"
+            class="text-[10px] leading-4 text-neutral-400"
+          >
+            已自动提交未保存改动到 <span class="select-text font-mono">{{ retainedBranch }}</span>
+          </p>
           <!-- 分支已保留（keep-branch R3 / R4）：终态且目录已删 → 只剩分支这个产品 -->
           <div
             v-if="canDeleteBranch"
@@ -601,8 +653,10 @@ onBeforeUnmount(() => {
                 <span class="font-mono">git diff</span> 查看，或
                 <span class="font-mono">git merge</span> 合入其他分支。
               </p>
+              <!-- 未提交改动是否还在取决于自动提交结果（task 10-26-worktree-autocommit）：
+                   failed 已在上面 amber 区说过「已丢失」，这里只讲目录与分支的命运 -->
               <p class="text-[10px] leading-4 text-blue-700/80">
-                工作树目录已删除：Agent 未提交的工作区改动已随之丢失，仅提交进分支的内容还在。
+                工作树目录已删除，{{ worktreeAutocommit === 'failed' ? '未提交的改动已丢失，' : '' }}仅提交进分支的内容还在。
                 删除分支后这些提交只能靠 <span class="font-mono">git fsck</span> 找回。
               </p>
             </div>

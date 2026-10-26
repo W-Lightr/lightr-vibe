@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核对命令形状与安全检查"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "四门禁"}
+{"file": ".trellis/tasks/10-26-worktree-autocommit/prd.md", "reason": "逐条核对 AC1-AC8"}
+{"file": ".trellis/tasks/10-26-worktree-autocommit/design.md", "reason": "重点核对 commit 是否真的在 remove 之前、失败是否不阻断、回滚路径是否不提交"}

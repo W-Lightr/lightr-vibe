@@ -16,3 +16,12 @@ export const SETUP_ERROR_PREFIX = '准备失败：'
  * 用 `includes` 判定而不是 `startsWith`：这条附注可能被追加在启动失败原因之后。
  */
 export const WORKTREE_CLEANUP_FAILED_PREFIX = '工作树清理失败：'
+
+/**
+ * 自动提交失败的附注前缀（task 10-26-worktree-autocommit / R2 / R4）：写方是桥接层的
+ * `cleanupWorktreeOnFinish`，读方是详情抽屉。
+ *
+ * 失败**不阻断**清理（目录照删、分支照留），但必须让用户知道「未提交的改动已丢失」。
+ * 同样用 `includes` 判定：这条附注也会跟在工作树清理失败的文案之后。
+ */
+export const WORKTREE_AUTOCOMMIT_FAILED_PREFIX = '自动提交失败：'

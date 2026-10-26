@@ -186,6 +186,19 @@ export interface CreatedWorktree {
 }
 
 /**
+ * 自动提交的结果（`worktree_commit_all`，task 10-26-worktree-autocommit）。
+ * 干净工作区 → `{ committed: false, sha: null }`（不产生空提交）。
+ */
+export interface CommitWorktreeResult {
+  /** 是否真的产生了提交 */
+  committed: boolean
+  /** 新提交的 sha；没提交时为 null */
+  sha: string | null
+  /** 提交落在哪条本地分支上（用来确认只落在 `task/*`，不碰主分支） */
+  branch: string | null
+}
+
+/**
  * turn 回流结论（`task_settle_turn` 的 outcome，子任务 3 / prd R5）。
  * 由前端从 `acp_prompt` 的 stopReason + 错误分类得出；Rust 只做
  * 「runSeq 防串 + 状态机校验 + 写 failureReason」。

@@ -54,6 +54,7 @@ pub fn run() {
             // git worktree 隔离（task 10-26-worktree-backend）：全仓唯一调用 git 的模块
             worktree::worktree_repo_info,
             worktree::worktree_create,
+            worktree::worktree_commit_all,
             worktree::worktree_remove,
             acp::acp_connect,
             acp::acp_disconnect,

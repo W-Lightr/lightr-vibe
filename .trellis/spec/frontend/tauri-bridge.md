@@ -941,9 +941,10 @@ Optional git isolation for tasks. **Every git invocation in this repo lives here
 no git call in services, stores, or components. Commands (camelCase, `Result<_, String>`):
 
 ```rust
-worktree_repo_info { rootPath } -> { isRepo, currentBranch, branches, detail }
-worktree_create    { req }      -> { worktreePath, workBranch, baseSha, baseBranch, initError? }
-worktree_remove    { req }      -> ()   // req = { rootPath, worktreePath, workBranch, baseBranch?, baseSha?, keepBranch? }
+worktree_repo_info   { rootPath } -> { isRepo, currentBranch, branches, detail }
+worktree_create      { req }      -> { worktreePath, workBranch, baseSha, baseBranch, initError? }
+worktree_remove      { req }      -> ()   // req = { rootPath, worktreePath, workBranch, baseBranch?, baseSha?, keepBranch? }
+worktree_commit_all  { req }      -> { committed, sha?, branch? }   // req = { worktreePath, message }
 ```
 
 > **`worktree_remove` takes a `Deserialize` struct, not loose params** (task
@@ -1005,10 +1006,36 @@ Removal (default `keepBranch: false`) keeps a branch that still holds unlanded c
 work" because deletion is the irreversible half. `keepBranch: true` skips the guard
 entirely and always keeps the branch.
 
-> **Uncommitted work is not protected.** `git worktree remove --force` deletes the working
-> tree, so anything the agent left uncommitted is gone even though the branch survives.
-> The detail dialog says so explicitly; the long-term fix (auto-commit or stash before
-> removal) is out of scope for 10-26-worktree-keep-branch.
+> **Uncommitted work is saved before removal (task 10-26-worktree-autocommit).**
+> `git worktree remove --force` deletes the working tree, so uncommitted agent edits never
+> entered the object database and the kept branch cannot bring them back.
+> `worktree_commit_all` must therefore run **before** every terminal `worktree_remove`:
+> `git status --porcelain` (empty → `committed: false`, **no empty commit**) → `git add -A`
+> → `git commit -m <message>` → `git rev-parse HEAD`. It never passes `--no-verify`, never
+> runs `git config`, never `--amend`s or pushes. Two guards, both **before** `add -A`:
+>
+> | Guard | Error | Why |
+> |---|---|---|
+> | `require_absolute` (step 1) | `path-not-absolute` | same suffix-resolution trap as create/remove |
+> | `is_dir` | `worktree-missing` | `git -C` on a missing dir gives a useless error |
+> | `symbolic-ref --quiet --short HEAD` | `worktree-detached` | a commit on detached HEAD is unreachable — deleting the dir loses it exactly as before |
+>
+> The result reports `branch` (from `symbolic-ref`) so the caller can refuse a commit that
+> landed outside `task/`. Per-step failures are `git status: <tail>` / `git add: <tail>` /
+> `git commit: <tail>` (the last is the usual missing-`user.name` case).
+>
+> Frontend: `commitWorktreeIfDirty(row)` is the **first** statement of
+> `cleanupWorktreeOnFinish`, immediately before `discardWorktree(..., true)`. Commit failure
+> is **non-blocking** — the dir is still removed and the branch still kept — but the reason
+> is recorded via `task_worktree_issue` with `WORKTREE_AUTOCOMMIT_FAILED_PREFIX`
+> (`components/setupErrorPrefix.ts`) and the dialog shows it amber.
+> `failSetup` / `rollbackStart` never commit (that attempt produced nothing worth keeping).
+>
+> **Gotcha (cost a real bug):** `task_worktree_issue` **overwrites** `lastError`, it does not
+> append. Two sequential calls — autocommit note then cleanup note — silently drop the first,
+> so the user never learns their edits are gone. Build all notes first and write **once**.
+> Same reason the detail dialog's retained-branch line must not hard-code
+> 「未提交改动已随之丢失」: after autocommit that is usually false.
 
 **Start chain (`taskSessionBridge.ts::startTask`)** — the task row's `useWorktree` decides
 the session cwd:

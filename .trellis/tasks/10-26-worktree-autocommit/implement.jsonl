@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "worktree 命令契约、{req} 入参形状、安全检查与清理链路规范"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "task store 的 lastError 写入通道与终态语义"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令与禁止模式"}
+{"file": ".trellis/tasks/10-26-worktree-autocommit/prd.md", "reason": "本任务 R1-R4 与 AC1-AC8"}
+{"file": ".trellis/tasks/10-26-worktree-autocommit/design.md", "reason": "命令实现六步、为什么必须先 commit 再 remove、失败不阻断"}
+{"file": ".trellis/tasks/10-26-worktree-autocommit/implement.md", "reason": "五步顺序、回滚点、人工验收"}

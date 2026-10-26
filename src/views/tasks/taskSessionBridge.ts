@@ -20,7 +20,11 @@ import { taskErrorMessage } from '../../types/task'
 import type { EngineWire } from '../../types/engine'
 import { DEFAULT_ENGINE_WIRE } from '../../types/engine'
 import type { TaskStatus, WorkTask } from '../../types/task'
-import { SETUP_ERROR_PREFIX, WORKTREE_CLEANUP_FAILED_PREFIX } from './components/setupErrorPrefix'
+import {
+  SETUP_ERROR_PREFIX,
+  WORKTREE_AUTOCOMMIT_FAILED_PREFIX,
+  WORKTREE_CLEANUP_FAILED_PREFIX,
+} from './components/setupErrorPrefix'
 
 export { SETUP_ERROR_PREFIX }
 
@@ -50,6 +54,34 @@ const runTokens = new Map<string, RunToken>()
 
 /** 正在执行启动链的任务 id（防双击；看板另有 inflight 集合做按钮置灰） */
 const starting = new Set<string>()
+
+/**
+ * 自动提交的 message（task 10-26-worktree-autocommit / AC2 / design §6 风险表）。
+ *
+ * 前缀固定、可辨识——「自动提交未保存改动」一眼就能看出是系统补救出来的提交，
+ * 不会被误认为是用户自己写的。Rust 侧同一句话是 message 为空白时的兜底。
+ */
+const WORKTREE_AUTOCOMMIT_PREFIX = 'chore(task): 自动提交未保存改动'
+
+/**
+ * 自动提交只允许落在任务分支上（prd 约束：绝不碰项目主分支）。
+ *
+ * `git -C <worktree>` 提交的是**当前 checked out 的分支**——不是「任务是哪条分支」。
+ * 正常链路里 worktree 由 `worktree_create` 建在 `task/<id>` 上，但用户完全可能在
+ * worktree 里 `git checkout` 到别处。所以提交后要核对落点，不是 `task/` 开头就报出来。
+ */
+const TASK_BRANCH_PREFIX = 'task/'
+
+/**
+ * 拼出自动提交的完整 message：前缀 + 任务标题（AC2 要求 message 包含任务标题，
+ * 否则 `git log` 里几十条自动提交分不清是哪次任务）。
+ *
+ * 标题被折成单行（换行会截断 `git log --oneline` 的观感），空白标题只留前缀。
+ */
+function autoCommitMessage(title: string): string {
+  const oneLine = title.replace(/\s+/g, ' ').trim()
+  return oneLine ? `${WORKTREE_AUTOCOMMIT_PREFIX}：${oneLine}` : WORKTREE_AUTOCOMMIT_PREFIX
+}
 
 /**
  * 回退启动失败的任务（R3「任一步失败则回退并提示」）。
@@ -379,6 +411,36 @@ async function failSetup(
 }
 
 /**
+ * 终态清理前先把工作区里的未提交改动落成一次提交（task 10-26-worktree-autocommit
+ * / R1 / R2）。**必须在 `discardWorktree` 之前**调用：`git worktree remove --force`
+ * 删的是工作目录，未提交的改动一旦目录消失就永久丢失——分支保留也救不回来，
+ * 因为分支上根本没有那些内容。
+ *
+ * 返回：
+ * - `null` = 没什么要说的（没有工作树 / 工作区本来就干净 / 提交成功）；
+ * - 失败原因串 = 调用方写进 `lastError`，但**不阻断**删除与分支保留。
+ *
+ * 没有 git 身份的机器会在这里失败（`git commit: …`），这是预期行为：不代用户改配置。
+ *
+ * 参数用 `WorkTask`（而不是 `WorktreeFacts`）：message 要带任务标题（AC2），
+ * 而 `WorktreeFacts` 只有路径 / 分支。唯一的调用点本来就拿着完整行。
+ */
+async function commitWorktreeIfDirty(row: WorkTask): Promise<string | null> {
+  if (!row.worktreePath) return null
+  try {
+    const result = await worktreeService.commitAll(row.worktreePath, autoCommitMessage(row.title))
+    // 落点校验：工作树被别人 checkout 到非任务分支时，提交虽然成功但不在任务分支上，
+    // 删目录后照样丢失（且污染了那条分支）。按失败处理，让详情提示出来。
+    if (result.committed && result.branch && !result.branch.startsWith(TASK_BRANCH_PREFIX)) {
+      return `提交落在了 ${result.branch} 而不是任务分支（未提交的改动仍随目录丢失）`
+    }
+  } catch (err) {
+    return String(err instanceof Error ? err.message : err) || '未知错误'
+  }
+  return null
+}
+
+/**
  * 终态清理（design §3.5 / R3）：任务刚进入 `done` / `canceled` 且有工作树 → 删掉它。
  *
  * 三个调用点（通过 / 停止 / 看板拖到取消列）都走这里，避免各写一份、行为漂移。
@@ -387,16 +449,31 @@ async function failSetup(
  *
  * `row` 用转移的返回值（含路径 / 分支 / sha），不重新查 store——转移刚写完，这里就是最新。
  *
+ * **顺序不能反**（task 10-26-worktree-autocommit）：先 `commitWorktreeIfDirty` 把未提交
+ * 改动落成一次提交，**再**删目录。反过来的话目录已消失，`git add` 无从谈起。
+ *
  * `keepBranch: true`：任务终态意味着这次工作有产品，分支必须留给用户 `git log` /
- * `git diff` / `git merge`。删目录会连**未提交**的工作区改动一起删掉，这是 worktree 语义，
- * 所以详情里要提示「分支已保留，但未提交的改动已丢」。
+ * `git diff` / `git merge`。自动提交让「Agent 忘了 commit」的成果也能通过分支找回。
  */
 async function cleanupWorktreeOnFinish(row: WorkTask): Promise<void> {
   const finished = row.status === 'done' || row.status === 'canceled'
   if (!finished || !row.worktreePath) return
+  // 1 · 先把未提交改动提交到任务分支（失败不阻断，原因留给详情展示）
+  const commitFailure = await commitWorktreeIfDirty(row)
+  // 2 · 再删目录（保留分支）
   const failure = await discardWorktree(row.id, row, true)
+  // 自动提交失败 → 附注写进 lastError（目录照删、分支照留）
+  const autoCommitNote = commitFailure
+    ? `${WORKTREE_AUTOCOMMIT_FAILED_PREFIX}${commitFailure}（未提交的改动已丢失）`
+    : null
+  // why 一次写完而不是分别 noteWorktreeIssue：`task_worktree_issue` 是**覆盖**语义，
+  // 分两次写会让后一条把前一条抹掉——两步都失败时「自动提交失败」就消失了（R2 要求必须告知）。
+  const cleanupNote = failure
+    ? `${WORKTREE_CLEANUP_FAILED_PREFIX}${row.worktreePath}（${failure}）`
+    : null
+  const notes = [autoCommitNote, cleanupNote].filter((n): n is string => !!n)
+  if (notes.length) await noteWorktreeIssue(row.id, notes.join('；'))
   if (!failure) return
-  await noteWorktreeIssue(row.id, `${WORKTREE_CLEANUP_FAILED_PREFIX}${row.worktreePath}（${failure}）`)
   useMessage().warning(`工作树清理失败：${row.worktreePath}，可在任务详情里重试`)
 }
 
