@@ -6,6 +6,7 @@ mod agent_type;
 mod engine;
 mod fs;
 mod task;
+mod worktree;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -47,6 +48,12 @@ pub fn run() {
             task::task_settle_turn,
             task::task_detach_session,
             task::task_duplicate,
+            task::task_attach_worktree,
+            task::task_clear_worktree,
+            // git worktree 隔离（task 10-26-worktree-backend）：全仓唯一调用 git 的模块
+            worktree::worktree_repo_info,
+            worktree::worktree_create,
+            worktree::worktree_remove,
             acp::acp_connect,
             acp::acp_disconnect,
             acp::acp_status,

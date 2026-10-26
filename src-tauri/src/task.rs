@@ -193,6 +193,26 @@ pub struct WorkTask {
     pub settled_at: Option<i64>,
     /// 进入 done / canceled
     pub finished_at: Option<i64>,
+    // ---------- git worktree 隔离（task 10-26-worktree-backend / prd R5） ----------
+    // 全部 `#[serde(default)]`：旧 tasks.json 无这些字段时按默认值读入（AC9）。
+    /// 是否在独立工作树里执行（编辑器开关，默认关）
+    #[serde(default)]
+    pub use_worktree: bool,
+    /// 创建后的**绝对**路径（创建流程写入，不接受客户端传）
+    #[serde(default)]
+    pub worktree_path: Option<String>,
+    /// 任务自己的分支名，形如 `task/<id>`
+    #[serde(default)]
+    pub work_branch: Option<String>,
+    /// 基线分支（worktree 从哪个分支拉出）
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    /// 创建**之前**记录的基线提交（diff 基准，防创建期间分支漂移）
+    #[serde(default)]
+    pub base_sha: Option<String>,
+    /// 可选的初始化命令（新建工作树后执行一次；失败只提示，不回滚）
+    #[serde(default)]
+    pub init_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -242,6 +262,14 @@ pub struct TaskDraft {
     pub effort_id: Option<String>,
     #[serde(default)]
     pub effort_value: Option<String>,
+    /// 是否在独立 worktree 里执行（prd R5）。**故意不接收** path / branch / sha：
+    /// 那三个由 `task_attach_worktree`（创建流程）写入，客户端不得伪造。
+    #[serde(default)]
+    pub use_worktree: Option<bool>,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub init_command: Option<String>,
 }
 
 /// 编辑入参（prd R3 task_update）：未出现的字段不改
@@ -260,6 +288,13 @@ pub struct TaskPatch {
     pub effort_id: Option<String>,
     #[serde(default)]
     pub effort_value: Option<String>,
+    /// 同 `TaskDraft`：只放行开关与基线设置，不接收 worktreePath / workBranch / baseSha
+    #[serde(default)]
+    pub use_worktree: Option<bool>,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub init_command: Option<String>,
 }
 
 /// 一个任务的完整视图：行 + 时间线（设计 D4 详情抽屉一次取全）
@@ -611,6 +646,16 @@ fn push_event(
     event
 }
 
+/// 去空白后为空 → None（可选字符串字段的统一「空即未设置」语义）
+fn trim_to_none(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// 按 ID 找任务（可变）
 fn find_task_mut<'a>(file: &'a mut TaskFile, id: &str) -> Result<&'a mut WorkTask, String> {
     file.tasks
@@ -865,6 +910,13 @@ pub fn task_create(draft: TaskDraft) -> Result<TaskDetails, String> {
             started_at: None,
             settled_at: None,
             finished_at: None,
+            use_worktree: draft.use_worktree.unwrap_or(false),
+            // 路径 / 分支 / sha 只由创建流程写入（task_attach_worktree），不接受客户端传
+            worktree_path: None,
+            work_branch: None,
+            base_branch: draft.base_branch.as_deref().and_then(trim_to_none),
+            base_sha: None,
+            init_command: draft.init_command.as_deref().and_then(trim_to_none),
         };
         file.tasks.push(task.clone());
         let event = push_event(file, &task.id, TaskEventKind::Created, TaskActor::User, None);
@@ -918,6 +970,16 @@ pub fn task_update(id: String, patch: TaskPatch) -> Result<WorkTask, String> {
                     task.effort_value = None;
                 }
             }
+        }
+        // worktree 设置：开关 / 基线分支 / 初始化命令（路径与 sha 不在此列，prd R5）
+        if let Some(use_worktree) = patch.use_worktree {
+            task.use_worktree = use_worktree;
+        }
+        if let Some(base_branch) = patch.base_branch {
+            task.base_branch = trim_to_none(&base_branch);
+        }
+        if let Some(init_command) = patch.init_command {
+            task.init_command = trim_to_none(&init_command);
         }
         task.updated_at = now;
         let updated = task.clone();
@@ -1009,6 +1071,65 @@ pub fn task_attach_session(
     })
 }
 
+/// 绑定 worktree 信息（创建流程写回）：path / branch / base 三个字段唯一写入点。
+/// why: 单独一条命令而不是塞进 `task_update` —— 客户端不得伪造这三个事实，
+/// 只有 `worktreeService.create` 的成功返回才能填它们（prd R5 / design §3.4）。
+#[tauri::command]
+pub fn task_attach_worktree(
+    id: String,
+    worktree_path: String,
+    work_branch: String,
+    base_branch: String,
+    base_sha: String,
+) -> Result<WorkTask, String> {
+    with_file_write(|file| {
+        let now = now_ms();
+        let task = find_task_mut(file, &id)?;
+        task.use_worktree = true;
+        task.worktree_path = trim_to_none(&worktree_path);
+        task.work_branch = trim_to_none(&work_branch);
+        task.base_branch = trim_to_none(&base_branch);
+        task.base_sha = trim_to_none(&base_sha);
+        task.updated_at = now;
+        let updated = task.clone();
+        push_event(
+            file,
+            &id,
+            TaskEventKind::UserAction,
+            TaskActor::User,
+            Some(serde_json::json!({
+                "action": "attach_worktree",
+                "worktreePath": worktree_path,
+                "workBranch": work_branch,
+            })),
+        );
+        Ok(updated)
+    })
+}
+
+/// 清空 worktree 信息（删除工作树后调用）：只清运行态四字段，
+/// `use_worktree` / `init_command` 是用户设置，保留（重新启动时会再建）。
+#[tauri::command]
+pub fn task_clear_worktree(id: String) -> Result<WorkTask, String> {
+    with_file_write(|file| {
+        let now = now_ms();
+        let task = find_task_mut(file, &id)?;
+        task.worktree_path = None;
+        task.work_branch = None;
+        task.base_sha = None;
+        task.updated_at = now;
+        let updated = task.clone();
+        push_event(
+            file,
+            &id,
+            TaskEventKind::UserAction,
+            TaskActor::User,
+            Some(serde_json::json!({ "action": "clear_worktree" })),
+        );
+        Ok(updated)
+    })
+}
+
 /// 归档 / 取消归档：仅终态（done / canceled / failed）可归档
 #[tauri::command]
 pub fn task_archive(id: String, archived: bool) -> Result<WorkTask, String> {
@@ -1089,6 +1210,9 @@ pub fn task_duplicate(id: String) -> Result<TaskDetails, String> {
             model_id: source.model_id.clone(),
             effort_id: source.effort_id.clone(),
             effort_value: source.effort_value.clone(),
+            use_worktree: Some(source.use_worktree),
+            base_branch: source.base_branch.clone(),
+            init_command: source.init_command.clone(),
         })
     })??;
     task_create(draft)
@@ -1186,6 +1310,12 @@ mod tests {
             started_at: None,
             settled_at: None,
             finished_at: None,
+            use_worktree: false,
+            worktree_path: None,
+            work_branch: None,
+            base_branch: None,
+            base_sha: None,
+            init_command: None,
         };
         file.tasks.push(task.clone());
         task
@@ -1541,6 +1671,9 @@ mod tests {
             model_id: None,
             effort_id: None,
             effort_value: None,
+            use_worktree: None,
+            base_branch: None,
+            init_command: None,
         })
         .unwrap();
         assert_eq!(created.task.status, TaskStatus::Todo);
@@ -1665,6 +1798,9 @@ mod tests {
             model_id: None,
             effort_id: None,
             effort_value: None,
+            use_worktree: None,
+            base_branch: None,
+            init_command: None,
         })
         .unwrap();
         assert_eq!(created.task.status, TaskStatus::Todo);
@@ -1731,6 +1867,9 @@ mod tests {
             model_id: None,
             effort_id: None,
             effort_value: None,
+            use_worktree: None,
+            base_branch: None,
+            init_command: None,
         })
         .unwrap()
         .task;
@@ -1742,6 +1881,9 @@ mod tests {
             model_id: None,
             effort_id: None,
             effort_value: None,
+            use_worktree: None,
+            base_branch: None,
+            init_command: None,
         })
         .unwrap()
         .task;
@@ -1782,10 +1924,129 @@ mod tests {
             "\"createdAt\"",
             "\"settledAt\"",
             "\"finishedAt\"",
+            // worktree 隔离字段（AC10）
+            "\"useWorktree\"",
+            "\"worktreePath\"",
+            "\"workBranch\"",
+            "\"baseBranch\"",
+            "\"baseSha\"",
+            "\"initCommand\"",
         ] {
             assert!(json.contains(key), "缺少 camelCase 字段 {}", key);
         }
         // 状态是 snake_case wire 名
         assert!(json.contains("\"status\":\"todo\""));
+    }
+
+    /// AC9：旧 tasks.json（无 worktree 字段）能读入，新字段取默认值
+    #[test]
+    fn legacy_task_json_without_worktree_fields_uses_defaults() {
+        let legacy = r#"{
+            "id": "task-1",
+            "projectId": "proj-a",
+            "title": "旧任务",
+            "prompt": "",
+            "status": "todo",
+            "sortOrder": 0,
+            "runSeq": 0,
+            "sessionId": null,
+            "engineId": null,
+            "verdict": null,
+            "resultSummary": null,
+            "lastError": null,
+            "failureReason": null,
+            "archivedAt": null,
+            "createdAt": 1,
+            "updatedAt": 1,
+            "startedAt": null,
+            "settledAt": null,
+            "finishedAt": null
+        }"#;
+        let task: WorkTask = serde_json::from_str(legacy).expect("旧 JSON 必须可读");
+        assert!(!task.use_worktree);
+        assert!(task.worktree_path.is_none());
+        assert!(task.work_branch.is_none());
+        assert!(task.base_branch.is_none());
+        assert!(task.base_sha.is_none());
+        assert!(task.init_command.is_none());
+        // 回写时字段齐全（新代码写的文件可被旧代码忽略未知字段）
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(json.contains("\"useWorktree\":false"));
+    }
+
+    /// worktree 字段的命令链路：create 接受开关 / 基线 / init，拒绝伪造 path；
+    /// attach 写入路径与分支；clear 清空运行态但保留用户设置
+    #[test]
+    fn worktree_fields_attach_and_clear() {
+        let _serial = lock_store();
+        let root = std::env::temp_dir().join(format!("lightr-task-wt-{}", now_ms()));
+        let path = root.join("tasks.json");
+        point_store_at(&path);
+
+        let created = task_create(TaskDraft {
+            project_id: "proj-a".into(),
+            title: "worktree".into(),
+            prompt: String::new(),
+            engine_id: None,
+            model_id: None,
+            effort_id: None,
+            effort_value: None,
+            use_worktree: Some(true),
+            base_branch: Some("  main  ".into()),
+            init_command: Some("pnpm install".into()),
+        })
+        .unwrap()
+        .task;
+        assert!(created.use_worktree);
+        assert_eq!(created.base_branch.as_deref(), Some("main"), "应去空白");
+        assert_eq!(created.init_command.as_deref(), Some("pnpm install"));
+        // 创建时 path / branch / sha 一律为空（不接受客户端传）
+        assert!(created.worktree_path.is_none());
+        assert!(created.work_branch.is_none());
+        assert!(created.base_sha.is_none());
+
+        let attached = task_attach_worktree(
+            created.id.clone(),
+            "C:/work/repo-task-task-1".into(),
+            "task/task-1".into(),
+            "main".into(),
+            "abc123".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            attached.worktree_path.as_deref(),
+            Some("C:/work/repo-task-task-1")
+        );
+        assert_eq!(attached.work_branch.as_deref(), Some("task/task-1"));
+        assert_eq!(attached.base_sha.as_deref(), Some("abc123"));
+        assert!(attached.use_worktree);
+
+        // 空串 = 未设置（编辑器清空 init 命令）
+        let patched = task_update(
+            created.id.clone(),
+            TaskPatch {
+                init_command: Some("  ".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(patched.init_command.is_none());
+
+        let cleared = task_clear_worktree(created.id.clone()).unwrap();
+        assert!(cleared.worktree_path.is_none());
+        assert!(cleared.work_branch.is_none());
+        assert!(cleared.base_sha.is_none());
+        // 用户设置保留
+        assert!(cleared.use_worktree);
+        assert_eq!(cleared.base_branch.as_deref(), Some("main"));
+
+        // 复制任务带上 worktree 设置（新行不继承运行态路径）
+        let dup = task_duplicate(created.id.clone()).unwrap().task;
+        assert!(dup.use_worktree);
+        assert_eq!(dup.base_branch.as_deref(), Some("main"));
+        assert!(dup.worktree_path.is_none());
+
+        reset_store();
+        let _ = fs::remove_dir_all(root);
     }
 }

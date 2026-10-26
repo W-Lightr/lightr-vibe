@@ -55,6 +55,12 @@ function nowMs(): number {
   return Date.now()
 }
 
+/** 可选字符串字段的「去空白后为空 → null」语义（与 Rust trim_to_none 一致） */
+function normalizeOptional(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? ''
+  return trimmed === '' ? null : trimmed
+}
+
 // ---------- 内存态 ----------
 
 let tasks: WorkTask[] = []
@@ -117,6 +123,12 @@ function seedDemoTasks(): void {
       startedAt: null,
       settledAt: null,
       finishedAt: null,
+      useWorktree: false,
+      worktreePath: null,
+      workBranch: null,
+      baseBranch: null,
+      baseSha: null,
+      initCommand: null,
     }
     tasks.push(task)
     pushEvent(task.id, 'created', 'user', null)
@@ -247,6 +259,13 @@ export function mockCreate(draft: TaskDraft): TaskDetails {
     startedAt: null,
     settledAt: null,
     finishedAt: null,
+    useWorktree: draft.useWorktree ?? false,
+    // 路径 / 分支 / sha 只由 attachWorktree 写入（与 Rust 一致）
+    worktreePath: null,
+    workBranch: null,
+    baseBranch: normalizeOptional(draft.baseBranch),
+    baseSha: null,
+    initCommand: normalizeOptional(draft.initCommand),
   }
   tasks.push(task)
   pushEvent(task.id, 'created', 'user', null)
@@ -270,6 +289,10 @@ export function mockUpdate(id: string, patch: TaskPatch): WorkTask {
   if (patch.modelId !== undefined) {
     task.modelId = patch.modelId && patch.modelId.trim() !== '' ? patch.modelId : null
   }
+  // worktree 设置：只放行开关 / 基线 / init（路径与 sha 由 attachWorktree 写）
+  if (patch.useWorktree !== undefined) task.useWorktree = patch.useWorktree
+  if (patch.baseBranch !== undefined) task.baseBranch = normalizeOptional(patch.baseBranch)
+  if (patch.initCommand !== undefined) task.initCommand = normalizeOptional(patch.initCommand)
   task.updatedAt = nowMs()
   pushEvent(id, 'user_action', 'user', { action: 'updated' })
   return clone(task)
@@ -394,5 +417,45 @@ export function mockDuplicate(id: string): TaskDetails {
     modelId: source.modelId,
     effortId: source.effortId,
     effortValue: source.effortValue,
+    // worktree 设置随任务走（新行不继承运行态路径 / 分支 / sha）
+    useWorktree: source.useWorktree,
+    baseBranch: source.baseBranch,
+    initCommand: source.initCommand,
   })
+}
+
+/** 写回 worktree 事实（与 Rust `task_attach_worktree` 同语义） */
+export function mockAttachWorktree(
+  id: string,
+  worktreePath: string,
+  workBranch: string,
+  baseBranch: string,
+  baseSha: string,
+): WorkTask {
+  ensureSeed()
+  const task = tasks[findIndex(id)]
+  task.useWorktree = true
+  task.worktreePath = normalizeOptional(worktreePath)
+  task.workBranch = normalizeOptional(workBranch)
+  task.baseBranch = normalizeOptional(baseBranch)
+  task.baseSha = normalizeOptional(baseSha)
+  task.updatedAt = nowMs()
+  pushEvent(id, 'user_action', 'user', {
+    action: 'attach_worktree',
+    worktreePath,
+    workBranch,
+  })
+  return clone(task)
+}
+
+/** 清空 worktree 运行态（与 Rust `task_clear_worktree` 同语义；保留用户设置） */
+export function mockClearWorktree(id: string): WorkTask {
+  ensureSeed()
+  const task = tasks[findIndex(id)]
+  task.worktreePath = null
+  task.workBranch = null
+  task.baseSha = null
+  task.updatedAt = nowMs()
+  pushEvent(id, 'user_action', 'user', { action: 'clear_worktree' })
+  return clone(task)
 }

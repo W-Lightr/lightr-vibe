@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "命令契约与错误串合规性复核"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "四门禁"}
+{"file": ".trellis/tasks/10-26-task-worktree/prd.md", "reason": "逐条核对 PAC1-PAC8 与 D1-D5"}
+{"file": ".trellis/tasks/10-26-task-worktree/design.md", "reason": "核对最终实现与设计一致，尤其是安全约束与回滚"}
+{"file": ".trellis/tasks/10-26-task-worktree/implement.md", "reason": "人工验收清单逐项打勾"}

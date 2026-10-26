@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "Rust 命令契约：camelCase、错误串、双通道 service、spawn 外部进程的既有做法"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "task store 的异步例外与 no-optimistic-update 规则"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令与禁止模式"}
+{"file": ".trellis/tasks/10-26-task-worktree/prd.md", "reason": "五项决策 D1-D5 与 PAC1-PAC8"}
+{"file": ".trellis/tasks/10-26-task-worktree/design.md", "reason": "§1 与 codeg 的差异、§2 后端命令集与创建/删除步骤、§4 三条安全约束"}
+{"file": ".trellis/tasks/10-26-task-worktree/research/codeg-worktree.md", "reason": "§2 git 命令层原文、§7 最小实现建议"}
+{"file": ".trellis/tasks/10-26-task-worktree/implement.md", "reason": "三子任务顺序、回滚点与人工验收"}

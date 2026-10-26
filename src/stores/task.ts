@@ -164,6 +164,35 @@ export const useTaskStore = defineStore('task', () => {
     return details.task
   }
 
+  /**
+   * 写回 worktree 事实（启动链路在创建成功后调用）：路径 / 分支 / 基线 sha 只能
+   * 经这条命令写入，编辑保存（update）不碰它们。
+   */
+  async function attachWorktree(
+    id: string,
+    worktreePath: string,
+    workBranch: string,
+    baseBranch: string,
+    baseSha: string,
+  ): Promise<WorkTask> {
+    const row = await taskService.attachWorktree(
+      id,
+      worktreePath,
+      workBranch,
+      baseBranch,
+      baseSha,
+    )
+    upsert(row)
+    return row
+  }
+
+  /** 清空 worktree 运行态（工作树删除后调用）；失败由调用方提示，不回滚任务状态 */
+  async function clearWorktree(id: string): Promise<WorkTask> {
+    const row = await taskService.clearWorktree(id)
+    upsert(row)
+    return row
+  }
+
   return {
     tasks,
     loaded,
@@ -182,5 +211,7 @@ export const useTaskStore = defineStore('task', () => {
     settleTurn,
     detachSession,
     duplicate,
+    attachWorktree,
+    clearWorktree,
   }
 })

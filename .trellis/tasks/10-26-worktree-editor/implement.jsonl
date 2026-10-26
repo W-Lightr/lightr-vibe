@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "SFC 结构、props/emits、Tailwind 优先"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "开关/下拉/说明文案的视觉语言"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TaskDraft 新增可选字段"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令与禁止模式"}
+{"file": ".trellis/tasks/10-26-task-worktree/design.md", "reason": "§3.3 编辑器布局与规则（默认关、仅开启时显示分支、非 git 禁用）"}
+{"file": ".trellis/tasks/10-26-task-worktree/research/codeg-worktree.md", "reason": "§5 codeg 编辑器的 pinned / choosesBranch / defaultFollowsHead 语义"}
+{"file": ".trellis/tasks/10-26-worktree-editor/prd.md", "reason": "本子任务 R1-R7 与 AC1-AC12"}

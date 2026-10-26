@@ -935,6 +935,50 @@ subscription, not component state):
   **same** `handleTurnSettled` path; the detail dialog seeds one assistant text
   message before `'ok'` so the simulation matches a real successful turn.
 
+### Worktree commands (`src-tauri/src/worktree.rs`, task 10-26-task-worktree)
+
+Optional git isolation for tasks. **Every git invocation in this repo lives here** —
+no git call in services, stores, or components. Commands (camelCase, `Result<_, String>`):
+
+```rust
+worktree_repo_info { rootPath } -> { isRepo, currentBranch, branches, detail }
+worktree_create    { req }      -> { worktreePath, workBranch, baseSha, baseBranch, initError? }
+worktree_remove    { rootPath, worktreePath, workBranch, baseBranch?, baseSha? } -> ()
+```
+
+Task row gains `useWorktree` / `worktreePath` / `workBranch` / `baseBranch` / `baseSha` /
+`initCommand` (all `#[serde(default)]`, so old `tasks.json` still parses). `TaskDraft` /
+`TaskPatch` accept **only** `useWorktree` / `baseBranch` / `initCommand` — path, branch
+name and sha are written by the creation flow and must not be forgeable by a client.
+
+**Three traps, each cost a real bug somewhere:**
+
+1. **Absolute paths only.** Git resolves a `<worktree>` argument by unique path
+   **suffix** first and only then as a path, so a relative name can reach a
+   registered worktree anywhere on disk and `--force` deletes it. `require_absolute`
+   is the first statement of both create and remove; drive-relative (`C:foo`, `C:`)
+   and non-UTF-8 paths are refused **before any git call**.
+2. **`base_sha` before `worktree add`.** Recorded via `git rev-parse <base_branch>`
+   before the checkout exists, so a branch switch mid-creation cannot drift the diff
+   baseline.
+3. **`worktree add -b <work_branch> <path> <base_branch>`** — not
+   `add <path> <branch>`. The task branch is new; without `-b` git answers
+   `fatal: invalid reference`, and with a same-name tag it silently produces a
+   **detached** checkout. `-b` also pins the start point to `base_branch`.
+   **Its side effect must be handled**: git creates the branch *before* the
+   directory, so a directory-stage failure leaves the branch behind and every retry
+   then fails with `a branch named ... already exists`. Roll back that branch on
+   failure — only when it did not exist before the call, so a user's own branch is
+   never deleted.
+4. **Verify attachment with the full ref.** `git -C <abs> symbolic-ref --quiet HEAD`
+   must equal `refs/heads/<work_branch>` (**not** `--short`: a same-name tag
+   disambiguates to `heads/<name>`). On mismatch: remove the worktree, prune, delete
+   the branch only if `branch_holds_unlanded_work` is false, then error.
+
+Removal keeps a branch that still holds unlanded commits (tip is neither an ancestor
+of base nor tree-equal to base); a probe error reads as "holds work" because deletion
+is the irreversible half.
+
 ### 4. Validation & Error Matrix
 
 | Condition | Behavior |

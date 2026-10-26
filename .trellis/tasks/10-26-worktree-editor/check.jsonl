@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "核对开关区与下拉样式"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "四门禁"}
+{"file": ".trellis/tasks/10-26-task-worktree/design.md", "reason": "核对 §3.3 的显示/禁用规则"}
+{"file": ".trellis/tasks/10-26-worktree-editor/prd.md", "reason": "逐条核对 AC1-AC12，重点 AC1（默认关）/ AC7（切项目重置）/ AC11（不勾时 payload 等价）"}

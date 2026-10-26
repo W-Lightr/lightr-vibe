@@ -64,6 +64,19 @@ export interface WorkTask {
   settledAt: number | null
   /** 进入 done / canceled 的时间 */
   finishedAt: number | null
+  // ---------- git worktree 隔离（子任务 10-26-worktree-backend / prd R5） ----------
+  /** 是否在独立工作树里执行（编辑器开关，默认 false = 与既有流程完全一致） */
+  useWorktree: boolean
+  /** 创建后的绝对路径；未创建为 null（创建流程写回，客户端不可伪造） */
+  worktreePath: string | null
+  /** 任务自己的分支名，形如 `task/<id>` */
+  workBranch: string | null
+  /** 基线分支（worktree 从哪个分支拉出） */
+  baseBranch: string | null
+  /** 创建**之前**记录的基线提交，作为 diff 基准 */
+  baseSha: string | null
+  /** 可选初始化命令（新建工作树后执行一次；失败只提示，不回滚） */
+  initCommand: string | null
 }
 
 export type TaskEventKind =
@@ -101,6 +114,12 @@ export interface TaskDraft {
   /** 思考程度：config option 的 id 与取值（引擎不支持时省略） */
   effortId?: string | null
   effortValue?: string | null
+  /** 是否在独立 worktree 里执行（省略 = false）。path / branch / sha 由创建流程写入 */
+  useWorktree?: boolean
+  /** 基线分支；省略 / null = 用仓库当前分支 */
+  baseBranch?: string | null
+  /** 可选初始化命令；省略 / 空 = 不执行 */
+  initCommand?: string | null
 }
 
 /**
@@ -115,12 +134,55 @@ export interface TaskPatch {
   modelId?: string | null
   effortId?: string | null
   effortValue?: string | null
+  /** worktree 开关；path / workBranch / baseSha 不在编辑面内（创建流程专用） */
+  useWorktree?: boolean
+  /** 基线分支；空串 = 用当前分支 */
+  baseBranch?: string | null
+  /** 初始化命令；空串 = 不执行 */
+  initCommand?: string | null
 }
 
 /** 一个任务的完整视图：行 + 时间线（Rust `TaskDetails`） */
 export interface TaskDetails {
   task: WorkTask
   events: WorkTaskEvent[]
+}
+
+// ---------- git worktree（Rust src-tauri/src/worktree.rs，camelCase 逐字对齐） ----------
+
+/** 仓库信息（`worktree_repo_info`）；永不抛错，失败编码进 isRepo + detail */
+export interface RepoInfo {
+  /** false → 前端禁用 worktree 开关 */
+  isRepo: boolean
+  /** 当前分支名；游离 HEAD 时为 null */
+  currentBranch: string | null
+  /** 本地分支（不含远端） */
+  branches: string[]
+  /** 非仓库 / 无提交 / git 缺失时的可读原因 */
+  detail: string | null
+}
+
+/** 创建入参（`worktree_create` 的 req） */
+export interface CreateWorktreeRequest {
+  /** 项目根目录（绝对路径） */
+  rootPath: string
+  /** 基线分支；省略 / null = 当前分支 */
+  baseBranch?: string | null
+  taskId: string
+  /** 可选初始化命令；空则不执行 */
+  initCommand?: string | null
+}
+
+/** 创建工作树的结果（`worktree_create`） */
+export interface CreatedWorktree {
+  worktreePath: string
+  workBranch: string
+  /** 创建**之前**解析的基线提交 */
+  baseSha: string
+  /** 实际使用的基线分支（空请求解析为当前分支后的结果） */
+  baseBranch: string
+  /** init 命令失败时的输出尾部；成功为 null */
+  initError: string | null
 }
 
 /**

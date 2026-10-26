@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "新增命令签名、camelCase 结构体、错误串词汇"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TaskDraft/TaskPatch 可选字段与 nullability 约定"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令、无 any、无 console.log"}
+{"file": ".trellis/tasks/10-26-task-worktree/design.md", "reason": "§2.1 命令集与结构体定义、§2.2 创建/删除严格步骤、§4 安全约束"}
+{"file": ".trellis/tasks/10-26-task-worktree/research/codeg-worktree.md", "reason": "codeg git.rs 的 worktree add / remove 原文与安全检查"}
+{"file": ".trellis/tasks/10-26-worktree-backend/prd.md", "reason": "本子任务 R1-R6 与 AC1-AC11"}

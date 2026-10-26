@@ -1,0 +1,30 @@
+{
+  "id": "task-worktree",
+  "name": "task-worktree",
+  "title": "任务 git worktree 隔离",
+  "description": "新建任务可选 worktree 开关，按选中分支创建独立工作树；任务结束自动清理；默认不预装依赖/不构建，保留可选 initCommand",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "lightr",
+  "assignee": "lightr",
+  "createdAt": "2026-10-26",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-26-worktree-backend",
+    "10-26-worktree-editor",
+    "10-26-worktree-lifecycle"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

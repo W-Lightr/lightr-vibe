@@ -18,6 +18,8 @@ import { isTauri } from '../utils/isTauri'
 import {
   mockArchive,
   mockAttachSession,
+  mockAttachWorktree,
+  mockClearWorktree,
   mockCreate,
   mockDelete,
   mockDetachSession,
@@ -124,5 +126,33 @@ export const taskService = {
   async duplicate(id: string): Promise<TaskDetails> {
     if (!isTauri()) return mockDuplicate(id)
     return invoke<TaskDetails>('task_duplicate', { id })
+  },
+
+  /**
+   * 写回 worktree 事实（启动链路在 `worktreeService.create` 成功后调用）。
+   * path / branch / base / sha 只能经这条命令写入，`task_create` / `task_update`
+   * 都不接收它们（prd R5：不接受客户端伪造）。
+   */
+  async attachWorktree(
+    id: string,
+    worktreePath: string,
+    workBranch: string,
+    baseBranch: string,
+    baseSha: string,
+  ): Promise<WorkTask> {
+    if (!isTauri()) return mockAttachWorktree(id, worktreePath, workBranch, baseBranch, baseSha)
+    return invoke<WorkTask>('task_attach_worktree', {
+      id,
+      worktreePath,
+      workBranch,
+      baseBranch,
+      baseSha,
+    })
+  },
+
+  /** 清空 worktree 运行态（工作树删除后调用）；保留 useWorktree / initCommand */
+  async clearWorktree(id: string): Promise<WorkTask> {
+    if (!isTauri()) return mockClearWorktree(id)
+    return invoke<WorkTask>('task_clear_worktree', { id })
   },
 }
