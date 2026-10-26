@@ -82,6 +82,36 @@ const devMode = computed(() => !isTauri())
 /** 模拟按钮只在「运行中且已绑定会话」时有意义（回到待办就没有本次运行可结算） */
 const canSimulate = computed(() => !!task.value?.sessionId && running.value)
 
+/** 工作树区（子任务 10-26-worktree-editor R6）：创建过才显示，只读 + 可复制路径 */
+const worktreePath = computed(() => task.value?.worktreePath ?? null)
+/** 刚复制成功的键（短暂显示对勾）；定时器在关闭 / 卸载时清掉，避免弹窗销毁后回调跑空 */
+const copiedKey = ref<string | null>(null)
+let copiedTimer: number | null = null
+
+async function copyValue(key: string, value: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(value)
+    copiedKey.value = key
+    if (copiedTimer !== null) window.clearTimeout(copiedTimer)
+    copiedTimer = window.setTimeout(() => {
+      copiedKey.value = null
+      copiedTimer = null
+    }, 1500)
+  } catch {
+    // 剪贴板不可用时静默忽略（与 SessionInspector 一致）：非安全上下文下可能没有该 API
+  }
+}
+
+/** 基线行的展示：分支 + 短 sha（sha 可能缺失） */
+const baseSummary = computed(() => {
+  const t = task.value
+  if (!t) return null
+  const branch = t.baseBranch
+  const sha = t.baseSha ? t.baseSha.slice(0, 8) : null
+  if (branch && sha) return `${branch} / ${sha}`
+  return branch ?? sha
+})
+
 /** 时间线事件文案：状态事件渲染成「待办 → 进行中」 */
 function eventLabel(event: WorkTaskEvent): string {
   switch (event.kind) {
@@ -172,6 +202,8 @@ async function loadEvents(): Promise<void> {
 watch(
   () => [props.open, props.taskId] as const,
   ([open]) => {
+    // 换任务时上一张卡片的「已复制」对勾不能带过来
+    copiedKey.value = null
     if (open) void loadEvents()
   },
   { immediate: true },
@@ -312,7 +344,12 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 onMounted(() => window.addEventListener('keydown', onKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  // 复制成功的对勾定时器随组件一起回收（弹出的详情抽屉会反复挂载 / 卸载）
+  if (copiedTimer !== null) window.clearTimeout(copiedTimer)
+  copiedTimer = null
+})
 </script>
 
 <template>
@@ -434,6 +471,52 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             <Unlink class="h-3 w-3" />
             断开会话
           </button>
+        </section>
+
+        <!-- 工作树（只读）：创建过独立工作树才显示路径 / 分支 / 基线，路径可复制 -->
+        <section
+          v-if="worktreePath"
+          class="mt-3 space-y-1 rounded-md border border-neutral-200 px-2.5 py-2"
+        >
+          <h3 class="text-[11px] font-medium text-neutral-500">工作树</h3>
+          <div class="flex items-center gap-1.5">
+            <span class="shrink-0 text-[11px] text-neutral-500">路径</span>
+            <span
+              class="min-w-0 flex-1 select-text truncate font-mono text-[11px] text-neutral-700"
+              :title="worktreePath"
+            >
+              {{ worktreePath }}
+            </span>
+            <button
+              class="shrink-0 cursor-pointer text-neutral-300 hover:text-neutral-500"
+              title="复制路径"
+              @click="copyValue('worktree', worktreePath)"
+            >
+              <Check v-if="copiedKey === 'worktree'" class="h-3 w-3 text-green-600" />
+              <Copy v-else class="h-3 w-3" />
+            </button>
+          </div>
+          <div v-if="task.workBranch || baseSummary" class="flex items-center gap-1.5">
+            <span class="shrink-0 text-[11px] text-neutral-500">分支</span>
+            <span
+              class="min-w-0 flex-1 select-text truncate font-mono text-[11px] text-neutral-700"
+              :title="task.workBranch ?? undefined"
+            >
+              {{ task.workBranch ?? '—' }}
+            </span>
+            <button
+              v-if="task.workBranch"
+              class="shrink-0 cursor-pointer text-neutral-300 hover:text-neutral-500"
+              title="复制分支名"
+              @click="copyValue('branch', task.workBranch)"
+            >
+              <Check v-if="copiedKey === 'branch'" class="h-3 w-3 text-green-600" />
+              <Copy v-else class="h-3 w-3" />
+            </button>
+            <span v-if="baseSummary" class="shrink-0 text-[10px] text-neutral-400">
+              基线 {{ baseSummary }}
+            </span>
+          </div>
         </section>
 
         <!-- 时间线（升序） -->

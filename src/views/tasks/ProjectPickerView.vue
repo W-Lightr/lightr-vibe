@@ -151,6 +151,9 @@ async function onEditorSubmit(payload: {
   modelId: string | null
   effortId: string | null
   effortValue: string | null
+  useWorktree: boolean
+  baseBranch: string | null
+  initCommand: string | null
 }): Promise<void> {
   if (submitting.value) return
   submitting.value = true
@@ -163,6 +166,9 @@ async function onEditorSubmit(payload: {
       modelId: payload.modelId,
       effortId: payload.effortId,
       effortValue: payload.effortValue,
+      useWorktree: payload.useWorktree,
+      baseBranch: payload.baseBranch,
+      initCommand: payload.initCommand,
     })
     editorOpen.value = false
   } catch (err) {

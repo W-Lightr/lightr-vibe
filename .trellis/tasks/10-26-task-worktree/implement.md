@@ -41,16 +41,16 @@ pnpm build
 
 ## 2 · 子任务 `10-26-worktree-editor`
 
-- [ ] `TaskEditorDialog.vue` 「目标」区下方新增 worktree 区
-  - [ ] 开关（默认关）+ 说明文案（含磁盘提示）
-  - [ ] 分支下拉：默认当前分支，列出本地分支，detached 时提示
-  - [ ] 可选 initCommand 输入（占位 `例：pnpm install`）
-  - [ ] `repoInfo.isRepo === false` → 整块禁用 + 原因
-  - [ ] 仅开关打开时显示分支与 init 输入
-  - [ ] 切换项目重置 `useWorktree` / `baseBranch`
-- [ ] submit payload 带上 `useWorktree` / `baseBranch` / `initCommand`
-- [ ] `ProjectPickerView.vue` / `TasksView.vue` 的 `onEditorSubmit` 透传三个新字段
-- [ ] 详情抽屉显示 worktree 路径与分支（只读）
+- [x] `TaskEditorDialog.vue` 「目标」区下方新增 worktree 区
+  - [x] 开关（默认关）+ 说明文案（含磁盘提示）
+  - [x] 分支下拉：默认当前分支，列出本地分支，detached 时提示
+  - [x] 可选 initCommand 输入（占位 `例：pnpm install`）
+  - [x] `repoInfo.isRepo === false` → 整块禁用 + 原因
+  - [x] 仅开关打开时显示分支与 init 输入
+  - [x] 切换项目重置 `useWorktree` / `baseBranch`
+- [x] submit payload 带上 `useWorktree` / `baseBranch` / `initCommand`
+- [x] `ProjectPickerView.vue` / `TasksView.vue` 的 `onEditorSubmit` 透传三个新字段
+- [x] 详情抽屉显示 worktree 路径与分支（只读）
 
 **回滚点**：`git checkout src/views/tasks/components/TaskEditorDialog.vue src/views/tasks/components/TaskDetailDialog.vue src/views/tasks/TasksView.vue src/views/tasks/ProjectPickerView.vue`
 
