@@ -142,6 +142,25 @@ export async function startTask(taskId: string): Promise<void> {
     runTokens.set(taskId, { runSeq: queued.runSeq, startedAt: Date.now() })
     // 5 · 打开会话标签（用户在编码页能看到 Agent 干活）
     workspace.openSession(sessionId)
+    // 5.5 · 应用任务上固化的模型（编辑器里选的）。必须在 send 之前：
+    //       模型是 session/new 之后的 config option，拖到首轮之后再设就晚了。
+    //       best-effort：agent 不接受该模型值时保持引擎默认，不阻断任务启动。
+    if (task.modelId) {
+      try {
+        await conversation.setModel(sessionId, task.modelId)
+      } catch {
+        // 静默：模型不被支持时退回引擎默认，任务照常跑
+      }
+    }
+    // 5.6 · 应用任务上固化的思考程度（同样在 send 之前，属于会话配置）。
+    //       引擎不认这个选项时保持默认，不阻断任务。
+    if (task.effortId && task.effortValue) {
+      try {
+        await conversation.setConfigOption(sessionId, task.effortId, task.effortValue)
+      } catch {
+        // 静默：该引擎不支持该选项时忽略
+      }
+    }
     // 6 · 发送提示词（不 await：turn 可能跑很久，结论由 onTurnSettled 回流）。
     //     `send` 内部的早退（生成中 / 未通过启用门槛）不会抛错——此时任务会停在
     //     running 且没有 turn 可回流，由详情里的「停止 + 打回」兜底（R4 的同一出口）。

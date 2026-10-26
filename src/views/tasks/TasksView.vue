@@ -343,6 +343,9 @@ async function onEditorSubmit(payload: {
   title: string
   prompt: string
   engineId: EngineWire
+  modelId: string | null
+  effortId: string | null
+  effortValue: string | null
 }): Promise<void> {
   try {
     if (editingTask.value) {
@@ -350,6 +353,9 @@ async function onEditorSubmit(payload: {
         title: payload.title,
         prompt: payload.prompt,
         engineId: payload.engineId,
+        modelId: payload.modelId,
+        effortId: payload.effortId,
+        effortValue: payload.effortValue,
       })
     } else {
       await taskStore.create({
@@ -357,6 +363,9 @@ async function onEditorSubmit(payload: {
         title: payload.title,
         prompt: payload.prompt,
         engineId: payload.engineId,
+        modelId: payload.modelId,
+        effortId: payload.effortId,
+        effortValue: payload.effortValue,
       })
     }
     editorOpen.value = false
@@ -409,7 +418,7 @@ watch(
   },
 )
 
-/** 返回项目选择页（prd R2/R3）：看板只在选好项目后进入，固定回 /tasks */
+/** 返回项目选择页：仅在「项目已移除」这种无法继续的场景下使用 */
 function goBack(): void {
   void router.push('/tasks')
 }
@@ -424,7 +433,7 @@ function goBack(): void {
     >
       <div class="flex items-center gap-1.5" data-no-drag>
         <button
-          class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
+          class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
           title="返回项目列表"
           @click="goBack"
         >
@@ -460,21 +469,8 @@ function goBack(): void {
       </div>
     </div>
 
-    <!-- 工具栏：当前项目（返回选择页）+ 显示开关 + 新建 -->
+    <!-- 工具栏：显示开关 + 计数 + 新建（项目由路由确定，不做返回/切换） -->
     <div class="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-3 py-2">
-      <!-- 项目已由路由确定（prd R3），旧的「项目下拉筛选」移除；这里只留回选择页的入口 -->
-      <button
-        class="flex h-7 min-w-0 max-w-[240px] cursor-pointer items-center gap-1 rounded-md px-1.5 text-[12px] text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
-        type="button"
-        title="返回项目列表"
-        @click="goBack"
-      >
-        <ChevronLeft class="h-3.5 w-3.5 shrink-0" />
-        <span class="truncate">项目列表</span>
-      </button>
-
-      <div class="mx-0.5 h-4 w-px bg-neutral-200" />
-
       <!-- 显示开关（checkbox + 文字，原生控件以保持轻量） -->
       <label class="flex cursor-pointer items-center gap-1 text-[12px] text-neutral-600">
         <input
@@ -504,7 +500,7 @@ function goBack(): void {
       <span v-else class="text-[11px] text-neutral-400">共 {{ totalVisible }} 个任务</span>
 
       <button
-        class="flex h-7 cursor-pointer items-center gap-1 rounded-md bg-blue-500 px-2.5 text-[12px] text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+        class="flex h-7 cursor-pointer items-center gap-1 rounded-full bg-neutral-900 px-3 text-[12px] text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
         :disabled="projectStore.projects.length === 0"
         @click="openCreate"
       >

@@ -7,6 +7,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import {
+  ArrowLeft,
   FolderOpen,
   FolderPlus,
   LayoutGrid,
@@ -39,6 +40,13 @@ const appWindow = getAppWindow()
 
 const query = ref('')
 
+/** 返回编码工作区。
+ *  不用 history.back()：历史里的上一页可能是首页（应用从 `/` 启动后跳到编码区的），
+ *  那样会把用户甩回首页，而不是他实际来的编码工作区。固定去 /coding。 */
+function goBack(): void {
+  void router.push('/coding')
+}
+
 /** 原生目录对话框仅桌面端可用（与侧栏「打开文件夹」同一能力判定） */
 const pickAvailable = canPickFolder()
 const picking = ref(false)
@@ -70,15 +78,6 @@ function countsOf(projectId: string): Record<BoardColumnId, number> {
 function totalOf(counts: Record<BoardColumnId, number>): number {
   return BOARD_COLUMN_IDS.reduce((sum, id) => sum + counts[id], 0)
 }
-
-/** 全部项目卡的计数 = 各项目之和 */
-const allCounts = computed(() => {
-  const sum = emptyCounts()
-  for (const counts of countsByProject.value.values()) {
-    for (const id of BOARD_COLUMN_IDS) sum[id] += counts[id]
-  }
-  return sum
-})
 
 /** 计数行用的列定义（0 值灰显） */
 const countColumns = computed(() =>
@@ -149,6 +148,9 @@ async function onEditorSubmit(payload: {
   title: string
   prompt: string
   engineId: EngineWire
+  modelId: string | null
+  effortId: string | null
+  effortValue: string | null
 }): Promise<void> {
   if (submitting.value) return
   submitting.value = true
@@ -158,6 +160,9 @@ async function onEditorSubmit(payload: {
       title: payload.title,
       prompt: payload.prompt,
       engineId: payload.engineId,
+      modelId: payload.modelId,
+      effortId: payload.effortId,
+      effortValue: payload.effortValue,
     })
     editorOpen.value = false
   } catch (err) {
@@ -183,13 +188,20 @@ onMounted(async () => {
 
 <template>
   <div class="flex h-full flex-col bg-white">
-    <!-- 顶部拖拽条：标题 + 窗口三键（无边框窗口，浏览器环境隐藏）。
-         选择页是根级页面（从侧栏进入），没有上一级，故不放返回键。 -->
+    <!-- 顶部拖拽条：返回 + 标题 + 窗口三键（无边框窗口，浏览器环境隐藏）。
+         本页从侧栏 / 顶栏进入，返回走 history 后退，无历史时回编码工作区。 -->
     <div
       data-drag-region
       class="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 px-2"
     >
       <div class="flex items-center gap-1.5" data-no-drag>
+        <button
+          class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
+          title="返回"
+          @click="goBack"
+        >
+          <ArrowLeft class="h-4 w-4" />
+        </button>
         <ListTodo class="h-4 w-4 text-neutral-400" />
         <span class="text-[13px] font-medium text-neutral-800">待办任务</span>
       </div>
@@ -233,7 +245,15 @@ onMounted(async () => {
       </div>
       <span class="flex-1" />
       <button
-        class="flex h-7 cursor-pointer items-center gap-1 rounded-md bg-blue-500 px-2.5 text-[12px] text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+        class="flex h-7 cursor-pointer items-center gap-1.5 rounded-full border border-neutral-200 px-3 text-[12px] text-neutral-600 transition-colors hover:bg-neutral-100"
+        type="button"
+        @click="openAll"
+      >
+        <LayoutGrid class="h-3.5 w-3.5" />
+        全部项目
+      </button>
+      <button
+        class="flex h-7 cursor-pointer items-center gap-1 rounded-full bg-neutral-900 px-3 text-[12px] text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
         :disabled="noProjects"
         @click="openCreate"
       >
@@ -286,30 +306,6 @@ onMounted(async () => {
             <template v-for="(col, index) in countColumns" :key="col.id">
               <span :class="countsOf(project.id)[col.id] > 0 ? 'text-neutral-600' : 'text-neutral-400'">
                 {{ col.label }} {{ countsOf(project.id)[col.id] }}
-              </span>
-              <span v-if="index < countColumns.length - 1" class="text-neutral-300">·</span>
-            </template>
-          </div>
-        </button>
-
-        <!-- 「全部项目」固定排最后（搜索时不显示，避免与过滤结果混淆） -->
-        <button
-          v-if="!keyword"
-          class="flex cursor-pointer flex-col rounded-xl border border-neutral-200 bg-white p-3 text-left transition-colors hover:border-blue-400"
-          type="button"
-          @click="openAll"
-        >
-          <div class="flex min-w-0 items-center gap-1.5">
-            <LayoutGrid class="h-4 w-4 shrink-0 text-neutral-400" />
-            <span class="min-w-0 flex-1 truncate text-[13px] font-medium text-neutral-800">
-              全部项目
-            </span>
-          </div>
-          <span class="mt-2 text-[11px] text-neutral-500">{{ totalOf(allCounts) }} 个任务</span>
-          <div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px]">
-            <template v-for="(col, index) in countColumns" :key="col.id">
-              <span :class="allCounts[col.id] > 0 ? 'text-neutral-600' : 'text-neutral-400'">
-                {{ col.label }} {{ allCounts[col.id] }}
               </span>
               <span v-if="index < countColumns.length - 1" class="text-neutral-300">·</span>
             </template>
