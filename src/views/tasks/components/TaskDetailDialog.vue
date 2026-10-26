@@ -5,7 +5,7 @@
 // 在途禁用、错误提示与弹窗开合，不直接碰 service。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useMessage } from 'naive-ui'
+import { NPopconfirm, useMessage } from 'naive-ui'
 import {
   AlertTriangle,
   Archive,
@@ -13,6 +13,7 @@ import {
   Copy,
   CornerDownLeft,
   ExternalLink,
+  GitBranch,
   History,
   LoaderCircle,
   Pencil,
@@ -35,6 +36,7 @@ import { isTauri } from '../../../utils/isTauri'
 import { SETUP_ERROR_PREFIX, WORKTREE_CLEANUP_FAILED_PREFIX } from './setupErrorPrefix'
 import {
   approveTask,
+  deleteWorktreeBranch,
   rejectTask,
   retryWorktreeCleanup,
   simulateTurnSettle,
@@ -137,6 +139,33 @@ const worktreeCleanupFailed = computed(() => {
   if (!terminal) return false
   return !!t.worktreePath || !!t.lastError?.includes(WORKTREE_CLEANUP_FAILED_PREFIX)
 })
+
+/**
+ * 「删除分支」（worktree keep-branch R3 / AC5 / AC6）：任务终态后目录已删、分支按 R2 保留
+ * （那是这次任务的产品）。有分支名就允许删——`worktreePath` 为 null 也算（目录已清理、
+ * 只剩分支；Rust 侧 `worktree_remove` 把空路径当作「没有目录要删」）。
+ *
+ * 只对**已结束且目录已清**的任务显示：
+ * - 运行中的任务还在用这条分支，删掉等于毁掉在途工作；
+ * - `review` / `failed` 时目录通常还在（`failed` 可能还挂着启动失败的清理）、
+ *   那时该走「重试清理」，不能跳过它直接把分支删掉（否则目录成孤儿）。
+ */
+const retainedBranch = computed(() => task.value?.workBranch ?? null)
+const canDeleteBranch = computed(() => {
+  const s = task.value?.status
+  const terminal = s === 'done' || s === 'canceled'
+  return !!retainedBranch.value && terminal && !task.value?.worktreePath
+})
+
+/** 删除分支：二次确认由模板里的 NPopconfirm 负责，这里只执行（失败由 run() toast） */
+function onDeleteBranch(): void {
+  const t = task.value
+  if (!t) return
+  void run(async () => {
+    await deleteWorktreeBranch(t.id)
+    message.success(`分支 ${retainedBranch.value ?? ''} 已删除`)
+  })
+}
 
 /** 「失败原因」区：工作树附注不是 Agent 失败原因，已在工作树区单独说明，别重复红块 */
 const showLastError = computed(() => {
@@ -513,9 +542,9 @@ onBeforeUnmount(() => {
           </button>
         </section>
 
-        <!-- 工作树（只读）：登记着工作树或有清理失败的记录才显示路径 / 分支 / 基线 -->
+        <!-- 工作树：登记着工作树 / 有清理失败记录 / 有已保留的分支 才显示 -->
         <section
-          v-if="worktreePath || worktreeCleanupFailed"
+          v-if="worktreePath || worktreeCleanupFailed || canDeleteBranch"
           class="mt-3 space-y-1 rounded-md border border-neutral-200 px-2.5 py-2"
         >
           <h3 class="text-[11px] font-medium text-neutral-500">工作树</h3>
@@ -556,6 +585,47 @@ onBeforeUnmount(() => {
             <span v-if="baseSummary" class="shrink-0 text-[10px] text-neutral-400">
               基线 {{ baseSummary }}
             </span>
+            <!-- 清理失败时路径还在：删除分支属于「重试清理」，走下方 amber 区，这里不重复 -->
+          </div>
+          <!-- 分支已保留（keep-branch R3 / R4）：终态且目录已删 → 只剩分支这个产品 -->
+          <div
+            v-if="canDeleteBranch"
+            class="flex items-start gap-1.5 rounded border border-blue-200 bg-blue-50 px-2 py-1.5"
+          >
+            <GitBranch class="mt-0.5 h-3 w-3 shrink-0 text-blue-600" />
+            <div class="min-w-0 flex-1">
+              <p class="text-[11px] leading-4 text-blue-800">
+                分支
+                <span class="select-text font-mono">{{ retainedBranch }}</span>
+                已保留，可用 <span class="font-mono">git log</span> /
+                <span class="font-mono">git diff</span> 查看，或
+                <span class="font-mono">git merge</span> 合入其他分支。
+              </p>
+              <p class="text-[10px] leading-4 text-blue-700/80">
+                工作树目录已删除：Agent 未提交的工作区改动已随之丢失，仅提交进分支的内容还在。
+                删除分支后这些提交只能靠 <span class="font-mono">git fsck</span> 找回。
+              </p>
+            </div>
+            <NPopconfirm @positive-click="onDeleteBranch">
+              <template #trigger>
+                <button
+                  class="flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md border border-blue-300 bg-white px-2 text-[11px] text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  :disabled="busy"
+                  title="永久删除这条已保留的分支（不可恢复）"
+                >
+                  <Trash2 class="h-3 w-3" />
+                  删除分支
+                </button>
+              </template>
+              <div class="max-w-64 text-[12px] leading-5">
+                删除分支
+                <span class="font-mono">{{ retainedBranch }}</span>
+                ？<br />
+                分支上<span class="font-medium">未合并的提交</span>会变成不可达提交（只能靠
+                <span class="font-mono">git fsck</span>
+                找回），此操作<span class="font-medium">不可撤销</span>。
+              </div>
+            </NPopconfirm>
           </div>
           <!-- 终态还挂着路径 = 清理失败（lifecycle R3 / AC9）：提示 + 路径 + 重试 -->
           <div

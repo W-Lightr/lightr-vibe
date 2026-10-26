@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "worktree 命令契约、安全约束与启动/清理链路的既有规范"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "task store 的异步例外与终态语义"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令与禁止模式"}
+{"file": ".trellis/tasks/10-26-worktree-keep-branch/prd.md", "reason": "本任务 R1-R4 与 AC1-AC8"}
+{"file": ".trellis/tasks/10-26-worktree-keep-branch/design.md", "reason": "根因定位、keepBranch 短路位置、四个调用场景的语义区分"}
+{"file": ".trellis/tasks/10-26-worktree-keep-branch/implement.md", "reason": "五步顺序、回滚点、人工验收"}

@@ -510,12 +510,16 @@ fn branch_holds_unlanded_work(root: &Path, work_branch: &str, base: &str) -> boo
         .unwrap_or(true)
 }
 
+/// 删除工作树。`keep_branch` 为 true 时**只**删目录与注册（任务终态：分支是这次工作的
+/// 产品，要留给用户 `git log` / `git merge`）；false 时在「分支没有未落地提交」的前提下
+/// 尽力删掉分支（启动失败回滚：那次尝试没有价值）。
 fn remove_inner(
     root_path: &str,
     worktree_path: &str,
     work_branch: &str,
     base_branch: Option<String>,
     base_sha: Option<String>,
+    keep_branch: bool,
 ) -> Result<(), String> {
     // 1) 路径安全：必须先转绝对路径再交给 git，否则相对路径能命中磁盘别处的 worktree
     let root = require_absolute(root_path)?;
@@ -535,7 +539,12 @@ fn remove_inner(
         return Err(format!("worktree-prune: {}", pruned.tail()));
     }
 
-    // 4) 分支守卫：base 优先用创建时记录的 sha（分支可能已被移动），退化到分支名
+    // 4) 只删目录（任务终态）：**必须短路在分支守卫之前**，否则守卫一放行分支照删
+    if keep_branch {
+        return Ok(());
+    }
+
+    // 5) 分支守卫：base 优先用创建时记录的 sha（分支可能已被移动），退化到分支名
     let base = base_sha
         .as_deref()
         .map(str::trim)
@@ -556,7 +565,7 @@ fn remove_inner(
         return Ok(());
     }
 
-    // 5) 删除分支；不存在（已被手工删掉）视为成功
+    // 6) 删除分支；不存在（已被手工删掉）视为成功
     let deleted = run_git_write(&root, &["branch", "-D", work_branch])?;
     if !deleted.ok {
         let tail = deleted.tail();
@@ -582,16 +591,95 @@ pub fn worktree_create(req: CreateWorktreeRequest) -> Result<CreatedWorktree, St
     create_inner(&req)
 }
 
-/// 删除工作树 +（无未落地提交时）删除任务分支。
+/// `worktree_remove` 的入参。多字段命令一律用结构体：Tauri 对**函数参数**只支持
+/// 内置属性，`#[serde(default)]` 写在参数上是编译错误；放进 `Deserialize` 结构体才生效
+/// （这也是 `keep_branch` 能省略、从而满足 AC4「旧调用行为不变」的关键）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveWorktreeRequest {
+    pub root_path: String,
+    pub worktree_path: String,
+    pub work_branch: String,
+    pub base_branch: Option<String>,
+    pub base_sha: Option<String>,
+    /// 只删工作树、保留分支（任务终态清理用）。省略 = false（启动失败回滚用）
+    #[serde(default)]
+    pub keep_branch: bool,
+}
+
+/// 删除工作树：默认（`keepBranch` 省略 / false）在分支无未落地提交时顺带删掉任务分支。
+///
+/// 细节抽屉「删除分支」（R3 / AC5）会在目录**已删**后再次调用本命令来删分支，此时
+/// `worktreePath` 会退化成空串 → `require_absolute("")` 报 `path-not-absolute`，
+/// 分支永远删不掉。所以：空路径 = 「没有目录要删」，跳过第 2 步直接走 prune + 分支
+/// （`remove_inner_allow_absent_dir`）；非空路径行为与改动前完全一致。
 #[tauri::command]
-pub fn worktree_remove(
-    root_path: String,
-    worktree_path: String,
-    work_branch: String,
+pub fn worktree_remove(req: RemoveWorktreeRequest) -> Result<(), String> {
+    remove_inner_allow_absent_dir(
+        &req.root_path,
+        &req.worktree_path,
+        &req.work_branch,
+        req.base_branch,
+        req.base_sha,
+        req.keep_branch,
+    )
+}
+
+/// 目录已清理、只剩分支时的删分支入口：`worktree_remove` 的 `worktreePath` 允许为空
+/// （空 = 没有目录要删），非空时行为与改动前完全一致。
+fn remove_inner_allow_absent_dir(
+    root_path: &str,
+    worktree_path: &str,
+    work_branch: &str,
     base_branch: Option<String>,
     base_sha: Option<String>,
+    keep_branch: bool,
 ) -> Result<(), String> {
-    remove_inner(&root_path, &worktree_path, &work_branch, base_branch, base_sha)
+    if !worktree_path.trim().is_empty() {
+        return remove_inner(
+            root_path,
+            worktree_path,
+            work_branch,
+            base_branch,
+            base_sha,
+            keep_branch,
+        );
+    }
+    let root = require_absolute(root_path)?;
+    let pruned = run_git_write(&root, &["worktree", "prune"])?;
+    if !pruned.ok {
+        return Err(format!("worktree-prune: {}", pruned.tail()));
+    }
+    if keep_branch {
+        return Ok(());
+    }
+    let base = base_sha
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            base_branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        });
+    let Some(base) = base else {
+        return Ok(());
+    };
+    if branch_holds_unlanded_work(&root, work_branch, &base) {
+        return Ok(());
+    }
+    let deleted = run_git_write(&root, &["branch", "-D", work_branch])?;
+    if deleted.ok {
+        return Ok(());
+    }
+    let tail = deleted.tail();
+    if tail.contains("not found") || tail.contains("not a valid") {
+        return Ok(());
+    }
+    Err(format!("worktree-branch-delete: {}", tail))
 }
 
 // ---------- 单元测试 ----------
@@ -675,14 +763,15 @@ mod tests {
 
     #[test]
     fn remove_rejects_relative_worktree_path() {
-        let err = remove_inner("C:/work/repo", "relative/wt", "task/task-1", None, None)
+        let err = remove_inner("C:/work/repo", "relative/wt", "task/task-1", None, None, false)
             .unwrap_err();
         assert_eq!(err, "path-not-absolute");
         // 盘符相对同样拒绝
-        let err = remove_inner("C:/work/repo", "C:wt", "task/task-1", None, None).unwrap_err();
+        let err =
+            remove_inner("C:/work/repo", "C:wt", "task/task-1", None, None, false).unwrap_err();
         assert_eq!(err, "path-not-absolute");
         // root 本身非法时也在执行 git 前返回
-        let err = remove_inner("repo", "C:/work/wt", "task/task-1", None, None).unwrap_err();
+        let err = remove_inner("repo", "C:/work/wt", "task/task-1", None, None, false).unwrap_err();
         assert_eq!(err, "path-not-absolute");
     }
 
@@ -755,6 +844,7 @@ mod tests {
             &created.work_branch,
             Some(created.base_branch.clone()),
             Some(created.base_sha.clone()),
+            false,
         )
         .unwrap();
         assert!(!Path::new(&created.worktree_path).exists());
@@ -785,6 +875,7 @@ mod tests {
             &again.work_branch,
             Some(again.base_branch.clone()),
             Some(again.base_sha.clone()),
+            false,
         )
         .unwrap();
         assert!(!wt.exists());
@@ -940,5 +1031,155 @@ mod tests {
         assert!(info.is_repo);
         assert_eq!(info.current_branch, None, "detached HEAD 应为 None");
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 建一个带一次提交的临时仓库，返回 (父目录, 仓库根, 仓库根的字符串形式)。
+    /// 仓库 fixture 与其它真 git 测试保持一致（user/email + 关掉 gpgsign）。
+    fn init_real_repo(tag: &str) -> (PathBuf, PathBuf, String) {
+        let parent = tmp_dir(tag);
+        let root = parent.join("repo");
+        fs::create_dir_all(&root).unwrap();
+        let ok = |args: &[&str]| {
+            let out = run_git(&root, args).expect("git 调用失败");
+            assert!(out.ok, "git {:?} 失败: {}", args, out.tail());
+        };
+        ok(&["init", "-q"]);
+        ok(&["config", "user.email", "test@example.com"]);
+        ok(&["config", "user.name", "test"]);
+        ok(&["config", "commit.gpgsign", "false"]);
+        fs::write(root.join("README.md"), "hello").unwrap();
+        ok(&["add", "."]);
+        ok(&["commit", "-q", "-m", "init"]);
+        let root_str = root.to_string_lossy().into_owned();
+        (parent, root, root_str)
+    }
+
+    /// 任务终态清理：`keep_branch = true` → 目录消失、**分支仍在**（这是这次工作的产品）。
+    #[test]
+    fn keep_branch_leaves_the_branch() {
+        if run_git(Path::new("."), &["--version"]).is_err() {
+            eprintln!("跳过：找不到 git");
+            return;
+        }
+        let (parent, root, root_str) = init_real_repo("keepbranch");
+        let created = create_inner(&CreateWorktreeRequest {
+            root_path: root_str.clone(),
+            base_branch: None,
+            task_id: "keep-1".into(),
+            init_command: None,
+        })
+        .expect("创建应成功");
+        let wt = PathBuf::from(&created.worktree_path);
+        assert!(wt.is_dir());
+
+        // 模拟 Agent 在分支上留下一个提交（正常任务的产品）
+        let wt_ref = Path::new(&created.worktree_path);
+        assert!(run_git(wt_ref, &["config", "user.email", "test@example.com"]).unwrap().ok);
+        assert!(run_git(wt_ref, &["config", "user.name", "test"]).unwrap().ok);
+        fs::write(wt.join("work.txt"), "agent output").unwrap();
+        assert!(run_git(wt_ref, &["add", "."]).unwrap().ok);
+        let commit = run_git(wt_ref, &["commit", "-q", "-m", "work"]).unwrap();
+        assert!(commit.ok, "提交失败: {}", commit.tail());
+
+        remove_inner(
+            &root_str,
+            &created.worktree_path,
+            &created.work_branch,
+            Some(created.base_branch.clone()),
+            Some(created.base_sha.clone()),
+            true,
+        )
+        .unwrap();
+
+        assert!(!wt.exists(), "目录必须消失");
+        // 注册表恢复：只剩主工作树
+        let list = git_stdout(&root, &["worktree", "list"]).unwrap();
+        assert_eq!(list.lines().count(), 1, "worktree list: {}", list);
+        // 分支必须保留，且提交还在（不是「守卫放行后照删」那种假保留）
+        let kept = git_stdout(&root, &["branch", "--list", "task/keep-1"]).unwrap();
+        assert!(kept.contains("task/keep-1"), "keep_branch 必须保留分支");
+        let subject = git_stdout(&root, &["log", "-1", "--format=%s", "task/keep-1"]).unwrap();
+        assert_eq!(subject, "work", "分支上的提交必须完好");
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    /// 默认行为（AC4）：`keep_branch = false` → 目录与分支都消失（启动失败回滚的清理）。
+    #[test]
+    fn default_remove_still_deletes_the_branch() {
+        if run_git(Path::new("."), &["--version"]).is_err() {
+            eprintln!("跳过：找不到 git");
+            return;
+        }
+        let (parent, root, root_str) = init_real_repo("dropbranch");
+        let created = create_inner(&CreateWorktreeRequest {
+            root_path: root_str.clone(),
+            base_branch: None,
+            task_id: "drop-1".into(),
+            init_command: None,
+        })
+        .expect("创建应成功");
+        let wt = PathBuf::from(&created.worktree_path);
+        assert!(work_branch_exists(&root, &created.work_branch));
+
+        // 无新提交 → 守卫放行 → 分支被删
+        remove_inner(
+            &root_str,
+            &created.worktree_path,
+            &created.work_branch,
+            Some(created.base_branch.clone()),
+            Some(created.base_sha.clone()),
+            false,
+        )
+        .unwrap();
+
+        assert!(!wt.exists(), "目录必须消失");
+        assert!(!work_branch_exists(&root, &created.work_branch), "默认必须删掉分支");
+
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    /// 详情抽屉「删除分支」（R3 / AC5）：目录已删、只剩分支，前端只能传空路径。
+    /// 空路径必须**跳过目录删除**而不是报 `path-not-absolute`，分支要真的被删掉。
+    #[test]
+    fn empty_worktree_path_deletes_only_the_branch() {
+        if run_git(Path::new("."), &["--version"]).is_err() {
+            eprintln!("跳过：找不到 git");
+            return;
+        }
+        let (parent, root, root_str) = init_real_repo("onlybranch");
+        let created = create_inner(&CreateWorktreeRequest {
+            root_path: root_str.clone(),
+            base_branch: None,
+            task_id: "only-1".into(),
+            init_command: None,
+        })
+        .expect("创建应成功");
+        // 先按终态语义删目录（保留分支）
+        remove_inner(
+            &root_str,
+            &created.worktree_path,
+            &created.work_branch,
+            Some(created.base_branch.clone()),
+            Some(created.base_sha.clone()),
+            true,
+        )
+        .unwrap();
+        assert!(!Path::new(&created.worktree_path).exists());
+        assert!(work_branch_exists(&root, &created.work_branch));
+
+        // 手动删分支：前端此时 worktreePath 已是 null → 传空串
+        remove_inner_allow_absent_dir(
+            &root_str,
+            "",
+            &created.work_branch,
+            Some(created.base_branch.clone()),
+            Some(created.base_sha.clone()),
+            false,
+        )
+        .unwrap();
+        assert!(!work_branch_exists(&root, &created.work_branch), "空路径也要删掉分支");
+
+        let _ = fs::remove_dir_all(&parent);
     }
 }

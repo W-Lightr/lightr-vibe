@@ -104,10 +104,15 @@ async function rollbackStart(
  * 用户重试走的也是这条路径（第二次 `worktree remove` 对已删目录视为成功）。
  * 任务已被删除 → 没什么可清的；项目已被移除（孤儿任务）→ 只清登记，目录留给用户手工处理
  * （没有 rootPath 就无从调用 git，硬报错会让重试按钮永远转不动）。
+ *
+ * `keepBranch`（worktree keep-branch R1/R2）：终态清理（done / canceled）传 `true`——
+ * 目录删掉、**分支保留**，那是任务的产品；启动失败回滚保持默认 `false`（那次尝试没有价值，
+ * 连分支一起清掉，否则下次重建必然撞名）。
  */
 async function discardWorktree(
   taskId: string,
   known: WorktreeFacts,
+  keepBranch = false,
 ): Promise<string | null> {
   const path = known.worktreePath
   if (!path) return null
@@ -123,6 +128,7 @@ async function discardWorktree(
         known.workBranch ?? task.workBranch ?? '',
         known.baseBranch ?? task.baseBranch,
         known.baseSha ?? task.baseSha,
+        keepBranch,
       )
     } catch (err) {
       return String(err instanceof Error ? err.message : err) || '未知错误'
@@ -380,11 +386,15 @@ async function failSetup(
  * 失败原因写进 `lastError`（含路径），详情抽屉据此显示「工作树清理失败」+ 重试按钮。
  *
  * `row` 用转移的返回值（含路径 / 分支 / sha），不重新查 store——转移刚写完，这里就是最新。
+ *
+ * `keepBranch: true`：任务终态意味着这次工作有产品，分支必须留给用户 `git log` /
+ * `git diff` / `git merge`。删目录会连**未提交**的工作区改动一起删掉，这是 worktree 语义，
+ * 所以详情里要提示「分支已保留，但未提交的改动已丢」。
  */
 async function cleanupWorktreeOnFinish(row: WorkTask): Promise<void> {
   const finished = row.status === 'done' || row.status === 'canceled'
   if (!finished || !row.worktreePath) return
-  const failure = await discardWorktree(row.id, row)
+  const failure = await discardWorktree(row.id, row, true)
   if (!failure) return
   await noteWorktreeIssue(row.id, `${WORKTREE_CLEANUP_FAILED_PREFIX}${row.worktreePath}（${failure}）`)
   useMessage().warning(`工作树清理失败：${row.worktreePath}，可在任务详情里重试`)
@@ -423,6 +433,36 @@ export async function retryWorktreeCleanup(taskId: string): Promise<void> {
   }
   await noteWorktreeIssue(taskId, `${WORKTREE_CLEANUP_FAILED_PREFIX}${task.worktreePath}（${failure}）`)
   throw new Error(failure)
+}
+
+/**
+ * 手动删掉任务**已保留**的分支（worktree keep-branch R3 / AC5 / AC6）。
+ *
+ * 任务终态后目录已删、分支按 R2 保留；用户确认不要了才点这里。走
+ * `worktree_remove(keepBranch: false)`：目录不存在视为成功，恰好吃下「只剩分支」这个形状
+ * ——不必另开一条只删分支的命令。`clearWorktree` 随后清掉登记（分支名 / 基线）。
+ *
+ * 拒绝动作放在调用方（二次确认）；这里只做 git 与登记，失败直接抛出由调用方 toast。
+ */
+export async function deleteWorktreeBranch(id: string): Promise<void> {
+  const taskStore = useTaskStore()
+  const task = taskStore.get(id)
+  if (!task?.workBranch) {
+    throw new Error('任务没有已保留的分支')
+  }
+  const project = useProjectStore().get(task.projectId)
+  if (!project) {
+    throw new Error('任务所属项目已被移除，无法删除分支（可在项目里手动 git branch -D）')
+  }
+  await worktreeService.remove(
+    project.rootPath,
+    task.worktreePath ?? '',
+    task.workBranch,
+    task.baseBranch,
+    task.baseSha,
+    false,
+  )
+  await taskStore.clearWorktree(id)
 }
 
 /** 停止（prd R4）：cancel 当前 turn **并**把任务打回待办。

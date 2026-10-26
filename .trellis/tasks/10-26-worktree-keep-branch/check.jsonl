@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核对命令签名与参数默认值合规"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "四门禁"}
+{"file": ".trellis/tasks/10-26-worktree-keep-branch/prd.md", "reason": "逐条核对 AC1-AC8"}
+{"file": ".trellis/tasks/10-26-worktree-keep-branch/design.md", "reason": "重点核对 keepBranch 是否短路在分支守卫之前，以及四个调用场景各自传值是否正确"}

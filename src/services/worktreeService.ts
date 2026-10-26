@@ -55,8 +55,12 @@ export const worktreeService = {
   },
 
   /**
-   * 删除工作树 +（分支无未落地提交时）删除任务分支。
-   * 目录已不存在视为成功；分支有未落地提交时**保留分支**（同样返回成功）。
+   * 删除工作树。`keepBranch` 语义分两种（调用方决定，service 不猜）：
+   * - `true`（任务 done / canceled 的终态清理）→ **只**删目录与注册，分支保留
+   *   （那是这次任务的产品，用户要 `git log` / `git merge`）；
+   * - 省略 / `false`（启动失败回滚、手动删分支）→ 目录删除后，分支**没有未落地提交**时
+   *   顺带删掉（有提交则保留，同样返回成功）。
+   * 目录已不存在视为成功，因此「目录已清理、只剩分支」时也能用它删分支。
    */
   async remove(
     rootPath: string,
@@ -64,14 +68,20 @@ export const worktreeService = {
     workBranch: string,
     baseBranch: string | null,
     baseSha: string | null,
+    keepBranch = false,
   ): Promise<void> {
     if (!isTauri()) return
+    // Rust 侧是一个 Deserialize 入参结构体（`#[serde(rename_all = "camelCase")]`）：
+    // invoke 的 payload 键必须就是 `req`，字段名 camelCase。
     await invoke('worktree_remove', {
-      rootPath,
-      worktreePath,
-      workBranch,
-      baseBranch,
-      baseSha,
+      req: {
+        rootPath,
+        worktreePath,
+        workBranch,
+        baseBranch,
+        baseSha,
+        keepBranch,
+      },
     })
   },
 }

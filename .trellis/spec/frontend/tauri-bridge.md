@@ -943,8 +943,33 @@ no git call in services, stores, or components. Commands (camelCase, `Result<_, 
 ```rust
 worktree_repo_info { rootPath } -> { isRepo, currentBranch, branches, detail }
 worktree_create    { req }      -> { worktreePath, workBranch, baseSha, baseBranch, initError? }
-worktree_remove    { rootPath, worktreePath, workBranch, baseBranch?, baseSha? } -> ()
+worktree_remove    { req }      -> ()   // req = { rootPath, worktreePath, workBranch, baseBranch?, baseSha?, keepBranch? }
 ```
+
+> **`worktree_remove` takes a `Deserialize` struct, not loose params** (task
+> 10-26-worktree-keep-branch). `#[serde(default)]` **cannot** sit on a Tauri command's
+> function parameter (only built-in attrs are allowed there) — it must live on a field of
+> a `RemoveWorktreeRequest` struct (`#[serde(rename_all = "camelCase")]`). The frontend
+> payload is therefore `invoke('worktree_remove', { req: {...} })`, same shape as
+> `worktree_create`.
+
+**`keepBranch` decides the two call-site semantics** (task 10-26-worktree-keep-branch):
+
+| Caller | `keepBranch` | Result |
+|---|---|---|
+| Terminal cleanup (`cleanupWorktreeOnFinish`: approve→done, stop→canceled, board drag) | `true` | dir + registration deleted, **branch kept** (it is the task's product) |
+| Launch rollback (`failSetup`, `rollbackStart`, stale cleanup, `retryWorktreeCleanup`) | omitted → `false` | dir deleted, branch deleted when it holds no unlanded work |
+| Detail-dialog 「删除分支」 (`deleteWorktreeBranch`) | `false` | branch only (dir already gone) |
+
+The short-circuit **must sit after `git worktree prune` and before
+`branch_holds_unlanded_work`** — earlier and the directory survives, later and the branch
+guard can still delete it.
+
+**Empty `worktreePath` = "no directory to delete."** The manual branch deletion happens
+after `clearWorktree` nulled the path, so the frontend sends `''`; `worktree_remove`
+routes that through `remove_inner_allow_absent_dir` (prune + branch guard + `branch -D`)
+instead of failing `require_absolute("")`. Test
+`empty_worktree_path_deletes_only_the_branch` pins it.
 
 Task row gains `useWorktree` / `worktreePath` / `workBranch` / `baseBranch` / `baseSha` /
 `initCommand` (all `#[serde(default)]`, so old `tasks.json` still parses). `TaskDraft` /
@@ -975,9 +1000,15 @@ name and sha are written by the creation flow and must not be forgeable by a cli
    disambiguates to `heads/<name>`). On mismatch: remove the worktree, prune, delete
    the branch only if `branch_holds_unlanded_work` is false, then error.
 
-Removal keeps a branch that still holds unlanded commits (tip is neither an ancestor
-of base nor tree-equal to base); a probe error reads as "holds work" because deletion
-is the irreversible half.
+Removal (default `keepBranch: false`) keeps a branch that still holds unlanded commits
+(tip is neither an ancestor of base nor tree-equal to base); a probe error reads as "holds
+work" because deletion is the irreversible half. `keepBranch: true` skips the guard
+entirely and always keeps the branch.
+
+> **Uncommitted work is not protected.** `git worktree remove --force` deletes the working
+> tree, so anything the agent left uncommitted is gone even though the branch survives.
+> The detail dialog says so explicitly; the long-term fix (auto-commit or stash before
+> removal) is out of scope for 10-26-worktree-keep-branch.
 
 **Start chain (`taskSessionBridge.ts::startTask`)** — the task row's `useWorktree` decides
 the session cwd:
