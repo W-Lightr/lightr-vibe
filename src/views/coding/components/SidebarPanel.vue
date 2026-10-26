@@ -192,7 +192,7 @@ function writeCollapsed(set: Set<string>) {
   }
 }
 
-/** 仅箭头调用：切换折叠（整行点击仍走 openProject，R1/AC3） */
+/** 切换折叠。箭头与文件夹行都会调用；行内按钮各自 @click.stop 不会触发。 */
 function toggleCollapse(projectId: string) {
   const next = new Set(collapsedProjects.value)
   if (next.has(projectId)) next.delete(projectId)
@@ -249,9 +249,16 @@ const tmpSessions = computed(() =>
 const recentProjects = computed(() => projectStore.recentProjects)
 const recentOpen = ref(false)
 
-/** 点击文件夹行：仅激活项目（刷新 lastOpenedAt 供「最近」排序），
- * 不自动打开/新建会话——打开具体会话需点击会话项本身（用户诉求 2026-10）。 */
-function openProject(projectId: string) {
+/** 点击文件夹行：激活项目（刷新 lastOpenedAt 供「最近」排序）+ 切换折叠。
+ *  不自动打开/新建会话——打开具体会话需点击会话项本身（用户诉求 2026-10）。
+ *  行内的「新建会话 / 移除项目」按钮各自 @click.stop，不触发这里。 */
+function onFolderRowClick(projectId: string) {
+  activateProject(projectId)
+  toggleCollapse(projectId)
+}
+
+/** 仅激活项目、切换折叠（「最近」分组用：那一组没有折叠概念） */
+function activateProject(projectId: string) {
   projectStore.touchProject(projectId)
   activeNav.value = 'chat'
 }
@@ -360,7 +367,7 @@ function openProject(projectId: string) {
         <div
           class="flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-xs text-neutral-600 hover:bg-neutral-200/50"
           :title="group.project.rootPath"
-          @click="openProject(group.project.id)"
+          @click="onFolderRowClick(group.project.id)"
         >
           <!-- 折叠箭头：仅此区域切换折叠，整行点击仍是「打开该项目」 -->
           <button
@@ -484,7 +491,7 @@ function openProject(projectId: string) {
           :key="`recent-${p.id}`"
           class="group/recent flex h-9 cursor-pointer items-center gap-2 rounded-md px-2.5 text-[13px] text-neutral-600 hover:bg-neutral-200/50"
           :title="p.rootPath"
-          @click="openProject(p.id)"
+          @click="activateProject(p.id)"
         >
           <FolderOpen class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
           <span class="min-w-0 flex-1 truncate">{{ p.name }}</span>

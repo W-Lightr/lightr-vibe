@@ -458,6 +458,8 @@ function applyUpdate(event: AcpUpdateEvent): void {
       const messageId = update.messageId ?? `${type}-current-${turnId ?? 'live'}`
       let message = session?.messages.find((m) => m.id === messageId)
       if (!message) {
+        // 开始产出正文：说明前面的思考阶段已经结束，先把它收尾
+        if (type === 'text') settleStreamingThinking(sessionId, turnId)
         message = sessionStore.pushMessage(sessionId, {
           id: messageId,
           role: 'assistant',
@@ -538,6 +540,32 @@ function applyUpdate(event: AcpUpdateEvent): void {
   }
 }
 
+/**
+ * 结束本 turn 里仍在流式的思考消息。
+ *
+ * thinking 的「思考中…」原先只在本 turn 收尾时统一改 done，于是多轮推理
+ * （思考 → 工具 → 再思考 → …）期间，前几轮的思考块会一直停在「思考中」，
+ * 直到整轮结束才一起变成「思考完成」。阶段已经切换就说明那段思考结束了，
+ * 这里在切换到工具调用 / 正文时立刻收尾。
+ *
+ * 关键：部分适配器（claude-agent-acp）整轮复用同一个 `messageId`。若只把
+ * 状态改 done，后续思考会被 `status === 'done'` 挡掉，整段内容丢失。
+ * 因此收尾时把 id 加一个阶段后缀「让出去」——之后同一 messageId 的 chunk
+ * 会重新匹配不到、新建一条消息承载新的思考阶段，历史各段互不影响。
+ */
+function settleStreamingThinking(sessionId: string, turnId: string | undefined): void {
+  const sessionStore = useSessionStore()
+  const messages = sessionStore.get(sessionId)?.messages
+  if (!messages) return
+  for (const m of messages) {
+    if (m.type !== 'thinking' || m.status !== 'streaming') continue
+    // 只收尾本 turn 的思考块；无 turnId 的旧消息不动（由 turn 结束统一处理）
+    if (turnId !== undefined && m.turnId !== turnId) continue
+    const settledId = `${m.id}#settled-${Date.now().toString(36)}`
+    sessionStore.patchMessage(sessionId, m.id, { id: settledId, status: 'done' })
+  }
+}
+
 function applyToolCall(sessionId: string, update: AcpToolCallEvent, turnId: string | undefined): void {
   const sessionStore = useSessionStore()
   const toolCallId = update.toolCallId
@@ -546,7 +574,9 @@ function applyToolCall(sessionId: string, update: AcpToolCallEvent, turnId: stri
   const host = toolCallHosts.get(key)
 
   if (!host) {
-    // 首个 tool_call：新建宿主消息承载工具卡（同 turn 多工具各占一条）
+    // 首个 tool_call：新建宿主消息承载工具卡（同 turn 多工具各占一条）。
+    // 进入工具阶段即代表上一段思考结束，先收尾它（否则整轮都在「思考中…」）。
+    settleStreamingThinking(sessionId, turnId)
     const tc: ToolCall = {
       id: toolCallId,
       name: update.title ?? toolCallId,
