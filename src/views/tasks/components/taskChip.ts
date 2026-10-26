@@ -4,6 +4,7 @@
 
 import type { WorkTask } from '../../../types/task'
 import { TASK_STATUS_LABELS } from '../../../types/task'
+import { SETUP_ERROR_PREFIX } from './setupErrorPrefix'
 
 /** chip 视觉分组（与配色一一对应） */
 export type TaskChipKind = 'running' | 'attention' | 'done' | 'failed' | 'neutral'
@@ -45,6 +46,11 @@ export function taskChipKind(task: WorkTask): TaskChipKind {
 /** chip 文案：失败且带归因时给出更具体的原因 */
 export function taskChipLabel(task: WorkTask): string {
   const base = TASK_STATUS_LABELS[task.status]
+  // 启动准备失败（setup_error）：没走到 Agent 就被挡下（如 worktree 建不出来），
+  // 与 Agent 报错不同，单独说清楚；`lastError` 前缀是桥接层写的，见 failSetup。
+  if (task.status === 'failed' && task.lastError?.startsWith(SETUP_ERROR_PREFIX)) {
+    return `${base} · 启动失败`
+  }
   if (task.status !== 'failed' || !task.failureReason) return base
   switch (task.failureReason) {
     case 'empty_turn':

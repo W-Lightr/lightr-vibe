@@ -30,6 +30,7 @@ import {
   mockSettleTurn,
   mockTransition,
   mockUpdate,
+  mockWorktreeIssue,
 } from './taskMock'
 
 export const taskService = {
@@ -154,5 +155,14 @@ export const taskService = {
   async clearWorktree(id: string): Promise<WorkTask> {
     if (!isTauri()) return mockClearWorktree(id)
     return invoke<WorkTask>('task_clear_worktree', { id })
+  },
+
+  /**
+   * 只写 `lastError`（不改状态）：init 命令失败 / 工作树清理失败的附注。
+   * 与 `update` 区别：`update` 是用户编辑（仅 todo / failed），这条服务于运行中与终态。
+   */
+  async worktreeIssue(id: string, note: string): Promise<WorkTask> {
+    if (!isTauri()) return mockWorktreeIssue(id, note)
+    return invoke<WorkTask>('task_worktree_issue', { id, note })
   },
 }

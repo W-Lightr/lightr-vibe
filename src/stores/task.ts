@@ -193,6 +193,19 @@ export const useTaskStore = defineStore('task', () => {
     return row
   }
 
+  /**
+   * 只写 `lastError` 的附注通道（不改状态、不改归因、不改时间戳）：
+   * 启动时 init 命令失败、终态清理失败这类「不影响状态机、但用户该看到」的情况。
+   *
+   * 为什么不用 `update`：`task_update` 只放行 todo / failed，而这两处发生时任务
+   * 已经在 running / done / canceled。失败直接抛出，由调用方决定是否吞掉。
+   */
+  async function finishWorktree(id: string, note: string): Promise<WorkTask> {
+    const row = await taskService.worktreeIssue(id, note)
+    upsert(row)
+    return row
+  }
+
   return {
     tasks,
     loaded,
@@ -213,5 +226,6 @@ export const useTaskStore = defineStore('task', () => {
     duplicate,
     attachWorktree,
     clearWorktree,
+    finishWorktree,
   }
 })

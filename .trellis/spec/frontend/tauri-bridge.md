@@ -979,6 +979,52 @@ Removal keeps a branch that still holds unlanded commits (tip is neither an ance
 of base nor tree-equal to base); a probe error reads as "holds work" because deletion
 is the irreversible half.
 
+**Start chain (`taskSessionBridge.ts::startTask`)** — the task row's `useWorktree` decides
+the session cwd:
+
+```
+let cwd = project.rootPath                 // default; switch OFF never touches git
+if (queued.useWorktree) {                  // the ONLY place that calls worktreeService.create
+  const info = await worktreeService.create({ rootPath, baseBranch, taskId, initCommand })
+  await taskStore.attachWorktree(id, info)
+  cwd = info.worktreePath
+}
+sessionStore.createDraft(model, { ..., cwd })
+```
+
+- **OFF must stay byte-identical**: same `cwd`, same transition order, zero `await` added,
+  zero `worktreeService` calls. Stale-path cleanup is gated on `useWorktree` too, otherwise a
+  row with the switch off would still run `git worktree remove` at launch.
+- **Create fails** → task must reach `failed` **without** a draft/session. `queued → failed`
+  is not in `TRANSITIONS`, so the legal hop is `queued → preparing → failed`; if the hop
+  itself fails, fall back to `queued → todo` rather than stranding the row in `queued`
+  (which permanently disables the start button).
+- **Create succeeded but a later step fails** → remove the worktree **before** rolling the
+  status back. The remove takes the freshly-returned facts (`WorktreeFacts`), not the store
+  row — a write-back failure leaves the row stale and an empty `workBranch` would send git a
+  bogus argument. A remove failure is noted with the path and the original cause is rethrown
+  unchanged (never masked).
+- **`initCommand` failure never blocks** — the note goes to `lastError` only.
+
+**Terminal cleanup** is ONE helper (`cleanupWorktreeOnFinish`) called from every path that
+reaches `done`/`canceled`: `approveTask`, `stopTask`, and the board's drag-to-terminal
+(`transitionTask`). `review → todo` (reject), `duplicate`, and `settleTurn → review|failed`
+must NOT clean — the worktree is still in use. On removal failure the status is **not**
+rolled back; `lastError` carries the path and the detail dialog offers 重试清理.
+
+**`task_worktree_issue { id, note }`** exists because `lastError` has no other writable
+channel outside `todo`/`failed` (`task_update` is status-gated, `task_settle_turn` owns the
+status machine). It writes **only** `lastError` + `updatedAt` — never status, verdict,
+`runSeq`, or worktree fields — so it cannot bypass the state machine.
+
+**`setup_error` is encoded, not enumerated**: `TaskFailureReason` has no such variant, and
+extending it would need a migration for a purely presentational distinction. The convention
+is `status: failed` + `lastError` starting with `准备失败：`; the chip checks that prefix
+**before** switching on `failure_reason`, so `interrupted` / `agent_error` / `empty_turn`
+rendering is untouched. The prefix constants live in
+`components/setupErrorPrefix.ts` — a pure module, so the presentational chip does not import
+the bridge (which would close a `bridge → session store → … → chip` cycle).
+
 ### 4. Validation & Error Matrix
 
 | Condition | Behavior |

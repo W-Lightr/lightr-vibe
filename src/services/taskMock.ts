@@ -459,3 +459,14 @@ export function mockClearWorktree(id: string): WorkTask {
   pushEvent(id, 'user_action', 'user', { action: 'clear_worktree' })
   return clone(task)
 }
+
+/** 只写 `lastError`（与 Rust `task_worktree_issue` 同语义）：不改状态 / 归因 / 时间戳 */
+export function mockWorktreeIssue(id: string, note: string): WorkTask {
+  ensureSeed()
+  const task = tasks[findIndex(id)]
+  const trimmed = note.trim()
+  task.lastError = trimmed ? trimmed : null
+  task.updatedAt = nowMs()
+  pushEvent(id, 'user_action', 'user', { action: 'worktree_issue' })
+  return clone(task)
+}

@@ -56,18 +56,21 @@ pnpm build
 
 ## 3 · 子任务 `10-26-worktree-lifecycle`
 
-- [ ] `taskSessionBridge.ts` 启动链路
-  - [ ] `useWorktree` 为真 → `worktreeService.create` → `attachWorktree` → `cwd = worktreePath`
-  - [ ] 为假 → `cwd = project.rootPath`（**保持原路径逐字节不变**）
-  - [ ] 创建失败 → 任务 `failed(setup_error)`，不建会话
-  - [ ] 后续步骤失败且已建 worktree → 先删再回退
-- [ ] 终态清理
-  - [ ] `done` / `canceled` 且 `worktreePath != null` → `worktreeService.remove` → `clearWorktree`
-  - [ ] 删除失败：写 `lastError`，**不回滚状态**
-- [ ] 详情抽屉显示「清理失败」提示与路径
-- [ ] 确认不勾选 worktree 的路径零回归
+- [x] `taskSessionBridge.ts` 启动链路
+  - [x] `useWorktree` 为真 → `worktreeService.create` → `attachWorktree` → `cwd = worktreePath`
+  - [x] 为假 → `cwd = project.rootPath`（**保持原路径逐字节不变**）
+  - [x] 创建失败 → 任务 `failed(setup_error)`，不建会话
+  - [x] 后续步骤失败且已建 worktree → 先删再回退
+- [x] 终态清理
+  - [x] `done` / `canceled` 且 `worktreePath != null` → `worktreeService.remove` → `clearWorktree`
+  - [x] 删除失败：写 `lastError`，**不回滚状态**
+- [x] 详情抽屉显示「清理失败」提示与路径（+ 重试清理按钮）
+- [x] 确认不勾选 worktree 的路径零回归
+- 补充：`task_worktree_issue` 命令（Rust + service + mock + store `finishWorktree`）——
+  `task_update` 只放行 todo/failed，写不进 running / done / canceled 行上的 `lastError`
+- 补充：看板拖拽落列改走 `transitionTask`（bridge 薄包装），否则拖到「已取消」漏删工作树
 
-**回滚点**：`git checkout src/views/tasks/taskSessionBridge.ts src/views/tasks/components/TaskDetailDialog.vue`
+**回滚点**：`git checkout src/views/tasks/taskSessionBridge.ts src/views/tasks/components/TaskDetailDialog.vue src/views/tasks/components/taskChip.ts src/views/tasks/TasksView.vue src/stores/task.ts src/services/taskService.ts src/services/taskMock.ts src-tauri/src/task.rs src-tauri/src/lib.rs`
 
 ---
 

@@ -7,6 +7,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import {
+  AlertTriangle,
   Archive,
   Check,
   Copy,
@@ -31,7 +32,15 @@ import { useProjectStore } from '../../../stores/project'
 import { useSessionStore } from '../../../stores/session'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { isTauri } from '../../../utils/isTauri'
-import { approveTask, rejectTask, simulateTurnSettle, startTask, stopTask } from '../taskSessionBridge'
+import { SETUP_ERROR_PREFIX, WORKTREE_CLEANUP_FAILED_PREFIX } from './setupErrorPrefix'
+import {
+  approveTask,
+  rejectTask,
+  retryWorktreeCleanup,
+  simulateTurnSettle,
+  startTask,
+  stopTask,
+} from '../taskSessionBridge'
 
 const props = defineProps<{
   open: boolean
@@ -111,6 +120,37 @@ const baseSummary = computed(() => {
   if (branch && sha) return `${branch} / ${sha}`
   return branch ?? sha
 })
+
+/**
+ * 工作树清理失败（lifecycle R3 / AC9）：任务已是终态、但「登记着路径」或「刚写回了清理
+ * 失败附注」= 没删掉。
+ *
+ * 两种证据取并集：删除失败会保留路径；但删除成功而 `clearWorktree` 没写回时路径仍在——
+ * 那不算清理失败，只有 `lastError` 会在那种情况写出来。所以以附注为主、路径为辅：
+ * - 有路径：详情区本来就渲染（路径 / 分支 / 基线，R4），这里只补「失败 + 重试」；
+ * - 无路径但附注还在：说明重试已删掉目录，只是记录没跟上，给个入口看/清掉附注。
+ */
+const worktreeCleanupFailed = computed(() => {
+  const t = task.value
+  if (!t) return false
+  const terminal = t.status === 'done' || t.status === 'canceled' || t.status === 'failed'
+  if (!terminal) return false
+  return !!t.worktreePath || !!t.lastError?.includes(WORKTREE_CLEANUP_FAILED_PREFIX)
+})
+
+/** 「失败原因」区：工作树附注不是 Agent 失败原因，已在工作树区单独说明，别重复红块 */
+const showLastError = computed(() => {
+  const message = task.value?.lastError
+  if (!message) return false
+  return !message.startsWith(SETUP_ERROR_PREFIX)
+})
+
+/** 重试清理：成功后路径消失、卡片自动收起；失败由 run() 统一 toast（lastError 已写回） */
+function onRetryWorktreeCleanup(): void {
+  const t = task.value
+  if (!t) return
+  void run(() => retryWorktreeCleanup(t.id))
+}
 
 /** 时间线事件文案：状态事件渲染成「待办 → 进行中」 */
 function eventLabel(event: WorkTaskEvent): string {
@@ -413,8 +453,8 @@ onBeforeUnmount(() => {
           </div>
         </dl>
 
-        <!-- 失败原因 -->
-        <section v-if="task.lastError" class="mt-3">
+        <!-- 失败原因（启动准备失败已由工作树区 / chip 表达，这里不重复） -->
+        <section v-if="showLastError" class="mt-3">
           <h3 class="mb-1 text-[11px] font-medium text-neutral-500">失败原因</h3>
           <p
             class="whitespace-pre-wrap break-words rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-[12px] leading-5 text-red-700"
@@ -473,13 +513,13 @@ onBeforeUnmount(() => {
           </button>
         </section>
 
-        <!-- 工作树（只读）：创建过独立工作树才显示路径 / 分支 / 基线，路径可复制 -->
+        <!-- 工作树（只读）：登记着工作树或有清理失败的记录才显示路径 / 分支 / 基线 -->
         <section
-          v-if="worktreePath"
+          v-if="worktreePath || worktreeCleanupFailed"
           class="mt-3 space-y-1 rounded-md border border-neutral-200 px-2.5 py-2"
         >
           <h3 class="text-[11px] font-medium text-neutral-500">工作树</h3>
-          <div class="flex items-center gap-1.5">
+          <div v-if="worktreePath" class="flex items-center gap-1.5">
             <span class="shrink-0 text-[11px] text-neutral-500">路径</span>
             <span
               class="min-w-0 flex-1 select-text truncate font-mono text-[11px] text-neutral-700"
@@ -516,6 +556,34 @@ onBeforeUnmount(() => {
             <span v-if="baseSummary" class="shrink-0 text-[10px] text-neutral-400">
               基线 {{ baseSummary }}
             </span>
+          </div>
+          <!-- 终态还挂着路径 = 清理失败（lifecycle R3 / AC9）：提示 + 路径 + 重试 -->
+          <div
+            v-if="worktreeCleanupFailed"
+            class="flex items-center gap-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1.5"
+          >
+            <AlertTriangle class="h-3 w-3 shrink-0 text-amber-600" />
+            <div class="min-w-0 flex-1">
+              <p class="text-[11px] leading-4 text-amber-700">工作树清理失败</p>
+              <p
+                v-if="worktreePath"
+                class="select-text break-all font-mono text-[10px] leading-4 text-amber-600/80"
+              >
+                {{ worktreePath }}
+              </p>
+              <p v-else class="text-[10px] leading-4 text-amber-600/80">
+                目录已删除，清理记录未写回；重试可清掉这条记录
+              </p>
+            </div>
+            <button
+              class="flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md border border-amber-300 bg-white px-2 text-[11px] text-amber-700 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="busy"
+              title="重新尝试删除工作树目录"
+              @click="onRetryWorktreeCleanup"
+            >
+              <RotateCcw class="h-3 w-3" />
+              重试清理
+            </button>
           </div>
         </section>
 

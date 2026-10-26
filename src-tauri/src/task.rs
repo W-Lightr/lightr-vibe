@@ -1130,6 +1130,29 @@ pub fn task_clear_worktree(id: String) -> Result<WorkTask, String> {
     })
 }
 
+/// 只写 `last_error`（子任务 lifecycle R2 / R3）：启动时 init 命令失败、终态工作树
+/// 清理失败这类「不影响状态机，但用户该看到」的附注。**不改**状态 / 归因 / 时间戳 /
+/// worktree 运行态，因而对任何状态都可调用（`task_update` 只放行 todo / failed）。
+/// `note` 去空白后为空 = 清空。
+#[tauri::command]
+pub fn task_worktree_issue(id: String, note: String) -> Result<WorkTask, String> {
+    with_file_write(|file| {
+        let now = now_ms();
+        let task = find_task_mut(file, &id)?;
+        task.last_error = trim_to_none(&note);
+        task.updated_at = now;
+        let updated = task.clone();
+        push_event(
+            file,
+            &id,
+            TaskEventKind::UserAction,
+            TaskActor::User,
+            Some(serde_json::json!({ "action": "worktree_issue", "note": note })),
+        );
+        Ok(updated)
+    })
+}
+
 /// 归档 / 取消归档：仅终态（done / canceled / failed）可归档
 #[tauri::command]
 pub fn task_archive(id: String, archived: bool) -> Result<WorkTask, String> {

@@ -44,17 +44,20 @@ useWorktree === true   → worktreeService.create(...)
 
 ## Acceptance Criteria
 
-- [ ] **AC1** 不勾 worktree：启动流程与改动前逐字节一致，无任何 git 调用。
-- [ ] **AC2** 勾了 worktree：启动后 `git worktree list` 含该路径。
-- [ ] **AC3** 会话 cwd 在 worktree 内（Agent 执行 `pwd` 验证）。
-- [ ] **AC4** 项目根目录 `git status` 在任务全程无新增改动。
-- [ ] **AC5** 任务完成 → worktree 目录消失、`git worktree list` 恢复。
-- [ ] **AC6** 任务取消 → 同上。
-- [ ] **AC7** `worktree_create` 失败 → 任务 `failed(setup_error)`，无会话被创建。
-- [ ] **AC8** worktree 已建但后续步骤失败 → 目录被清理，任务状态正确回退。
-- [ ] **AC9** 删除失败 → 任务状态不回滚，详情有「清理失败」提示与路径。
-- [ ] **AC10** `initCommand` 失败不阻断任务启动。
-- [ ] **AC11** `cargo check` + `cargo test --lib` + `pnpm vue-tsc --noEmit` + `pnpm build` 全绿。
+- [x] **AC1** 不勾 worktree：启动流程与改动前逐字节一致，无任何 git 调用。
+  （代码层：`cwd` 初值即 `project.rootPath`，只在 `if (queued.useWorktree)` 分支内被改写；
+  该分支是本链路唯一触摸 `worktreeService` 的地方。真机验收待人工。）
+- [x] **AC2** 勾了 worktree：启动后 `git worktree list` 含该路径。（代码层，真机待验收）
+- [x] **AC3** 会话 cwd 在 worktree 内（Agent 执行 `pwd` 验证）。（`createDraft({ cwd })` 传入 worktreePath）
+- [x] **AC4** 项目根目录 `git status` 在任务全程无新增改动。（worktree 从提交拉出，不触碰工作区）
+- [x] **AC5** 任务完成 → worktree 目录消失、`git worktree list` 恢复。（`approveTask`）
+- [x] **AC6** 任务取消 → 同上。（`stopTask` + 看板拖拽 `transitionTask`）
+- [x] **AC7** `worktree_create` 失败 → 任务 `failed(setup_error)`，无会话被创建。（
+  `failSetup`：`lastError` 以「准备失败：」开头，chip 显示「失败 · 启动失败」）
+- [x] **AC8** worktree 已建但后续步骤失败 → 目录被清理，任务状态正确回退。（`rollbackStart(..., createdWorktree)`）
+- [x] **AC9** 删除失败 → 任务状态不回滚，详情有「清理失败」提示与路径。（+「重试清理」按钮）
+- [x] **AC10** `initCommand` 失败不阻断任务启动。（`initError` 只写 `lastError`）
+- [x] **AC11** `cargo check` + `cargo test --lib` + `pnpm vue-tsc --noEmit` + `pnpm build` 全绿。
 
 ## Out of Scope
 

@@ -5,6 +5,8 @@
 // 拖拽：useTaskDrag（Pointer Events），drop 时经本页调 taskStore.transition / reorder。
 // 会话联动（子任务 3）：开始 / 重试 / 停止 / 通过 / 打回全部委托 taskSessionBridge
 // （启动链路唯一实现），本页只负责提示与在途禁用。
+// worktree（子任务 lifecycle）：拖进「已完成」列 = 进终态，同样要删工作树，故复用
+// taskSessionBridge 的 `transitionTask` 而不是直接调 store。
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
@@ -29,7 +31,7 @@ import {
   columnForStatus,
   groupTasksByColumn,
 } from './boardColumns'
-import { approveTask, rejectTask, startTask, stopTask } from './taskSessionBridge'
+import { approveTask, rejectTask, startTask, stopTask, transitionTask } from './taskSessionBridge'
 import { useTaskStore } from '../../stores/task'
 import { useProjectStore } from '../../stores/project'
 import { getAppWindow } from '../../utils/window'
@@ -277,8 +279,7 @@ const {
       return
     }
     inflight.add(taskId)
-    void taskStore
-      .transition(taskId, to, from)
+    void transitionTask(taskId, to, from)
       .catch((err: unknown) => {
         message.error(taskErrorMessage(err))
       })
