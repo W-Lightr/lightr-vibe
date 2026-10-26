@@ -47,6 +47,11 @@ export interface WorkTask {
   sessionId: string | null
   /** 创建时固化的引擎 wire 标识，启动时用它建会话 */
   engineId: EngineWire | null
+  /** 编辑器里选的模型 id（ACP config option 值）；null = 引擎默认模型 */
+  modelId: string | null
+  /** 思考程度的 config option id（如 `effort`）与取值；引擎不支持时均为 null */
+  effortId: string | null
+  effortValue: string | null
   verdict: TaskVerdict | null
   resultSummary: string | null
   lastError: string | null
@@ -91,17 +96,25 @@ export interface TaskDraft {
   prompt?: string
   /** 省略 / null 则在启动时才决定引擎 */
   engineId?: EngineWire | null
+  /** 省略 / null = 用引擎默认模型 */
+  modelId?: string | null
+  /** 思考程度：config option 的 id 与取值（引擎不支持时省略） */
+  effortId?: string | null
+  effortValue?: string | null
 }
 
 /**
  * 编辑入参（task_update）：未提供的字段不改（对应 Rust `TaskPatch` 的 `Option` 字段）。
  * 语义是「缺省 = 不改」而非「null = 清空」——当前无清空 `engineId` 的接口；
- * 将来要支持时两侧需同时改。
+ * 将来要支持时两侧需同时改。`modelId` 传空串表示回到引擎默认。
  */
 export interface TaskPatch {
   title?: string
   prompt?: string
   engineId?: EngineWire | null
+  modelId?: string | null
+  effortId?: string | null
+  effortValue?: string | null
 }
 
 /** 一个任务的完整视图：行 + 时间线（Rust `TaskDetails`） */

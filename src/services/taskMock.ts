@@ -104,6 +104,9 @@ function seedDemoTasks(): void {
       runSeq: 0,
       sessionId: null,
       engineId: 'open_code',
+      modelId: null,
+      effortId: null,
+      effortValue: null,
       verdict: null,
       resultSummary: null,
       lastError: null,
@@ -231,6 +234,9 @@ export function mockCreate(draft: TaskDraft): TaskDetails {
     runSeq: 0,
     sessionId: null,
     engineId: draft.engineId ?? null,
+    modelId: draft.modelId ?? null,
+    effortId: draft.effortId ?? null,
+    effortValue: draft.effortValue ?? null,
     verdict: null,
     resultSummary: null,
     lastError: null,
@@ -260,6 +266,10 @@ export function mockUpdate(id: string, patch: TaskPatch): WorkTask {
   }
   if (patch.prompt !== undefined) task.prompt = patch.prompt
   if (patch.engineId !== undefined) task.engineId = patch.engineId
+  // 空串 = 回到引擎默认，与 Rust 侧同一语义
+  if (patch.modelId !== undefined) {
+    task.modelId = patch.modelId && patch.modelId.trim() !== '' ? patch.modelId : null
+  }
   task.updatedAt = nowMs()
   pushEvent(id, 'user_action', 'user', { action: 'updated' })
   return clone(task)
@@ -381,5 +391,8 @@ export function mockDuplicate(id: string): TaskDetails {
     title: source.title,
     prompt: source.prompt,
     engineId: source.engineId,
+    modelId: source.modelId,
+    effortId: source.effortId,
+    effortValue: source.effortValue,
   })
 }

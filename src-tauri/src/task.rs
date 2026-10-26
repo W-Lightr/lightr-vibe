@@ -171,6 +171,16 @@ pub struct WorkTask {
     pub session_id: Option<String>,
     /// 创建时固化的引擎 wire 标识
     pub engine_id: Option<String>,
+    /// 编辑器里选的模型 id（ACP config option 的值）；`None` = 用引擎默认模型。
+    /// 启动任务时按它设置会话模型，换引擎后由前端清空。
+    #[serde(default)]
+    pub model_id: Option<String>,
+    /// 编辑器里选的思考程度：config option 的 id（如 `effort`）与取值。
+    /// 各引擎支持不同，探测不到时两者均为 `None`。启动时按它设置该会话选项。
+    #[serde(default)]
+    pub effort_id: Option<String>,
+    #[serde(default)]
+    pub effort_value: Option<String>,
     pub verdict: Option<TaskVerdict>,
     pub result_summary: Option<String>,
     pub last_error: Option<String>,
@@ -226,6 +236,12 @@ pub struct TaskDraft {
     pub prompt: String,
     #[serde(default)]
     pub engine_id: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub effort_id: Option<String>,
+    #[serde(default)]
+    pub effort_value: Option<String>,
 }
 
 /// 编辑入参（prd R3 task_update）：未出现的字段不改
@@ -238,6 +254,12 @@ pub struct TaskPatch {
     pub prompt: Option<String>,
     #[serde(default)]
     pub engine_id: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub effort_id: Option<String>,
+    #[serde(default)]
+    pub effort_value: Option<String>,
 }
 
 /// 一个任务的完整视图：行 + 时间线（设计 D4 详情抽屉一次取全）
@@ -830,6 +852,9 @@ pub fn task_create(draft: TaskDraft) -> Result<TaskDetails, String> {
             run_seq: 0,
             session_id: None,
             engine_id: draft.engine_id.clone(),
+            model_id: draft.model_id.clone(),
+            effort_id: draft.effort_id.clone(),
+            effort_value: draft.effort_value.clone(),
             verdict: None,
             result_summary: None,
             last_error: None,
@@ -874,6 +899,25 @@ pub fn task_update(id: String, patch: TaskPatch) -> Result<WorkTask, String> {
         }
         if let Some(engine) = patch.engine_id {
             task.engine_id = Some(engine);
+        }
+        // 模型随任务走：空字符串视作「回到引擎默认」，与前端「未选」一致
+        if let Some(model) = patch.model_id {
+            task.model_id = if model.trim().is_empty() { None } else { Some(model) };
+        }
+        // 思考程度同理；id 与 value 需成对存在，缺一即清空（换引擎后旧 id 不再适用）
+        if patch.effort_id.is_some() || patch.effort_value.is_some() {
+            let id = patch.effort_id.filter(|s| !s.trim().is_empty());
+            let value = patch.effort_value.filter(|s| !s.trim().is_empty());
+            match (id, value) {
+                (Some(i), Some(v)) => {
+                    task.effort_id = Some(i);
+                    task.effort_value = Some(v);
+                }
+                _ => {
+                    task.effort_id = None;
+                    task.effort_value = None;
+                }
+            }
         }
         task.updated_at = now;
         let updated = task.clone();
@@ -1042,6 +1086,9 @@ pub fn task_duplicate(id: String) -> Result<TaskDetails, String> {
             title: source.title.clone(),
             prompt: source.prompt.clone(),
             engine_id: source.engine_id.clone(),
+            model_id: source.model_id.clone(),
+            effort_id: source.effort_id.clone(),
+            effort_value: source.effort_value.clone(),
         })
     })??;
     task_create(draft)
@@ -1126,6 +1173,9 @@ mod tests {
             run_seq: 0,
             session_id: None,
             engine_id: None,
+            model_id: None,
+            effort_id: None,
+            effort_value: None,
             verdict: None,
             result_summary: None,
             last_error: None,
@@ -1488,6 +1538,9 @@ mod tests {
             title: "坏了也要能建".into(),
             prompt: String::new(),
             engine_id: None,
+            model_id: None,
+            effort_id: None,
+            effort_value: None,
         })
         .unwrap();
         assert_eq!(created.task.status, TaskStatus::Todo);
@@ -1609,6 +1662,9 @@ mod tests {
             title: "命令链路".into(),
             prompt: "do it".into(),
             engine_id: Some("open_code".into()),
+            model_id: None,
+            effort_id: None,
+            effort_value: None,
         })
         .unwrap();
         assert_eq!(created.task.status, TaskStatus::Todo);
@@ -1672,6 +1728,9 @@ mod tests {
             title: "A".into(),
             prompt: String::new(),
             engine_id: None,
+            model_id: None,
+            effort_id: None,
+            effort_value: None,
         })
         .unwrap()
         .task;
@@ -1680,6 +1739,9 @@ mod tests {
             title: "B".into(),
             prompt: String::new(),
             engine_id: None,
+            model_id: None,
+            effort_id: None,
+            effort_value: None,
         })
         .unwrap()
         .task;
@@ -1713,6 +1775,9 @@ mod tests {
             "\"runSeq\"",
             "\"sessionId\"",
             "\"engineId\"",
+            "\"modelId\"",
+            "\"effortId\"",
+            "\"effortValue\"",
             "\"archivedAt\"",
             "\"createdAt\"",
             "\"settledAt\"",
