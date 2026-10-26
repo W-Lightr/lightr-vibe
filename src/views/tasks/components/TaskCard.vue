@@ -66,7 +66,7 @@ function setRef(el: unknown): void {
 <template>
   <article
     :ref="setRef"
-    class="group relative cursor-grab overflow-hidden rounded-lg border border-transparent bg-white transition-all hover:border-neutral-200 hover:shadow-[0_1px_2px_rgba(0,0,0,0.04)] active:cursor-grabbing"
+    class="group relative cursor-grab touch-none overflow-hidden rounded-lg border border-neutral-200 bg-white transition-colors select-none hover:border-neutral-400 active:cursor-grabbing"
     :class="[!dragEnabled && 'cursor-default', dragging && 'opacity-40', shaking && 'animate-shake']"
     :data-task-id="task.id"
     @pointerdown="emit('pointer-down', $event)"

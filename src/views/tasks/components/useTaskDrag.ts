@@ -108,6 +108,9 @@ export function useTaskDrag(options: TaskDragOptions) {
         Math.abs(e.clientX - (pending?.startX ?? e.clientX)) +
         Math.abs(e.clientY - (pending?.startY ?? e.clientY))
       if (!pending || moved <= DRAG_THRESHOLD) return
+      // 越过阈值升级为拖拽时清掉可能已经形成的文字选区：
+      // 卡片虽已 select-none，但从卡片缝隙起手仍可能触发原生选择并打断拖拽。
+      window.getSelection()?.removeAllRanges()
     }
     drag.value = { ...state, active: true, clientX: e.clientX, clientY: e.clientY }
     hoverColumn.value = legalColumnAt(e.clientX, e.clientY)

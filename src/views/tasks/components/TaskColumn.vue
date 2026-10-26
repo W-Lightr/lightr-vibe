@@ -131,8 +131,12 @@ function setColumnRef(el: unknown): void {
     </div>
 
     <!-- 卡片列表：滚动容器，拖拽落列按整列矩形判定（registerColumn 挂在 section 上，
-         空列也必须是合法落点——把待办卡片拖进空的「进行中」列正是最常见的操作） -->
-    <div v-else class="min-h-0 flex-1 space-y-3 overflow-y-auto">
+         空列也必须是合法落点——把待办卡片拖进空的「进行中」列正是最常见的操作）。
+         与外层空态同一套虚线框，保证四列在有/无卡片时视觉一致。 -->
+    <div
+      v-else
+      class="min-h-0 flex-1 space-y-3 overflow-y-auto rounded-xl border border-dashed border-neutral-300 p-2"
+    >
       <TaskCard
         v-for="task in tasks"
         :key="task.id"
