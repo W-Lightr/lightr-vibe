@@ -21,7 +21,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const tabs = ref<OpenTab[]>([])
   const activeTabId = ref<string | null>(null)
   const sidebarVisible = ref(true)
-  const inspectorVisible = ref(true)
+  /**
+   * 右侧详情面板默认**关闭**：首屏把宽度让给对话区。
+   *
+   * 展开入口是 TopBar 里的 PanelRight 按钮（只在编码工作区，因为右栏也只
+   * 在那里渲染），所以关掉不会锁死。
+   */
+  const inspectorVisible = ref(false)
   /** 左/右栏宽度（px），拖拽分隔条调整 */
   const leftWidth = ref(260)
   const rightWidth = ref(335)
