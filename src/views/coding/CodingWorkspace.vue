@@ -60,14 +60,40 @@ let startWidth = 0
 const LEFT_MIN = 200
 const LEFT_MAX = 480
 const RIGHT_MIN = 260
-const RIGHT_MAX = 560
+/** 右侧面板的硬上限（px）：再大就不再是「侧栏」了 */
+const RIGHT_HARD_MAX = 1600
+/**
+ * 主区必须保留的最小宽度（px）。
+ *
+ * 右栏要用来展示网页内容，固定 560px 上限远远不够，所以改成「按容器宽度
+ * 取比例 + 给主区留底线」。没有这条底线时，`main` 上的 `min-w-0` 会让它被
+ * 一路压到 0，右栏越宽主区越不可用。
+ */
+const MAIN_MIN_WIDTH = 420
+
+/** 拖拽容器（中间那一栏）的实际可用宽度 */
+const dragContainerWidth = ref(0)
+const dragContainerEl = ref<HTMLElement | null>(null)
+
+/** 右侧面板当前允许的最大宽度：容器宽度 - 主区底线，且不超过硬上限 */
+function rightMaxWidth(): number {
+  const container = dragContainerWidth.value
+  if (container <= 0) return RIGHT_HARD_MAX
+  return Math.max(RIGHT_MIN, Math.min(RIGHT_HARD_MAX, container - MAIN_MIN_WIDTH))
+}
+
+/** 同步容器宽度（挂载 + 窗口 resize 时） */
+function syncContainerWidth() {
+  dragContainerWidth.value = dragContainerEl.value?.clientWidth ?? 0
+}
 
 function onPointerMove(e: PointerEvent) {
   const dx = e.clientX - startX
   if (dragging.value === 'left') {
     workspace.leftWidth = Math.min(LEFT_MAX, Math.max(LEFT_MIN, startWidth + dx))
   } else if (dragging.value === 'right') {
-    workspace.rightWidth = Math.min(RIGHT_MAX, Math.max(RIGHT_MIN, startWidth - dx))
+    const max = rightMaxWidth()
+    workspace.rightWidth = Math.min(max, Math.max(RIGHT_MIN, startWidth - dx))
   }
 }
 
@@ -81,6 +107,8 @@ function startDrag(side: 'left' | 'right', e: PointerEvent) {
   dragging.value = side
   startX = e.clientX
   startWidth = side === 'left' ? workspace.leftWidth : workspace.rightWidth
+  // 左栏宽度会改变中间容器的可用宽度，本次拖拽开始前重新量一次
+  syncContainerWidth()
   window.addEventListener('pointermove', onPointerMove)
   window.addEventListener('pointerup', stopDrag)
 }
@@ -91,12 +119,21 @@ onBeforeUnmount(stopDrag)
 const NARROW = 1280
 function onResize() {
   if (window.innerWidth < NARROW) workspace.sidebarVisible = false
+  // 窗口变小后，之前拉宽的右栏可能已经不合法：收回底线内
+  syncContainerWidth()
+  const max = rightMaxWidth()
+  if (workspace.rightWidth > max) workspace.rightWidth = max
 }
 onMounted(() => {
   onResize()
+  syncContainerWidth()
   window.addEventListener('resize', onResize)
+  window.addEventListener('resize', syncContainerWidth)
 })
-onBeforeUnmount(() => window.removeEventListener('resize', onResize))
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onResize)
+  window.removeEventListener('resize', syncContainerWidth)
+})
 </script>
 
 <style scoped>
@@ -148,7 +185,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
     <div class="flex h-full min-w-0 flex-1 flex-col">
       <TopBar @toggle-terminal="terminalVisible = !terminalVisible" />
 
-      <div class="flex min-h-0 flex-1">
+      <div ref="dragContainerEl" class="flex min-h-0 flex-1">
         <main class="flex min-w-0 flex-1 flex-col">
           <!-- 会话标签 -->
           <template v-if="activeTab?.kind === 'session' && activeSession">
