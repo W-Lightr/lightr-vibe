@@ -1301,6 +1301,37 @@ const runningIds = computed(() =>
 > 挂在带侧栏的布局下。新增独立顶层路由时记得走 `WorkspaceShell`，否则该页会
 > 既没有左侧菜单、也没有设置入口。
 
+## 对话轮次收纳（`TurnGroup.vue`）
+
+多轮工具调用时，如果每个 assistant 消息各自平铺一行「思考完毕」+「N 个工具」，
+一屏几十行、内容高度重复。`ConversationView` 因此先按 `turnId` 把消息切成
+「用户提问 → 该轮 assistant 输出」的段，再用 `TurnGroup` 收成一条。
+
+### 契约
+
+- **分组键是 `turnId`**（`useConversation` 在每次 `send()` 时生成，
+  思考 / 工具 / 正文消息共享同一个）。**没有 `turnId` 的旧消息各自成组**，
+  不做猜测式合并。
+- **摘要文案**：本轮仍在生成 → `正在运行`（带转圈）；已结束 → `用时 X`
+  （取首尾消息 `createdAt` 之差）；缺时间戳 → `活动`。
+- **默认折叠**；生成中强制展开（否则看不到实时输出），结束后交还给用户的
+  展开状态。
+- **不值得收纳**的情况直接平铺：只有一条纯文本消息时不留折叠头。
+
+### 陷阱
+
+> **Warning**: `Message` 只有 `createdAt`，**没有** `updatedAt`。
+> 「用时」只能用首尾 `createdAt` 求差 —— 这是近似值，不要假装它是精确耗时，
+> 也不要为此给类型加字段（会牵动持久化格式）。
+
+> **Warning**: 「本轮是否仍在生成」只能给**最后一段**置真
+> （`generating && i >= msgs.length`）。给所有段置真会让历史轮次永远转圈。
+
+> **Warning**: 生成中的展开态用**派生值**（`running || userExpanded`），
+> 不要在 `watch(running)` 里改 state 去撑开 —— 否则用户手动折叠会被下一帧
+> 又撑开。
+
+
 ## Gotchas
 
 > **Warning**: `getCurrentWindow()` throws in a plain browser dev server.

@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { ArrowDown, MessageSquarePlus } from 'lucide-vue-next'
 import type { Session } from '../../../types/session'
 import MessageItem from './MessageItem.vue'
+import TurnGroup from './TurnGroup.vue'
 import PlanCard from './PlanCard.vue'
 import { useConversationScroll } from '../../../composables/useConversationScroll'
 import { useSessionStore } from '../../../stores/session'
@@ -39,13 +40,58 @@ watch(
 )
 
 const generating = computed(() => workspace.isGenerating(props.session.id))
+
+/**
+ * 把消息按「用户提问 → 该轮 assistant 输出」切成段。
+ *
+ * 每组 = 一条用户消息 + 紧随其后、turnId 相同的 assistant 消息（思考/工具/正文）。
+ * 没有 turnId 的旧消息各自成组，保持原样平铺 —— 不做猜测式合并。
+ */
+type Block =
+  | { kind: 'user'; message: Session['messages'][number] }
+  | { kind: 'turn'; turnId: string; messages: Session['messages']; generating: boolean }
+
+const blocks = computed<Block[]>(() => {
+  const out: Block[] = []
+  const msgs = props.session.messages
+  let i = 0
+  while (i < msgs.length) {
+    const m = msgs[i]
+    if (m.role === 'user') {
+      out.push({ kind: 'user', message: m })
+      i += 1
+      continue
+    }
+    // assistant 侧：收集同一 turnId 的连续消息
+    const turnId = m.turnId
+    const group = [m]
+    i += 1
+    if (turnId) {
+      while (i < msgs.length && msgs[i].role !== 'user' && msgs[i].turnId === turnId) {
+        group.push(msgs[i])
+        i += 1
+      }
+    }
+    out.push({
+      kind: 'turn',
+      turnId: turnId ?? `solo-${m.id}`,
+      messages: group,
+      // 只有「最后一段」且整体仍在生成时才算运行中，避免历史轮次永远转圈
+      generating: generating.value && i >= msgs.length,
+    })
+  }
+  return out
+})
 </script>
 
 <template>
   <div class="relative min-h-0 flex-1">
     <div ref="listRef" class="no-scrollbar h-full overflow-y-auto" @scroll="onScroll">
       <div class="mx-auto max-w-3xl px-6 py-6">
-        <MessageItem v-for="msg in session.messages" :key="msg.id" :message="msg" />
+        <template v-for="block in blocks" :key="block.kind === 'user' ? block.message.id : block.turnId">
+          <MessageItem v-if="block.kind === 'user'" :message="block.message" />
+          <TurnGroup v-else :messages="block.messages" :generating="block.generating" />
+        </template>
 
         <!-- 空会话引导 -->
         <div v-if="session.messages.length === 0" class="flex flex-col items-center gap-3 pt-28 text-neutral-400">
