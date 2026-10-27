@@ -1301,53 +1301,46 @@ const runningIds = computed(() =>
 > 挂在带侧栏的布局下。新增独立顶层路由时记得走 `WorkspaceShell`，否则该页会
 > 既没有左侧菜单、也没有设置入口。
 
-## 对话活动收纳（`TurnGroup.vue`）
+## 工具调用分组收纳（`ToolCallPanel.vue`）
 
-多轮工具调用时，如果每个 assistant 消息各自平铺一行「思考完毕」+「N 个工具」，
-一屏几十行、内容高度重复。
+### 核心规则
 
-### 核心规则：只收纳过程，不收纳结果
+1. **AI 正文永远直接渲染，绝不折叠。** 正文是用户要看的结果，不是过程噪音。
+2. **工具调用按类别分组折叠**：同类连续调用收成
+   「编辑了文件 · 3 个」「运行了命令 · 1 个」，默认折叠，点击展开看每一条。
+3. **不要在外面再套一层「整轮收纳」** —— 会与上面的分组折叠叠成两层嵌套。
+   `TurnGroup.vue` 曾存在，现已删除。
 
-> **AI 的正文回答永远直接渲染，绝不进折叠。**
+### 类别推断（`classify`）
 
-只把「连续的 thinking / 带 toolCalls 的 assistant 消息」收进 `TurnGroup`。
-正文是用户要看的结果，不是过程噪音 —— 之前整轮（含正文）一起折起来，用户
-只看到「用时 2分38秒 · 5 个工具」，等于默认不显示回答。
+只看 `toolCall.name`（agent 给的 title），**不看 `input`**。
 
-### 分段算法（`ConversationView.blocks`）
+> **Warning**: input 是命令文本或文件路径，里面出现 `read` / `edit` 之类的字
+> 会被误判。实测「已运行 read C:/…」实际是读文件，带上 input 就被归进
+> command。
 
-按消息原顺序走一遍，维护一个缓冲区：
+匹配顺序按「动词最具体」到最宽泛，command 放**最后**：
 
-| 遇到 | 处理 |
-|---|---|
-| user | 先 `flush(false)`，再单独渲染 |
-| thinking / 带 `toolCalls` 的 assistant | 进缓冲区 |
-| 纯正文 assistant | 先 `flush(false)`，再单独渲染（不折叠） |
-| error | 先 `flush(false)`，再单独渲染 |
+| 顺序 | 类别 | 关键词 |
+|---|---|---|
+| 1 | read | 读取 / 已读 / 查看 / read / cat / open |
+| 2 | edit | 编辑 / 修改 / 写入 / write / edit / patch / apply |
+| 3 | search | 搜索 / 查找 / grep / search / find / glob |
+| 4 | command | 运行 / 执行 / 命令 / command / bash / shell / terminal / exec |
+| 5 | other | 兜底 |
 
-循环结束再 `flush(true)` —— 只有这一段位于消息末尾，才可能是「仍在运行」。
+`command` 排最后是因为它最容易被别的词带偏（如「运行了 read xxx」）。
 
-### 契约
+### 展开态
 
-- **摘要文案**：运行中 → `正在运行`（转圈）；已结束 → `用时 X`；
-  缺时间戳 → `活动`。
-- **默认折叠**；运行中强制展开，结束后交还用户的展开状态。
-- 折叠时补 `· N 个工具`，避免摘要行过空。
+- 默认折叠。
+- 整轮仍在生成时，自动展开「含 running 条目」的分组，让用户看到实时进度。
+- 用户手动切换后以手动值为准（`expandedGroups` 显式覆盖自动值）。
 
-### 陷阱
+### 分组头状态
 
-> **Warning**: `Message` 只有 `createdAt`，**没有** `updatedAt`。
-> 「用时」只能用 `createdAt` 求差 —— 近似值，别假装精确，也别为此改持久化格式。
-
-> **Warning**: 「是否仍在运行」只能给**最后一段**置真。
-> 给所有段置真会让历史轮次永远转圈。
-
-> **Warning**: 运行中的展开态用**派生值**（`running || userExpanded`），
-> 不要在 `watch(running)` 里改 state 去撑开 —— 否则用户手动折叠会被下一帧
-> 又撑开。
-
-> **Warning**: 不要按 `turnId` 把整轮消息收进一个组。同一 `turnId` 里既有
-> 过程（思考/工具）也有结果（正文），一起收就把正文藏了。
+`running`（转圈，蓝）> `error`（红叉）> `done`（灰勾）——按「有在跑优先」取，
+让进行中的分组一眼可见。
 
 
 ## Gotchas

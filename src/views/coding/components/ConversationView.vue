@@ -3,7 +3,6 @@ import { computed, ref, watch } from 'vue'
 import { ArrowDown, MessageSquarePlus } from 'lucide-vue-next'
 import type { Session } from '../../../types/session'
 import MessageItem from './MessageItem.vue'
-import TurnGroup from './TurnGroup.vue'
 import PlanCard from './PlanCard.vue'
 import { useConversationScroll } from '../../../composables/useConversationScroll'
 import { useSessionStore } from '../../../stores/session'
@@ -44,67 +43,26 @@ const generating = computed(() => workspace.isGenerating(props.session.id))
 /**
  * 渲染单元。
  *
- * 关键规则（用户要求）：**AI 的正文回答永远可见，不进折叠**。
- * 只有「连续的思考 / 工具调用」这种过程性内容才收进 `TurnGroup`。
+ * 规则（用户要求）：
+ * - **AI 正文永远直接渲染**，绝不折叠；
+ * - 工具调用**按类别**分组折叠（`ToolCallPanel` 内部负责，如「编辑了文件 · 3 个」
+ *   「运行了命令 · 1 个」）；
+ * - 思考块沿用 `MessageItem` 自己的折叠头。
  *
- * 切法（按消息原顺序走一遍）：
- * - user                → 单独渲染
- * - thinking / 带工具的 assistant → 攒进缓冲，遇到正文或用户消息时收束成一个 activity
- * - 纯正文 assistant    → 直接渲染（不折叠），并把前面攒的 activity 先冲出来
- * - error               → 直接渲染
+ * 因此这里不再做「整段过程折成一条」的外层收纳 —— 那会和
+ * `ToolCallPanel` 的分组折叠叠成两层嵌套。
  */
-type Block =
-  | { kind: 'single'; message: Session['messages'][number] }
-  | { kind: 'activity'; key: string; messages: Session['messages']; generating: boolean }
+type Block = { kind: 'single'; message: Session['messages'][number] }
 
-/** 过程性消息：思考块，或带工具调用的 assistant 消息 */
-function isActivityMessage(m: Session['messages'][number]): boolean {
-  if (m.role !== 'assistant') return false
-  return m.type === 'thinking' || (m.toolCalls?.length ?? 0) > 0
-}
-
-const blocks = computed<Block[]>(() => {
-  const out: Block[] = []
-  const msgs = props.session.messages
-  let buffer: Session['messages'] = []
-
-  const flush = (isLastChunk: boolean) => {
-    if (buffer.length === 0) return
-    const last = buffer[buffer.length - 1]
-    out.push({
-      kind: 'activity',
-      key: `act-${last.id}`,
-      messages: buffer,
-      // 只有「位于消息末尾」的那段过程内容才算仍在运行，历史轮次不会转圈
-      generating: isLastChunk && generating.value,
-    })
-    buffer = []
-  }
-
-  for (let i = 0; i < msgs.length; i += 1) {
-    const m = msgs[i]
-    if (isActivityMessage(m)) {
-      buffer.push(m)
-      continue
-    }
-    // 正文 / 错误 / 用户消息：先把前面攒的过程内容冲出去
-    flush(false)
-    out.push({ kind: 'single', message: m })
-  }
-  // 收尾：末尾还攒着过程内容，说明本轮仍在跑
-  flush(true)
-
-  return out
-})</script>
+const blocks = computed<Block[]>(() =>
+  props.session.messages.map((message) => ({ kind: 'single' as const, message })),
+)</script>
 
 <template>
   <div class="relative min-h-0 flex-1">
     <div ref="listRef" class="no-scrollbar h-full overflow-y-auto" @scroll="onScroll">
       <div class="mx-auto max-w-3xl px-6 py-6">
-        <template v-for="block in blocks" :key="block.kind === 'single' ? block.message.id : block.key">
-          <MessageItem v-if="block.kind === 'single'" :message="block.message" />
-          <TurnGroup v-else :messages="block.messages" :generating="block.generating" />
-        </template>
+        <MessageItem v-for="block in blocks" :key="block.message.id" :message="block.message" />
 
         <!-- 空会话引导 -->
         <div v-if="session.messages.length === 0" class="flex flex-col items-center gap-3 pt-28 text-neutral-400">

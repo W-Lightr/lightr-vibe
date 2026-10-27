@@ -142,7 +142,12 @@ function onFork() {
 
   <!-- AI 回复 / 工具调用记录 -->
   <div v-else class="mb-5">
-    <ToolCallPanel v-if="message.toolCalls?.length" :tool-calls="message.toolCalls" class="mb-2.5" />
+    <ToolCallPanel
+      v-if="message.toolCalls?.length"
+      :tool-calls="message.toolCalls"
+      :running="generating"
+      class="mb-2.5"
+    />
 
     <MarkdownContent v-if="message.content" :content="message.content" />
     <span v-else-if="isStreaming" class="inline-block h-4 w-1.5 animate-pulse rounded-sm bg-neutral-400" />
