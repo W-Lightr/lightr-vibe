@@ -19,6 +19,15 @@ export interface ToolCall {
   input: string
   result?: string
   status: 'running' | 'done' | 'error'
+  /**
+   * ACP 的工具类别（`read` / `edit` / `execute` / `search` …）。
+   *
+   * 这是**结构化**的分类依据，比从 `name` 猜关键词可靠得多；老消息没有这个
+   * 字段，消费方需要回退到关键词推断。
+   */
+  kind?: string
+  /** 工具涉及的文件路径（ACP `locations[].path`），用于「文件变更」卡片 */
+  paths?: string[]
 }
 
 export interface TokenUsage {

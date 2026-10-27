@@ -1301,46 +1301,69 @@ const runningIds = computed(() =>
 > 挂在带侧栏的布局下。新增独立顶层路由时记得走 `WorkspaceShell`，否则该页会
 > 既没有左侧菜单、也没有设置入口。
 
-## 对话过程收纳（`ActivityGroup.vue`）
+## 对话过程收纳（codex 风格 · `ActivityGroup.vue` + `ToolCallPanel.vue`）
 
 ### 用户规则
 
 1. **连续工具调用必须折叠**，不逐条平铺；
 2. **有文字就显示文字**；
 3. **除最后一轮外，所有轮次的结果都收纳**；
-4. 摘要行统一为 **`活动 · 用时 X`**（运行中 `活动 · 正在运行`），
-   **不显示工具条数**；
-5. 折叠内**不显示**「重新生成 / 从此分叉」—— 这两个动作只挂在**最后一条输出**
-   上。
+4. 摘要行统一为 **`活动 · 用时 X`**（运行中 `活动 · 正在运行`），不显示工具条数；
+5. 折叠内**不显示**「重新生成 / 从此分叉」—— 只挂在**最后一条输出**上。
+
+### 视觉约定（对齐 codex / Claude 的对话流）
+
+- **摘要行**：左侧方框线条图标 + `活动` + `· 用时 X`，右侧是状态图标
+  （转圈 / 折叠箭头）。**不用**纯文字按钮。
+- **工具行**：类别图标（终端 / 文件笔 / 文件 / 搜索 / 扳手）+ 标题 + `· N 个`，
+  右侧状态前缀由等宽小方块承载（✓ 绿 / ✕ 红 / 转圈蓝）。
+- **工具条目**：命令或路径用等宽字体放进浅灰 code 小块；`result` 在下方 `pre`。
 
 ### 三层折叠结构
 
 | 层 | 组件 | 作用 |
 |---|---|---|
 | 轮次层 | `ActivityGroup` | 一整轮 assistant 产出 → 一条「活动 · 用时 X」 |
-| 过程层 | `ActivityGroup` 内部 chunk | 展开后，**连续**的过程消息再收一节 |
-| 类别层 | `ToolCallPanel` | 单条消息内按工具类别（命令/编辑/读取…）分小节 |
+| 过程层 | `ActivityGroup` 内部 chunk | 展开后，**连续**过程消息再收一节 |
+| 类别层 | `ToolCallPanel` | 单条消息内按工具类别分小节 |
 
-过程层的存在正是规则 1 的延伸：一轮里可能有几十次工具调用，展开轮次后若全平铺
-等于没折叠。**正文会打断 chunk** —— 中间夹了输出内容就分成两个独立的折叠节。
+### 分类依据：优先 `kind`，回退关键词
+
+`ToolCall.kind` 存 ACP 的 `toolCall.kind`（`read` / `edit` / `execute` / `search`
+等），`ToolCall.paths` 存 `locations[].path`。**这是结构化依据，不要只靠猜标题。**
+
+没有 `kind` 的老消息才回退到从 `name` 推断关键词；此时：
+
+> **Warning**: 只看 `name`，**不看 `input`**。input 是命令文本或路径，出现
+> `read` / `edit` 会被误判（「已运行 read C:/…」实际是读文件）。
+> `command` 关键词排最后 —— 它最容易被「运行了 read xxx」带偏。
+
+`kind` → 类别映射：`execute`→command；`edit`/`delete`/`move`→edit；
+`read`→read；`search`/`fetch`→search；其余→other。
 
 ### 最后一轮的例外
 
-`ConversationView.blocks` 对最后一轮**只折叠过程性消息**，正文消息直接渲染。
+`ConversationView.blocks` 对最后一轮**只折叠过程性消息**，正文直接渲染。
 最后一轮是用户当下要看的结果，不能藏。
 
 ### 操作栏可见性（`MessageItem.showActions`）
 
-- 默认 `true`。
-- `ActivityGroup` 内所有 `MessageItem` 传 `:show-actions="false"`。
-- 两个工具栏（思考分支 / 正文分支）都受 `actionsVisible` 控制。
+默认 `true`；`ActivityGroup` 内所有 `MessageItem` 传 `:show-actions="false"`，
+两个工具栏（思考分支 / 正文分支）都受 `actionsVisible` 控制。
+
+### 已知缺口
+
+**文件改动汇总卡片**（codex 的「已编辑 5 个文件 +137 -0 / 撤销 / 查看变更」）尚未实现。
+它需要 diff 原文来统计增删行数，而当前 `ToolCall.input` 存的是
+`summarizeRawInput()` 之后的**摘要字符串**，原始 diff 已被丢掉。
+要实现需要在 `applyToolCall` 里额外保留 `rawInput`（或解析后的 diff 文本）。
 
 ### 陷阱
 
 > **Warning**: 摘要行不要回退成「N 个工具」。用户明确要求用「活动 · 用时」。
 
 > **Warning**: `Message` 只有 `createdAt`，没有 `updatedAt`。「用时」用首尾
-> `createdAt` 求差，是近似值，不要假装精确，也不要为此改持久化格式。
+> `createdAt` 求差，是近似值。
 
 > **Warning**: 展开态用**派生值**（`running || userExpanded`），不要在
 > `watch(running)` 里改 state —— 否则用户手动折叠会被下一帧撑开。

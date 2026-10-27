@@ -566,6 +566,14 @@ function settleStreamingThinking(sessionId: string, turnId: string | undefined):
   }
 }
 
+/** 取工具涉及的路径（ACP locations[].path），去重且过滤空值 */
+function toolPaths(update: AcpToolCallUpdate): string[] | undefined {
+  const paths = (update.locations ?? [])
+    .map((l) => l.path)
+    .filter((p): p is string => typeof p === 'string' && p.trim() !== '')
+  return paths.length > 0 ? [...new Set(paths)] : undefined
+}
+
 function applyToolCall(sessionId: string, update: AcpToolCallEvent, turnId: string | undefined): void {
   const sessionStore = useSessionStore()
   const toolCallId = update.toolCallId
@@ -582,6 +590,8 @@ function applyToolCall(sessionId: string, update: AcpToolCallEvent, turnId: stri
       name: update.title ?? toolCallId,
       input: summarizeRawInput(update.rawInput),
       status: mapToolStatus(update.status),
+      kind: update.kind,
+      paths: toolPaths(update),
     }
     const result = flattenToolContent(update.content)
     if (result) tc.result = result
