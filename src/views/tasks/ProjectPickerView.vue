@@ -12,18 +12,14 @@ import {
   FolderPlus,
   LayoutGrid,
   ListTodo,
-  Minus,
   Plus,
   Search,
-  Square,
-  X,
 } from 'lucide-vue-next'
 import TaskEditorDialog from './components/TaskEditorDialog.vue'
 import { BOARD_COLUMN_IDS, columnForStatus, columnLabel } from './boardColumns'
 import { useProjectStore } from '../../stores/project'
 import { useTaskStore } from '../../stores/task'
 import { canPickFolder, fsService, projectNameFromPath } from '../../services/fsService'
-import { getAppWindow } from '../../utils/window'
 import { taskErrorMessage } from '../../types/task'
 import type { BoardColumnId } from './boardColumns'
 import type { EngineWire } from '../../types/engine'
@@ -35,8 +31,6 @@ const router = useRouter()
 const message = useMessage()
 const projectStore = useProjectStore()
 const taskStore = useTaskStore()
-// 浏览器 dev 环境为 null：隐藏窗口三键（与看板一致）
-const appWindow = getAppWindow()
 
 const query = ref('')
 
@@ -194,50 +188,16 @@ onMounted(async () => {
 
 <template>
   <div class="flex h-full flex-col bg-white">
-    <!-- 顶部拖拽条：返回 + 标题 + 窗口三键（无边框窗口，浏览器环境隐藏）。
-         本页从侧栏 / 顶栏进入，返回走 history 后退，无历史时回编码工作区。 -->
-    <div
-      data-drag-region
-      class="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 px-2"
-    >
-      <div class="flex items-center gap-1.5" data-no-drag>
-        <button
-          class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
-          title="返回"
-          @click="goBack"
-        >
-          <ArrowLeft class="h-4 w-4" />
-        </button>
-        <ListTodo class="h-4 w-4 text-neutral-400" />
-        <span class="text-[13px] font-medium text-neutral-800">待办任务</span>
-      </div>
-      <div v-if="appWindow" class="flex items-center gap-0.5" data-no-drag>
-        <button
-          class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
-          title="最小化"
-          @click="appWindow.minimize()"
-        >
-          <Minus class="h-4 w-4" />
-        </button>
-        <button
-          class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
-          title="最大化 / 还原"
-          @click="appWindow.toggleMaximize()"
-        >
-          <Square class="h-3.5 w-3.5" />
-        </button>
-        <button
-          class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-red-500 hover:text-white"
-          title="关闭"
-          @click="appWindow.close()"
-        >
-          <X class="h-4 w-4" />
-        </button>
-      </div>
-    </div>
-
     <!-- 工具栏：标题 + 搜索 + 新建 -->
     <div class="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-4 py-2">
+      <button
+        class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
+        title="返回编码工作区"
+        @click="goBack"
+      >
+        <ArrowLeft class="h-4 w-4" />
+      </button>
+      <ListTodo class="h-4 w-4 shrink-0 text-neutral-400" />
       <h1 class="text-[13px] font-medium text-neutral-800">待办任务</h1>
       <div class="relative w-[240px]">
         <Search

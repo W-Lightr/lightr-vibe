@@ -12,7 +12,6 @@ import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { ArrowLeft, ChevronLeft, FolderOpen, ListTodo, Plus } from 'lucide-vue-next'
 import TaskColumn from './components/TaskColumn.vue'
-import WindowControls from '../coding/components/WindowControls.vue'
 import TaskEditorDialog from './components/TaskEditorDialog.vue'
 import TaskDetailDialog from './components/TaskDetailDialog.vue'
 import { useTaskDrag } from './components/useTaskDrag'
@@ -425,29 +424,21 @@ function goBack(): void {
 
 <template>
   <div class="flex h-full flex-col bg-white">
-    <!-- 顶部拖拽条：返回 + 标题 + 窗口三键（无边框窗口，浏览器环境隐藏） -->
-    <div
-      data-drag-region
-      class="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 px-2"
-    >
-      <div class="flex items-center gap-1.5" data-no-drag>
-        <button
-          class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
-          title="返回项目列表"
-          @click="goBack"
-        >
-          <ArrowLeft class="h-4 w-4" />
-        </button>
-        <ListTodo class="h-4 w-4 text-neutral-400" />
-        <span class="min-w-0 max-w-[280px] truncate text-[13px] font-medium text-neutral-800">
-          {{ boardTitle }}
-        </span>
-      </div>
-      <WindowControls />
-    </div>
-
-    <!-- 工具栏：显示开关 + 计数 + 新建（项目由路由确定，不做返回/切换） -->
+    <!-- 页头 + 工具条合并成一条：返回 / 标题 / 显示开关 / 刷新 / 新建。
+         不再带 data-drag-region —— 窗口三键已由 WorkspaceShell 承担。 -->
     <div class="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-3 py-2">
+      <button
+        class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
+        title="返回项目列表"
+        @click="goBack"
+      >
+        <ArrowLeft class="h-4 w-4" />
+      </button>
+      <ListTodo class="h-4 w-4 shrink-0 text-neutral-400" />
+      <span class="min-w-0 max-w-[200px] truncate text-[13px] font-medium text-neutral-800">
+        {{ boardTitle }}
+      </span>
+      <span class="h-4 w-px shrink-0 bg-neutral-200" />
       <!-- 显示开关（checkbox + 文字，原生控件以保持轻量） -->
       <label class="flex cursor-pointer items-center gap-1 text-[12px] text-neutral-600">
         <input

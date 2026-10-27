@@ -1285,6 +1285,11 @@ const runningIds = computed(() =>
 > **Warning**: 自动化页的弹层用 `absolute inset-0`（不是 `fixed`），贴在
 > `WorkspaceShell` 的 `relative` 内容区上 —— 这样左侧菜单始终可见。
 
+> **Warning**: `/tasks` 与 `/tasks/:projectId` 也挂在 `WorkspaceShell` 下（与
+> `/automations` 一致），因此这两个页面**不得**再自带 `data-drag-region` 头部
+> 或 `WindowControls` —— 窗口三键由 `WorkspaceShell` 的侧栏顶栏 + 各页内容区
+> 头部承担。页面内的返回按钮 / 标题并入自己的工具条即可。
+
 ## Gotchas
 
 > **Warning**: `getCurrentWindow()` throws in a plain browser dev server.
