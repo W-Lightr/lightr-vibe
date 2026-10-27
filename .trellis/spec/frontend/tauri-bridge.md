@@ -1285,10 +1285,13 @@ const runningIds = computed(() =>
 > **Warning**: 自动化页的弹层用 `absolute inset-0`（不是 `fixed`），贴在
 > `WorkspaceShell` 的 `relative` 内容区上 —— 这样左侧菜单始终可见。
 
-> **Warning**: `/tasks` 与 `/tasks/:projectId` 也挂在 `WorkspaceShell` 下（与
-> `/automations` 一致），因此这两个页面**不得**再自带 `data-drag-region` 头部
-> 或 `WindowControls` —— 窗口三键由 `WorkspaceShell` 的侧栏顶栏 + 各页内容区
-> 头部承担。页面内的返回按钮 / 标题并入自己的工具条即可。
+> **Warning**: 每个页面的窗口三键（`WindowControls`）**只能出现一次**，放在该页
+> header 最右端。侧栏**不再**渲染窗口三键 —— 同一屏出现两组窗口按钮是纯噪音。
+> 页面的 header 自身承担 `data-drag-region`，内部交互元素各自带 `data-no-drag`；
+> 不要再把它拆成「h-11 三键空横条 + 独立工具条」两层，那会多出一条分割线。
+>
+> 挂在 `WorkspaceShell` 下的页面（`/tasks`、`/tasks/:projectId`、`/automations`）
+> 由页面自己的单条 header 提供返回 / 标题 / 操作 / 窗口三键。
 
 ## Gotchas
 

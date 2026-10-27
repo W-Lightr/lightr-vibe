@@ -23,7 +23,6 @@ import { useConversation, ensureModelOptions } from '../../../composables/useCon
 import { canPickFolder, fsService, projectNameFromPath } from '../../../services/fsService'
 import { formatRelativeTime } from '../../../utils/time'
 import SessionItem from './SessionItem.vue'
-import WindowControls from './WindowControls.vue'
 import NewSessionDialog from './NewSessionDialog.vue'
 import type { Session, NewSessionTarget } from '../../../types/session'
 import type { EngineWire } from '../../../types/engine'
@@ -345,11 +344,6 @@ function activateProject(projectId: string) {
       >
         <Ellipsis class="h-4 w-4" />
       </button>
-      <!--
-        窗口三键也放一份在侧栏：自动化编辑器 / 任务详情这类覆盖层打开时会盖住
-        主内容区的头部，若只有那里有窗口按钮，用户就临时找不到最小化/关闭。
-      -->
-      <WindowControls compact />
     </div>
 
     <!-- 搜索框 -->
