@@ -9,9 +9,11 @@
 // 数据仍来自 automationStore（唯一副本）；变更事件订阅 `automation://changed`
 // 后整表重读（调度器在后台自己触发，这是页面能自己更新的唯一途径）。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
+  ArrowLeft,
   Beaker,
   FileCode2,
   History,
@@ -40,6 +42,7 @@ import { automationErrorMessage, RUN_STATUS_LABELS } from '../../types/automatio
 import type { Automation } from '../../types/automation'
 import { triggerLabel } from './scheduleLabel'
 
+const router = useRouter()
 const store = useAutomationStore()
 const projectStore = useProjectStore()
 const message = useMessage()
@@ -226,6 +229,11 @@ function remove(automation: Automation) {
   })
 }
 
+/** 返回编码工作区（与侧栏的高亮逻辑一致） */
+function goCoding(): void {
+  void router.push('/coding')
+}
+
 /** 历史弹层里取消成功后：刷新列表，让卡片的「运行中」立刻消失 */
 async function onHistoryCancelled() {
   try {
@@ -247,25 +255,43 @@ async function refresh() {
 <template>
   <div class="flex min-h-0 flex-1 flex-col bg-white">
     <!-- 顶部工具条：与设计图一致，只留刷新（新建在内容区的虚线卡里） -->
+    <!--
+      单条 header：返回 / 标题 —— 失败徽标 · 刷新 · 窗口三键。
+
+      与 /tasks 保持同一版式（设计图二）：左侧是页面身份，右侧是操作，
+      窗口控件与标题同处一层，不再单独占用一条空横条。
+    -->
     <header
       data-drag-region
-      class="flex h-11 shrink-0 items-center justify-end gap-1 border-b border-neutral-100 pr-2 pl-4"
+      class="flex h-12 shrink-0 items-center gap-2 border-b border-neutral-200 pr-2 pl-4"
     >
+      <button
+        class="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
+        title="返回编码工作区"
+        data-no-drag
+        @click="goCoding"
+      >
+        <ArrowLeft class="h-4 w-4" />
+      </button>
+      <Zap class="h-4 w-4 shrink-0 text-neutral-400" />
+      <h1 class="shrink-0 text-[13px] font-medium text-neutral-800">自动化</h1>
+
+      <span class="flex-1" />
+
       <span
         v-if="store.unseenFailures > 0"
-        class="rounded-full bg-rose-50 px-1.5 py-px text-[10px] font-medium text-rose-600"
+        class="shrink-0 rounded-full bg-rose-50 px-1.5 py-px text-[10px] font-medium text-rose-600"
       >
         {{ store.unseenFailures }} 次失败
       </span>
       <button
         data-no-drag
-        class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+        class="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
         title="刷新"
         @click="refresh"
       >
         <RefreshCw class="h-3.5 w-3.5" />
       </button>
-      <!-- 无边框窗口的最小化 / 最大化 / 关闭（浏览器 dev 下不渲染） -->
       <WindowControls />
     </header>
 

@@ -189,55 +189,58 @@ onMounted(async () => {
 
 <template>
   <div class="flex h-full flex-col bg-white">
-    <!-- 窗口拖拽区 + 窗口三键（与 /automations 一致；侧栏另有一份紧凑版，
-         因为编辑器这类覆盖层会盖住这一条） -->
+    <!--
+      单条 header：返回 / 标题 —— 搜索 —— 全部项目 · 新建 · 窗口三键。
+
+      整条都是拖拽区（内部交互元素各自带 data-no-drag），窗口控件与页面标题
+      同处一层，不再被一条空横条切成上下两块。
+    -->
     <header
       data-drag-region
-      class="flex h-11 shrink-0 items-center justify-end gap-1 border-b border-neutral-100 pr-2 pl-4"
+      class="flex h-12 shrink-0 items-center gap-2 border-b border-neutral-200 pr-2 pl-4"
     >
-      <WindowControls />
-    </header>
-    <!-- 工具栏：标题 + 搜索 + 新建 -->
-    <div class="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-4 py-2">
       <button
-        class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
+        class="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
         title="返回编码工作区"
+        data-no-drag
         @click="goBack"
       >
         <ArrowLeft class="h-4 w-4" />
       </button>
       <ListTodo class="h-4 w-4 shrink-0 text-neutral-400" />
-      <h1 class="text-[13px] font-medium text-neutral-800">待办任务</h1>
-      <div class="relative w-[240px]">
+      <h1 class="shrink-0 text-[13px] font-medium text-neutral-800">待办任务</h1>
+      <div class="relative w-[240px]" data-no-drag>
         <Search
           class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400"
         />
         <input
           v-model="query"
           placeholder="搜索项目…"
-          class="h-8 w-full rounded-md border border-neutral-200 bg-white pl-7 pr-2 text-[12px] text-neutral-700 outline-none placeholder:text-neutral-400 focus:border-blue-400"
+          class="h-8 w-full rounded-md border border-neutral-200 bg-white pr-2 pl-7 text-[12px] text-neutral-700 outline-none placeholder:text-neutral-400 focus:border-blue-400"
         />
       </div>
       <span class="flex-1" />
       <button
-        class="flex h-7 cursor-pointer items-center gap-1.5 rounded-full border border-neutral-200 px-3 text-[12px] text-neutral-600 transition-colors hover:bg-neutral-100"
+        class="flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-neutral-200 px-3 text-[12px] text-neutral-600 transition-colors hover:bg-neutral-100"
         type="button"
+        data-no-drag
         @click="openAll"
       >
         <LayoutGrid class="h-3.5 w-3.5" />
         全部项目
       </button>
       <button
-        class="flex h-7 cursor-pointer items-center gap-1 rounded-full bg-neutral-900 px-3 text-[12px] text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
+        class="flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-neutral-900 px-3 text-[12px] text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
         :disabled="noProjects"
+        data-no-drag
         @click="openCreate"
       >
         <Plus class="h-3.5 w-3.5" />
         新建任务
       </button>
-    </div>
+      <WindowControls />
+    </header>
 
-    <!-- 卡片网格 -->
     <main class="min-h-0 flex-1 overflow-y-auto bg-white p-4">
       <!-- 没有任何项目：引导打开文件夹 -->
       <div v-if="noProjects" class="flex h-full flex-col items-center justify-center gap-2 text-center">

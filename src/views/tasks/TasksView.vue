@@ -425,19 +425,20 @@ function goBack(): void {
 
 <template>
   <div class="flex h-full flex-col bg-white">
-    <!-- 窗口拖拽区 + 窗口三键（与 /automations 一致） -->
+    <!--
+      单条 header：返回 / 标题 / 显示开关 —— 计数 —— 新建 · 窗口三键。
+
+      整条都是拖拽区（交互元素自带 data-no-drag）。窗口控件与页面标题同处一层，
+      不再被一条空横条切成上下两块。
+    -->
     <header
       data-drag-region
-      class="flex h-11 shrink-0 items-center justify-end gap-1 border-b border-neutral-100 pr-2 pl-4"
+      class="flex h-12 shrink-0 items-center gap-2 border-b border-neutral-200 pr-2 pl-3"
     >
-      <WindowControls />
-    </header>
-    <!-- 页头 + 工具条合并成一条：返回 / 标题 / 显示开关 / 刷新 / 新建。
-         不再带 data-drag-region —— 窗口三键已由 WorkspaceShell 承担。 -->
-    <div class="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-3 py-2">
       <button
-        class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
+        class="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
         title="返回项目列表"
+        data-no-drag
         @click="goBack"
       >
         <ArrowLeft class="h-4 w-4" />
@@ -447,46 +448,52 @@ function goBack(): void {
         {{ boardTitle }}
       </span>
       <span class="h-4 w-px shrink-0 bg-neutral-200" />
-      <!-- 显示开关（checkbox + 文字，原生控件以保持轻量） -->
-      <label class="flex cursor-pointer items-center gap-1 text-[12px] text-neutral-600">
+
+      <!-- 显示开关 -->
+      <label
+        class="flex shrink-0 cursor-pointer items-center gap-1 text-[12px] text-neutral-600"
+        data-no-drag
+      >
         <input
           type="checkbox"
           class="h-3 w-3 cursor-pointer accent-blue-500"
           :checked="showCanceled"
           @change="toggleShowCanceled"
         />
-        隐藏已取消
+        显示已取消
       </label>
-      <label class="flex cursor-pointer items-center gap-1 text-[12px] text-neutral-600">
+      <label
+        class="flex shrink-0 cursor-pointer items-center gap-1 text-[12px] text-neutral-600"
+        data-no-drag
+      >
         <input
           type="checkbox"
           class="h-3 w-3 cursor-pointer accent-blue-500"
           :checked="showArchived"
           @change="toggleShowArchived"
         />
-        隐藏已归档
+        显示已归档
       </label>
 
       <span class="flex-1" />
 
-      <!-- 全部项目视图可跨列拖动，但同列排序没有项目内语义：显式说明 -->
-      <span v-if="!reorderEnabled" class="text-[11px] text-neutral-400">
-        可拖到其它列推进状态 · 排序需选择具体项目
+      <span v-if="!reorderEnabled" class="truncate text-[11px] text-neutral-400">
+        拖到列内可调整同列顺序 · 拖动可选其他项目
       </span>
-      <span v-else class="text-[11px] text-neutral-400">共 {{ totalVisible }} 个任务</span>
+      <span v-else class="shrink-0 text-[11px] text-neutral-400">共 {{ totalVisible }} 个任务</span>
 
       <button
-        class="flex h-7 cursor-pointer items-center gap-1 rounded-full bg-neutral-900 px-3 text-[12px] text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
+        class="flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-neutral-900 px-3 text-[12px] text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
         :disabled="projectStore.projects.length === 0"
+        data-no-drag
         @click="openCreate"
       >
         <Plus class="h-3.5 w-3.5" />
         新建任务
       </button>
-    </div>
+      <WindowControls />
+    </header>
 
-    <!-- 四列看板：横向 flex，列最小 280px；窄屏横向滚动。列白底无边框，靠 gap 分隔 -->
-    <!-- 路由指向的项目已被移除：给出口而不是空白看板（prd AC10） -->
     <main
       v-if="projectMissing"
       class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 bg-white p-4 text-center"
