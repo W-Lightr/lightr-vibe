@@ -1301,68 +1301,52 @@ const runningIds = computed(() =>
 > 挂在带侧栏的布局下。新增独立顶层路由时记得走 `WorkspaceShell`，否则该页会
 > 既没有左侧菜单、也没有设置入口。
 
-## 对话过程收纳（`ActivityGroup.vue` + `ToolCallPanel.vue`）
+## 对话过程收纳（`ActivityGroup.vue`）
 
-### 用户规则（两层，缺一不可）
+### 用户规则
 
-1. **连续的工具调用要折叠**，不逐条平铺；
+1. **连续工具调用必须折叠**，不逐条平铺；
 2. **有文字就显示文字**；
-3. **除最后一轮外，所有轮次的结果都收纳**。
+3. **除最后一轮外，所有轮次的结果都收纳**；
+4. 摘要行统一为 **`活动 · 用时 X`**（运行中 `活动 · 正在运行`），
+   **不显示工具条数**；
+5. 折叠内**不显示**「重新生成 / 从此分叉」—— 这两个动作只挂在**最后一条输出**
+   上。
 
-### 两层结构
+### 三层折叠结构
 
-| 层 | 组件 | 收纳范围 |
+| 层 | 组件 | 作用 |
 |---|---|---|
-| 轮次层 | `ActivityGroup` | 一整轮 assistant 产出（可能含多次文字+工具交错） |
-| 类别层 | `ToolCallPanel` | 同一轮内按工具类别分的小节 |
+| 轮次层 | `ActivityGroup` | 一整轮 assistant 产出 → 一条「活动 · 用时 X」 |
+| 过程层 | `ActivityGroup` 内部 chunk | 展开后，**连续**的过程消息再收一节 |
+| 类别层 | `ToolCallPanel` | 单条消息内按工具类别（命令/编辑/读取…）分小节 |
 
-`ActivityGroup` 展开后，里面的 `ToolCallPanel` 仍是按类别折叠的小节 ——
-这是**有意保留**的两层：外层回答「这一轮发生了什么」，内层回答「调用了哪些
-命令/文件」。展开外层即可看到内层小节，不会丢失信息。
+过程层的存在正是规则 1 的延伸：一轮里可能有几十次工具调用，展开轮次后若全平铺
+等于没折叠。**正文会打断 chunk** —— 中间夹了输出内容就分成两个独立的折叠节。
 
-### 分段算法（`ConversationView.blocks`）
+### 最后一轮的例外
 
-按用户消息切段，每段是一轮 assistant 产出：
+`ConversationView.blocks` 对最后一轮**只折叠过程性消息**，正文消息直接渲染。
+最后一轮是用户当下要看的结果，不能藏。
 
-- **历史轮次**：整段 → 一个 `ActivityGroup`（摘要行，默认折叠）。
-- **最后一轮**：只把**过程性消息**（`type === 'thinking'` 或带 `toolCalls`）
-  收进 `ActivityGroup`；**正文消息直接渲染**。
-  > 最后一轮是用户当下要看的结果，不能藏。
+### 操作栏可见性（`MessageItem.showActions`）
 
-### 摘要行文案优先级
-
-1. 仍在生成 → `正在运行` + 转圈
-2. 有正文 → 取首条正文开头（截断 40 字）
-3. 只有工具 → `N 个工具`
-4. 其他 → `活动`
-
-### 类别推断（`ToolCallPanel.classify`）
-
-只看 `toolCall.name`（agent 给的 title），**不看 `input`**。
-
-> **Warning**: input 是命令文本或文件路径，里面出现 `read` / `edit` 之类的字
-> 会被误判。实测「已运行 read C:/…」实际是读文件，带上 input 就被归进 command。
-
-匹配顺序按「动词最具体」到最宽泛，`command` 放**最后**（最容易被别的词带偏）：
-
-| 顺序 | 类别 | 关键词 |
-|---|---|---|
-| 1 | read | 读取 / 已读 / 查看 / read / cat / open |
-| 2 | edit | 编辑 / 修改 / 写入 / write / edit / patch / apply |
-| 3 | search | 搜索 / 查找 / grep / search / find / glob |
-| 4 | command | 运行 / 执行 / 命令 / command / bash / shell / terminal / exec |
-| 5 | other | 兜底 |
+- 默认 `true`。
+- `ActivityGroup` 内所有 `MessageItem` 传 `:show-actions="false"`。
+- 两个工具栏（思考分支 / 正文分支）都受 `actionsVisible` 控制。
 
 ### 陷阱
 
+> **Warning**: 摘要行不要回退成「N 个工具」。用户明确要求用「活动 · 用时」。
+
+> **Warning**: `Message` 只有 `createdAt`，没有 `updatedAt`。「用时」用首尾
+> `createdAt` 求差，是近似值，不要假装精确，也不要为此改持久化格式。
+
 > **Warning**: 展开态用**派生值**（`running || userExpanded`），不要在
-> `watch(running)` 里改 state 去撑开 —— 否则用户手动折叠会被下一帧又撑开。
+> `watch(running)` 里改 state —— 否则用户手动折叠会被下一帧撑开。
 
-> **Warning**: 「是否仍在生成」只能给**最后一轮**置真，否则历史轮次永远转圈。
-
-> **Warning**: 不要再引入「整轮把正文也收起来」的行为。历史上
-> `TurnGroup.vue` 就是那样做的，导致用户只看到「用时 X · N 个工具」而看不到
-> 回答，已删除。
+> **Warning**: 不要再引入「整轮连正文一起收起来」的行为。历史 `TurnGroup.vue`
+> 就是这样，导致用户只看到「用时 X · N 个工具」而看不到回答，已删除。
 
 
 ## Gotchas

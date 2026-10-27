@@ -17,7 +17,20 @@ import ToolCallPanel from './ToolCallPanel.vue'
 import { useConversation } from '../../../composables/useConversation'
 import { useWorkspaceStore } from '../../../stores/workspace'
 
-const props = defineProps<{ message: Message }>()
+const props = defineProps<{
+  message: Message
+  /**
+   * 是否显示「重新生成 / 从此分叉」工具栏。
+   *
+   * 默认 true；折进 `ActivityGroup` 的过程消息传 false —— 这两个动作只该挂在
+   * **最后一条输出消息**上，中间过程的每条都挂一份是纯噪音（还会误导用户以为
+   * 能从那一步重新生成）。
+   */
+  showActions?: boolean
+}>()
+
+/** 折叠内不显示操作栏 */
+const actionsVisible = computed(() => props.showActions !== false)
 
 const workspace = useWorkspaceStore()
 const router = useRouter()
@@ -90,7 +103,7 @@ function onFork() {
       {{ message.content }}
     </div>
     <!-- 纯思考回合也要能重新生成/分叉：思考完毕且非流式时显示工具栏 -->
-    <div v-if="!isStreaming" class="mt-1 flex items-center gap-0.5">
+    <div v-if="!isStreaming && actionsVisible" class="mt-1 flex items-center gap-0.5">
       <button
         class="flex h-7 cursor-pointer items-center gap-1 rounded-md px-1.5 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
         title="重新生成"
@@ -154,7 +167,10 @@ function onFork() {
     <span v-else-if="message.status === 'stopped'" class="text-xs text-neutral-400">已停止生成</span>
 
     <!-- 操作工具栏：仅完成的助手文本回复显示 -->
-    <div v-if="message.type === 'text' && message.content && !isStreaming" class="mt-1.5 flex items-center gap-0.5">
+    <div
+      v-if="message.type === 'text' && message.content && !isStreaming && actionsVisible"
+      class="mt-1.5 flex items-center gap-0.5"
+    >
       <button
         class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
         title="复制"
