@@ -38,11 +38,20 @@ const running = computed(() => props.generating || streaming.value)
 /**
  * 展开态。
  *
- * 默认折叠（历史轮次全部收起）；但正在生成的这一段强制展开，否则用户看不到
- * 实时输出。用派生值而非 watch 改 state —— 否则用户手动折叠会被下一帧撑开。
+ * 默认折叠。**运行中也能折叠** —— 用户需要把正在跑的活动收起来腾出空间
+ * （之前 running 时强制展开，`toggle` 直接 return，用户点不动）。
+ *
+ * 运行中首次出现时自动展开一次，让用户看到实时输出；之后以用户选择为准
+ * （`userTouched` 一旦为真就不再自动展开）。
  */
 const userExpanded = ref(false)
-const expanded = computed(() => running.value || userExpanded.value)
+const userTouched = ref(false)
+const expanded = computed(() => userExpanded.value)
+
+// 从「未运行」进入「运行中」时自动展开一次（仅当用户没手动操作过）
+watch(running, (nowRunning, wasRunning) => {
+  if (nowRunning && !wasRunning && !userTouched.value) userExpanded.value = true
+})
 
 /**
  * 摘要行右侧细节（`· {detailText}`）。
@@ -70,6 +79,49 @@ const elapsedText = computed(() => {
   const { first, last } = span.value
   if (first === null || last === null || last < first) return null
   return `用时 ${formatDuration(last - first)}`
+})
+
+/**
+ * 正在执行的工具名（运行中时作为标题，替换掉笼统的「活动」）。
+ *
+ * 取**最后一条仍在跑**的工具调用，按 `kind` 映射成动词短语：
+ * `execute` → 「正在运行命令」、`edit` → 「正在编辑文件」…
+ *
+ * 没有正在跑的工具（比如模型只是在思考）时退回「正在处理」。
+ */
+const KIND_RUNNING_LABEL: Record<string, string> = {
+  execute: '正在运行命令',
+  edit: '正在编辑文件',
+  delete: '正在删除文件',
+  move: '正在移动文件',
+  read: '正在读取文件',
+  search: '正在搜索',
+  fetch: '正在抓取网页',
+  think: '正在思考',
+}
+
+/** 从工具标题推断动词短语（老消息没有 kind 时的兜底） */
+function runningLabelByName(name: string): string {
+  const t = name.toLowerCase()
+  if (/(运行|执行|命令|command|bash|shell|terminal|exec)/.test(t)) return '正在运行命令'
+  if (/(编辑|修改|写入|write|edit|patch|apply)/.test(t)) return '正在编辑文件'
+  if (/(读取|已读|查看|read|cat|open)/.test(t)) return '正在读取文件'
+  if (/(搜索|查找|grep|search|find|glob)/.test(t)) return '正在搜索'
+  return '正在执行'
+}
+
+const runningToolLabel = computed(() => {
+  if (!running.value) return null
+  for (let i = props.messages.length - 1; i >= 0; i -= 1) {
+    const tools = props.messages[i].toolCalls ?? []
+    for (let j = tools.length - 1; j >= 0; j -= 1) {
+      const tc = tools[j]
+      if (tc.status !== 'running') continue
+      if (tc.kind && KIND_RUNNING_LABEL[tc.kind]) return KIND_RUNNING_LABEL[tc.kind]
+      return runningLabelByName(tc.name)
+    }
+  }
+  return '正在处理'
 })
 
 /** 摘要右侧的细节（用时 / 自定义 label），没有就不显示 */
@@ -125,14 +177,11 @@ function toggleChunk(key: string) {
 }
 
 function toggle() {
-  if (running.value) return
+  userTouched.value = true
   userExpanded.value = !userExpanded.value
 }
 
-// 生成结束那一刻把展开权交还用户，保持当前视觉不跳
-watch(running, (nowRunning, wasRunning) => {
-  if (wasRunning && !nowRunning) userExpanded.value = true
-})
+
 </script>
 
 <template>
@@ -159,7 +208,11 @@ watch(running, (nowRunning, wasRunning) => {
       <ChevronRight v-else class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
 
       <ListTree class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-      <span>活动</span>
+      <!-- 运行中显示具体在做什么（正在运行命令…），结束后回到「活动 · 用时」 -->
+      <span v-if="running && runningToolLabel" class="running-label">{{
+        runningToolLabel
+      }}</span>
+      <span v-else>活动</span>
       <span v-if="detailText" class="text-neutral-400">· {{ detailText }}</span>
     </button>
 
@@ -167,40 +220,98 @@ watch(running, (nowRunning, wasRunning) => {
       展开内容：按原顺序渲染这一段。
       `-mb-4` 抵消末尾 MessageItem 自带的间距，避免与下一段隔得太开。
     -->
-    <div v-if="expanded" class="-mb-4 mt-1 border-l-2 border-neutral-200/70 pl-3">
-      <template v-for="item in subItems" :key="item.key">
-        <!-- 正文：直接显示 -->
-        <MessageItem
-          v-if="item.kind === 'single'"
-          :message="item.message"
-          :show-actions="false"
-        />
-        <!-- 连续过程：仍折叠成一个小节，避免几十条工具平铺 -->
-        <div v-else class="mb-2">
-          <button
-            class="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
-            @click="toggleChunk(item.key)"
-          >
-            <ChevronDown
+    <Transition name="expand">
+        <div v-if="expanded" class="-mb-4 mt-1 border-l-2 border-neutral-200/70 pl-3">
+        <template v-for="item in subItems" :key="item.key">
+          <!-- 正文：直接显示 -->
+          <MessageItem
+            v-if="item.kind === 'single'"
+            :message="item.message"
+            :show-actions="false"
+          />
+          <!-- 连续过程：仍折叠成一个小节，避免几十条工具平铺 -->
+          <div v-else class="mb-2">
+            <button
+              class="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
+              @click="toggleChunk(item.key)"
+            >
+              <ChevronDown
+                v-if="openChunks[item.key]"
+                class="h-3.5 w-3.5 shrink-0 text-neutral-400"
+              />
+              <ChevronRight v-else class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+              <span>{{ chunkSummary(item.messages) }}</span>
+            </button>
+            <div
               v-if="openChunks[item.key]"
-              class="h-3.5 w-3.5 shrink-0 text-neutral-400"
-            />
-            <ChevronRight v-else class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-            <span>{{ chunkSummary(item.messages) }}</span>
-          </button>
-          <div
-            v-if="openChunks[item.key]"
-            class="-mb-4 mt-1 border-l-2 border-neutral-200/70 pl-3"
-          >
-            <MessageItem
-              v-for="m in item.messages"
-              :key="m.id"
-              :message="m"
-              :show-actions="false"
-            />
+              class="-mb-4 mt-1 border-l-2 border-neutral-200/70 pl-3"
+            >
+              <MessageItem
+                v-for="m in item.messages"
+                :key="m.id"
+                :message="m"
+                :show-actions="false"
+              />
+            </div>
           </div>
-        </div>
-      </template>
+        </template>
     </div>
+    </Transition>
   </div>
 </template>
+
+<style scoped>
+/*
+ * 运行中标题的扫光动画。
+ *
+ * 用 `background-clip: text` 做渐变扫光（与全局 `.shimmer` 同思路，但这里
+ * 需要更慢、更弱的节奏 —— 它常驻在对话流里，太跳会干扰阅读）。
+ * `prefers-reduced-motion` 下退化为纯色，不做动画。
+ */
+.running-label {
+  background-image: linear-gradient(
+    90deg,
+    #2563eb 0%,
+    #2563eb 35%,
+    #93c5fd 50%,
+    #2563eb 65%,
+    #2563eb 100%
+  );
+  background-size: 250% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: running-sweep 2.4s linear infinite;
+}
+
+@keyframes running-sweep {
+  from {
+    background-position: 100% center;
+  }
+  to {
+    background-position: 0% center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .running-label {
+    animation: none;
+    color: #2563eb;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* 折叠内容的展开动画：高度渐变，避免整块突然出现 */
+.expand-enter-active,
+.expand-leave-active {
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+.expand-enter-from,
+.expand-leave-to {
+  opacity: 0;
+  transform: translateY(-2px);
+}
+</style>

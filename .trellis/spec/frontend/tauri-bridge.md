@@ -1366,6 +1366,27 @@ const runningIds = computed(() =>
 `summarizeRawInput()` 之后的**摘要字符串**，原始 diff 已被丢掉。
 要实现需要在 `applyToolCall` 里额外保留 `rawInput`（或解析后的 diff 文本）。
 
+### 运行中的标题与动画
+
+运行中标题**不再是笼统的「活动」**，而是当前正在执行的工具：
+
+| 来源 | 映射 |
+|---|---|
+| `toolCall.kind === 'execute'` | 正在运行命令 |
+| `kind === 'edit'` / `delete` / `move` | 正在编辑文件 / 正在删除文件 / 正在移动文件 |
+| `kind === 'read'` | 正在读取文件 |
+| `kind === 'search'` / `fetch` | 正在搜索 / 正在抓取网页 |
+| `kind === 'think'` | 正在思考 |
+| 无 `kind`（老消息） | 从 `name` 关键词推断 |
+| 没有 `status === 'running'` 的工具 | 正在处理 |
+
+取**最后一条** `status === 'running'` 的工具（从数组尾部往前找）。
+
+视觉：`.running-label` 用 `background-clip: text` 做蓝色渐变扫光
+（`running-sweep` 2.4s 循环）；`prefers-reduced-motion` 下退化为纯色。
+展开区套 `<Transition name="expand">`，淡入 + 2px 位移。
+
+
 ### 陷阱
 
 > **Warning**: 摘要行不要回退成「N 个工具」。用户明确要求用「活动 · 用时」。
