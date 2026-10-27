@@ -42,54 +42,67 @@ watch(
 const generating = computed(() => workspace.isGenerating(props.session.id))
 
 /**
- * 把消息按「用户提问 → 该轮 assistant 输出」切成段。
+ * 渲染单元。
  *
- * 每组 = 一条用户消息 + 紧随其后、turnId 相同的 assistant 消息（思考/工具/正文）。
- * 没有 turnId 的旧消息各自成组，保持原样平铺 —— 不做猜测式合并。
+ * 关键规则（用户要求）：**AI 的正文回答永远可见，不进折叠**。
+ * 只有「连续的思考 / 工具调用」这种过程性内容才收进 `TurnGroup`。
+ *
+ * 切法（按消息原顺序走一遍）：
+ * - user                → 单独渲染
+ * - thinking / 带工具的 assistant → 攒进缓冲，遇到正文或用户消息时收束成一个 activity
+ * - 纯正文 assistant    → 直接渲染（不折叠），并把前面攒的 activity 先冲出来
+ * - error               → 直接渲染
  */
 type Block =
-  | { kind: 'user'; message: Session['messages'][number] }
-  | { kind: 'turn'; turnId: string; messages: Session['messages']; generating: boolean }
+  | { kind: 'single'; message: Session['messages'][number] }
+  | { kind: 'activity'; key: string; messages: Session['messages']; generating: boolean }
+
+/** 过程性消息：思考块，或带工具调用的 assistant 消息 */
+function isActivityMessage(m: Session['messages'][number]): boolean {
+  if (m.role !== 'assistant') return false
+  return m.type === 'thinking' || (m.toolCalls?.length ?? 0) > 0
+}
 
 const blocks = computed<Block[]>(() => {
   const out: Block[] = []
   const msgs = props.session.messages
-  let i = 0
-  while (i < msgs.length) {
+  let buffer: Session['messages'] = []
+
+  const flush = (isLastChunk: boolean) => {
+    if (buffer.length === 0) return
+    const last = buffer[buffer.length - 1]
+    out.push({
+      kind: 'activity',
+      key: `act-${last.id}`,
+      messages: buffer,
+      // 只有「位于消息末尾」的那段过程内容才算仍在运行，历史轮次不会转圈
+      generating: isLastChunk && generating.value,
+    })
+    buffer = []
+  }
+
+  for (let i = 0; i < msgs.length; i += 1) {
     const m = msgs[i]
-    if (m.role === 'user') {
-      out.push({ kind: 'user', message: m })
-      i += 1
+    if (isActivityMessage(m)) {
+      buffer.push(m)
       continue
     }
-    // assistant 侧：收集同一 turnId 的连续消息
-    const turnId = m.turnId
-    const group = [m]
-    i += 1
-    if (turnId) {
-      while (i < msgs.length && msgs[i].role !== 'user' && msgs[i].turnId === turnId) {
-        group.push(msgs[i])
-        i += 1
-      }
-    }
-    out.push({
-      kind: 'turn',
-      turnId: turnId ?? `solo-${m.id}`,
-      messages: group,
-      // 只有「最后一段」且整体仍在生成时才算运行中，避免历史轮次永远转圈
-      generating: generating.value && i >= msgs.length,
-    })
+    // 正文 / 错误 / 用户消息：先把前面攒的过程内容冲出去
+    flush(false)
+    out.push({ kind: 'single', message: m })
   }
+  // 收尾：末尾还攒着过程内容，说明本轮仍在跑
+  flush(true)
+
   return out
-})
-</script>
+})</script>
 
 <template>
   <div class="relative min-h-0 flex-1">
     <div ref="listRef" class="no-scrollbar h-full overflow-y-auto" @scroll="onScroll">
       <div class="mx-auto max-w-3xl px-6 py-6">
-        <template v-for="block in blocks" :key="block.kind === 'user' ? block.message.id : block.turnId">
-          <MessageItem v-if="block.kind === 'user'" :message="block.message" />
+        <template v-for="block in blocks" :key="block.kind === 'single' ? block.message.id : block.key">
+          <MessageItem v-if="block.kind === 'single'" :message="block.message" />
           <TurnGroup v-else :messages="block.messages" :generating="block.generating" />
         </template>
 

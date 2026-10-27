@@ -1,9 +1,12 @@
 <script setup lang="ts">
-// 一轮对话的收纳单元（设计图二）：把同一 turnId 的思考 / 工具 / 正文收成一条。
+// 连续「思考 + 工具调用」的收纳单元。
 //
-// 为什么需要：多轮工具调用时，之前每个 assistant 消息各自平铺一行「思考完毕」
-// 和「N 个工具」，一屏几十行、内容高度重复。现在同一轮只在顶部留一行摘要，
-// 展开才看细节。
+// 只承载**过程性内容**（thinking 消息 / 带 toolCalls 的 assistant 消息）。
+// AI 的正文回答永远由 ConversationView 直接渲染，绝不进这里 —— 正文是用户要看
+// 的结果，不是过程噪音。
+//
+// 为什么需要：多轮工具调用时，之前每个消息各自平铺一行「思考完毕」和「N 个
+// 工具」，一屏几十行、内容高度重复。
 //
 // 摘要文案：
 // - 本轮仍在生成 → 「正在运行」+ 转圈
@@ -67,8 +70,8 @@ const endedAt = computed(() => {
 /**
  * 摘要文案。
  *
- * 有起止时间就显示「用时 X」；缺时间戳的旧消息退回「活动」——
- * 不编造一个假的时长。
+ * 运行中 → 「正在运行」；已结束且有起止时间 → 「用时 X」；
+ * 缺时间戳 → 「活动」（不编造假的时长）。
  */
 const summary = computed(() => {
   if (running.value) return '正在运行'
@@ -85,11 +88,6 @@ const toolCount = computed(() =>
   props.messages.reduce((sum, m) => sum + (m.toolCalls?.length ?? 0), 0),
 )
 
-/** 是否值得收纳：只有一条纯文本消息时不必折叠，直接平铺更清爽 */
-const worthCollapsing = computed(
-  () => props.messages.length > 1 || toolCount.value > 0 || props.messages.some((m) => m.type === 'thinking'),
-)
-
 function toggle() {
   if (running.value) return // 生成中不可折叠
   userExpanded.value = !userExpanded.value
@@ -102,12 +100,7 @@ watch(running, (nowRunning, wasRunning) => {
 </script>
 
 <template>
-  <!-- 不值得收纳（单条纯文本）：直接渲染，不留多余的折叠头 -->
-  <div v-if="!worthCollapsing" class="mb-5">
-    <MessageItem v-for="m in messages" :key="m.id" :message="m" />
-  </div>
-
-  <div v-else class="mb-4">
+  <div class="mb-4">
     <!-- 摘要行：正在运行 / 用时 X，点击展开或收起 -->
     <button
       class="group flex h-7 w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-xs text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
