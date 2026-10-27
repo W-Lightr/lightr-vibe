@@ -12,6 +12,7 @@ import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { ArrowLeft, ChevronLeft, FolderOpen, ListTodo, Plus } from 'lucide-vue-next'
 import TaskColumn from './components/TaskColumn.vue'
+import WindowControls from '../coding/components/WindowControls.vue'
 import TaskEditorDialog from './components/TaskEditorDialog.vue'
 import TaskDetailDialog from './components/TaskDetailDialog.vue'
 import { useTaskDrag } from './components/useTaskDrag'
@@ -424,6 +425,13 @@ function goBack(): void {
 
 <template>
   <div class="flex h-full flex-col bg-white">
+    <!-- 窗口拖拽区 + 窗口三键（与 /automations 一致） -->
+    <header
+      data-drag-region
+      class="flex h-11 shrink-0 items-center justify-end gap-1 border-b border-neutral-100 pr-2 pl-4"
+    >
+      <WindowControls />
+    </header>
     <!-- 页头 + 工具条合并成一条：返回 / 标题 / 显示开关 / 刷新 / 新建。
          不再带 data-drag-region —— 窗口三键已由 WorkspaceShell 承担。 -->
     <div class="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-3 py-2">

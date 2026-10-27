@@ -15,6 +15,7 @@ import {
   Plus,
   Search,
 } from 'lucide-vue-next'
+import WindowControls from '../coding/components/WindowControls.vue'
 import TaskEditorDialog from './components/TaskEditorDialog.vue'
 import { BOARD_COLUMN_IDS, columnForStatus, columnLabel } from './boardColumns'
 import { useProjectStore } from '../../stores/project'
@@ -188,6 +189,14 @@ onMounted(async () => {
 
 <template>
   <div class="flex h-full flex-col bg-white">
+    <!-- 窗口拖拽区 + 窗口三键（与 /automations 一致；侧栏另有一份紧凑版，
+         因为编辑器这类覆盖层会盖住这一条） -->
+    <header
+      data-drag-region
+      class="flex h-11 shrink-0 items-center justify-end gap-1 border-b border-neutral-100 pr-2 pl-4"
+    >
+      <WindowControls />
+    </header>
     <!-- 工具栏：标题 + 搜索 + 新建 -->
     <div class="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-4 py-2">
       <button
