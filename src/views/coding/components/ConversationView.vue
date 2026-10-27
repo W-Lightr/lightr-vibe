@@ -69,6 +69,11 @@ function isProcess(m: Session['messages'][number]): boolean {
   return m.type === 'thinking' || (m.toolCalls?.length ?? 0) > 0
 }
 
+/** 是否存在「正在生成」的活动块（用于抑制重复的底部提示） */
+const hasLiveActivity = computed(() =>
+  blocks.value.some((b) => b.kind === 'activity' && b.generating),
+)
+
 const blocks = computed<Block[]>(() => {
   const msgs = props.session.messages
 
@@ -185,7 +190,10 @@ const blocks = computed<Block[]>(() => {
         <PlanCard :entries="session.planEntries ?? []" />
 
         <!-- 生成中提示：脉冲蓝点 + 微光扫过文字（Shimmer） -->
-        <div v-if="generating" class="mb-4 flex items-center gap-2 text-xs text-neutral-400">
+        <div
+          v-if="generating && !hasLiveActivity"
+          class="mb-4 flex items-center gap-2 text-xs text-neutral-400"
+        >
           <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
           <span class="shimmer font-medium">正在生成…</span>
         </div>

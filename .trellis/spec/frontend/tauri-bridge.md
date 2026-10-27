@@ -1372,6 +1372,38 @@ const runningIds = computed(() =>
 > 就是这样，导致用户只看到「用时 X · N 个工具」而看不到回答，已删除。
 
 
+## ACP 请求超时：prompt 必须用「活动性超时」
+
+### 规则
+
+| method | 超时策略 |
+|---|---|
+| `initialize` | 固定 60s |
+| `session/new` / `session/load` | 固定 30s |
+| **`session/prompt`** | **活动性超时**：两次 progress 之间静默 ≥ 300s 才判定卡死 |
+| 其他 | 固定 30s |
+
+### 为什么 prompt 不能用固定总时长
+
+`session/prompt` 按协议是**长请求** —— 它在整个 turn 期间持续推
+`session/update`，直到 turn 结束才响应。写小游戏、批量重构这类任务轻易
+超过 5 分钟，用 `recv_timeout(300s)` 会在 agent 明明正常输出时把它杀掉，
+表现为用户看到的 `timeout:300s session/prompt`。
+
+实现：`recv_with_activity_timeout()` 分片等待（1s 一跳），每次醒来比对
+`conn.last_activity_at`（`reader_loop` 转发 update 时刷新）。只要 agent 还在
+推消息就继续等。
+
+### 陷阱
+
+> **Warning**: 不要给 `session/prompt` 加「总时长上限」。它没有合理的上界，
+> 只能靠**静默时长**判断卡死。
+
+> **Warning**: 空闲阈值与断连后的回收是两件事：
+> `PROMPT_IDLE_TIMEOUT_SECS`（300s，prompt 静默）与
+> `LIGHTR_ACP_IDLE_TIMEOUT_SECS`（180s，连接空闲回收）语义不同，别混用。
+
+
 ## Gotchas
 
 > **Warning**: `getCurrentWindow()` throws in a plain browser dev server.

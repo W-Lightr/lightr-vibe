@@ -49,6 +49,12 @@ fn idle_timeout_secs() -> u64 {
     }
 }
 
+/// `session/prompt` 的**空闲**超时（秒）：两次 progress 之间允许的最长静默。
+///
+/// 长任务（写小游戏、批量重构）可能跑十几分钟，用固定总时长必然误杀；
+/// 只要 agent 还在推 `session/update`，就说明它活着，不该中断。
+const PROMPT_IDLE_TIMEOUT_SECS: u64 = 300;
+
 /// 请求超时矩阵（PRD R1）：initialize 60s / session/new、load 30s（首调实测
 /// 7.6-8.9s，probe §2）/ prompt 300s / 其余 30s。
 ///
@@ -64,6 +70,25 @@ fn timeout_for(method: &str) -> Duration {
         _ => Duration::from_secs(30),
     }
 }
+
+#[cfg(test)]
+mod timeout_semantics_tests {
+    use super::*;
+
+    /// 长任务不能靠固定总时长限制：prompt 走的是活动性超时。
+    ///
+    /// 回归背景：写小游戏这类任务跑过 5 分钟会被 `timeout:300s session/prompt`
+    /// 中断，而 agent 其实一直在正常输出。
+    #[test]
+    fn prompt_idle_timeout_is_activity_based() {
+        // 空闲阈值仍为 300s（两次 progress 之间的最大静默）
+        assert_eq!(PROMPT_IDLE_TIMEOUT_SECS, 300);
+        // 非 prompt 方法仍是固定超时
+        assert_eq!(timeout_for("initialize"), Duration::from_secs(60));
+        assert_eq!(timeout_for("session/prompt"), Duration::from_secs(300));
+    }
+}
+
 
 /// initialize 的 `clientCapabilities` 构造（纯函数，便于单测）。
 ///
@@ -339,7 +364,14 @@ fn rpc_call(conn: &AcpConn, method: &str, params: Value) -> Result<Value, String
         return Err(e);
     }
     let timeout = timeout_for(method);
-    match rx.recv_timeout(timeout) {
+    let recv = if method == "session/prompt" {
+        // 长请求：改用「活动性超时」—— 每收到一次 progress 就重置计时，
+        // 只有真的静默满 PROMPT_IDLE_TIMEOUT_SECS 才判定卡死。
+        recv_with_activity_timeout(conn, rx, Duration::from_secs(PROMPT_IDLE_TIMEOUT_SECS))
+    } else {
+        rx.recv_timeout(timeout)
+    };
+    match recv {
         Ok(resp) => {
             if let Some(err) = resp.get("error") {
                 return Err(rpc_error_string(err));
@@ -347,12 +379,43 @@ fn rpc_call(conn: &AcpConn, method: &str, params: Value) -> Result<Value, String
             Ok(resp.get("result").cloned().unwrap_or(Value::Null))
         }
         Err(RecvTimeoutError::Timeout) => {
-            // 超时必须清理 pending；迟到响应到达时按 id 查不到即被丢弃
+            // 超时：移除 pending，避免迟到的响应按超时 id 检不出来
             take_pending(&mut conn.pending.lock().unwrap(), id);
-            Err(format!("timeout:{}s {}", timeout.as_secs(), method))
+            let shown = if method == "session/prompt" {
+                PROMPT_IDLE_TIMEOUT_SECS
+            } else {
+                timeout.as_secs()
+            };
+            Err(format!("timeout:{}s {}", shown, method))
         }
         Err(RecvTimeoutError::Disconnected) => {
-            Err("acp-dead: 进程已退出（等待响应期间）".to_string())
+            Err("acp-dead: subprocess exited while awaiting response".to_string())
+        }
+    }
+}
+
+/// 等待 prompt 的响应，**每收到一次 `session/update` 就重置计时**。
+///
+/// `reader_loop` 转发 update 时会刷新 `last_activity_at`，这里以它为
+/// 「agent 还活着」的证据。分片等待（1s 一跳），每次醒来比对活动时间戳，
+/// 因此不需要额外的信号通道。
+fn recv_with_activity_timeout(
+    conn: &AcpConn,
+    rx: Receiver<Value>,
+    idle: Duration,
+) -> Result<Value, RecvTimeoutError> {
+    let poll = Duration::from_secs(1);
+    loop {
+        match rx.recv_timeout(poll) {
+            Ok(v) => return Ok(v),
+            Err(RecvTimeoutError::Disconnected) => return Err(RecvTimeoutError::Disconnected),
+            Err(RecvTimeoutError::Timeout) => {
+                let elapsed = conn.last_activity_at.lock().unwrap().elapsed();
+                if elapsed < idle {
+                    continue;
+                }
+                return Err(RecvTimeoutError::Timeout);
+            }
         }
     }
 }

@@ -45,11 +45,11 @@ const userExpanded = ref(false)
 const expanded = computed(() => running.value || userExpanded.value)
 
 /**
- * 摘要行文字：`活动 · 用时 X`（用户指定用「活动」+「用时」，不再显示工具条数）。
+ * 摘要行右侧细节（`· {detailText}`）。
  *
- * - 仍在生成 → `活动 · 正在运行`
- * - 已结束   → `活动 · 用时 X`
- * - 缺时间戳 → 只有 `活动`
+ * - 仍在生成 → 不显示（spinner 已表达「正在运行」，再加文字就重复了）
+ * - 已结束   → `用时 X`
+ * - 缺时间戳 → 不显示
  */
 /** 本段首尾时刻（用于「用时」） */
 const span = computed(() => {
@@ -65,7 +65,8 @@ const span = computed(() => {
 })
 
 const elapsedText = computed(() => {
-  if (running.value) return '正在运行'
+  // 运行中不显示用时：数字会一直定格在首条消息的时刻，看起来像卡住了
+  if (running.value) return null
   const { first, last } = span.value
   if (first === null || last === null || last < first) return null
   return `用时 ${formatDuration(last - first)}`
@@ -137,26 +138,29 @@ watch(running, (nowRunning, wasRunning) => {
 <template>
   <div class="mb-3">
     <!--
-      摘要行（codex 风格）：方框图标 + 「活动」+ 用时，右侧折叠箭头。
-      状态用前置图标表达（转圈 / 完成），不用额外文字。
+      摘要行：状态图标 + 「活动 · 用时 X」+ 折叠箭头。
+
+      状态图标紧贴文字（不靠 flex-1 推到右端）—— 之前 spinner 跑到最右侧，
+      和文字脱节、看起来像两个不相干的元素。
+      运行中时不再额外加「正在运行」文字，避免与 spinner 重复表达同一件事。
     -->
     <button
-      class="group flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
-      :class="running && 'cursor-default'"
+      class="group flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-xs transition-colors hover:bg-neutral-100"
+      :class="running ? 'cursor-default text-blue-600' : 'text-neutral-600 hover:text-neutral-800'"
       :title="running ? '正在运行' : expanded ? '收起' : '展开'"
       @click="toggle"
     >
+      <!-- 状态位：运行中转圈，结束显示折叠箭头 -->
+      <LoaderCircle v-if="running" class="h-3.5 w-3.5 shrink-0 animate-spin text-blue-500" />
+      <ChevronDown
+        v-else-if="expanded"
+        class="h-3.5 w-3.5 shrink-0 text-neutral-400"
+      />
+      <ChevronRight v-else class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+
       <ListTree class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-      <span :class="running ? 'text-blue-600' : 'text-neutral-600'">活动</span>
+      <span>活动</span>
       <span v-if="detailText" class="text-neutral-400">· {{ detailText }}</span>
-
-      <span class="flex-1" />
-
-      <span class="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-        <LoaderCircle v-if="running" class="h-3 w-3 animate-spin text-blue-500" />
-        <ChevronDown v-else-if="expanded" class="h-3.5 w-3.5 text-neutral-300" />
-        <ChevronRight v-else class="h-3.5 w-3.5 text-neutral-300" />
-      </span>
     </button>
 
     <!--
