@@ -1293,6 +1293,14 @@ const runningIds = computed(() =>
 > 挂在 `WorkspaceShell` 下的页面（`/tasks`、`/tasks/:projectId`、`/automations`）
 > 由页面自己的单条 header 提供返回 / 标题 / 操作 / 窗口三键。
 
+> **Warning**: 设置入口只放在**侧栏底部状态栏**（`SidebarPanel`），负责跳
+> `/settings`。不要再在 `TopBar` 或各页 header 里另放一个 —— 侧栏常驻，所以
+> 一处即可覆盖所有页面；`/coding` 顶栏曾经也有一份，会造成同屏两个设置按钮。
+>
+> 因此所有顶层页面（`/coding`、`/tasks`、`/automations`、`/settings`）都必须
+> 挂在带侧栏的布局下。新增独立顶层路由时记得走 `WorkspaceShell`，否则该页会
+> 既没有左侧菜单、也没有设置入口。
+
 ## Gotchas
 
 > **Warning**: `getCurrentWindow()` throws in a plain browser dev server.

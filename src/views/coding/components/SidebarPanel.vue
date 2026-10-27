@@ -5,6 +5,7 @@ import { NPopconfirm, useMessage } from 'naive-ui'
 import {
   PanelLeftClose,
   Search,
+  Settings,
   SquarePen,
   Ellipsis,
   Zap,
@@ -79,6 +80,19 @@ const activeNav = ref<NavKey>('chat')
  * 之前只有「点了按钮」才更新 activeNav，所以从别处（或刷新）直接进
  * /automations 时高亮还停在「聊天」，看起来像没切过去。
  */
+/** 当前是否在设置页（用于底部设置按钮的高亮） */
+const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
+
+/**
+ * 打开设置页。
+ *
+ * 设置页有自己的返回逻辑（回 /coding），所以这里只需要 push。
+ * 从自动化 / 待办任务点进来也能正常返回，因为那是页面内独立的返回按钮。
+ */
+function openSettings(): void {
+  if (!isSettingsRoute.value) void router.push('/settings')
+}
+
 function navKeyForPath(path: string): NavKey {
   if (path.startsWith('/automations')) return 'automation'
   if (path.startsWith('/tasks')) return 'todos'
@@ -555,8 +569,17 @@ function activateProject(projectId: string) {
       </p>
     </div>
 
-    <!-- 底部状态栏 -->
-    <div class="flex h-9 shrink-0 items-center justify-end border-t border-neutral-200 px-3">
+    <div class="flex h-9 shrink-0 items-center justify-between border-t border-neutral-200 px-2">
+      <!-- 设置入口放在侧栏底部：侧栏在所有页面常驻，所以「设置」处处可达 -->
+      <button
+        class="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-200/70 hover:text-neutral-700"
+        :class="isSettingsRoute ? 'bg-neutral-200/70 text-neutral-800' : ''"
+        title="设置"
+        data-no-drag
+        @click="openSettings"
+      >
+        <Settings class="h-4 w-4" />
+      </button>
       <span class="pr-1 text-[11px] text-neutral-400">{{ sessionStore.sessions.length }} 个会话</span>
     </div>
 

@@ -9,10 +9,17 @@ const router = createRouter({
       name: 'home',
       component: HomeView,
     },
+    // 设置页同样挂在 WorkspaceShell 下：侧栏常驻，设置入口在所有页面都可见
     {
       path: '/settings',
-      name: 'settings',
-      component: () => import('../views/settings/SettingsView.vue'),
+      component: () => import('../layouts/WorkspaceShell.vue'),
+      children: [
+        {
+          path: '',
+          name: 'settings',
+          component: () => import('../views/settings/SettingsView.vue'),
+        },
+      ],
     },
     // /tasks = 项目选择页；具体项目的看板走 /tasks/:projectId（'all' = 全部项目）。
     // 二者都挂在 WorkspaceShell 下，保留左侧菜单（与 /automations 一致）。
