@@ -71,7 +71,7 @@ function notImplemented(label: string) {
   <!-- 底部 1px 分隔线用 ::before 绘制，激活标签的白底可将其"切断"（Chrome 效果） -->
   <div
     data-drag-region
-    class="relative flex h-10 shrink-0 items-stretch bg-neutral-100 before:absolute before:inset-x-0 before:bottom-0 before:h-px before:bg-neutral-200 before:content-['']"
+    class="relative flex h-12 shrink-0 items-stretch bg-neutral-100 before:absolute before:inset-x-0 before:bottom-0 before:h-px before:bg-neutral-200 before:content-['']"
   >
     <!-- 侧栏隐藏时：左缘显示展开侧栏与搜索入口 -->
     <div v-if="!workspace.sidebarVisible" class="flex shrink-0 items-center gap-0.5 pl-1.5" data-no-drag>
@@ -102,7 +102,7 @@ function notImplemented(label: string) {
     <!-- 分隔线 + 新建会话（设计图：竖线 + 编辑图标） -->
     <div class="mx-1.5 h-4 w-px shrink-0 self-center bg-neutral-300" />
     <button
-      class="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center self-center rounded-md text-neutral-500 hover:bg-neutral-200/70 hover:text-neutral-700"
+      class="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center self-center rounded-md text-neutral-500 hover:bg-neutral-200/70 hover:text-neutral-700"
       title="新建会话"
       data-no-drag
       @click="newSession"
