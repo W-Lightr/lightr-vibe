@@ -10,17 +10,9 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
-import {
-  ArrowLeft,
-  ChevronLeft,
-  FolderOpen,
-  ListTodo,
-  Minus,
-  Plus,
-  Square,
-  X,
-} from 'lucide-vue-next'
+import { ArrowLeft, ChevronLeft, FolderOpen, ListTodo, Plus } from 'lucide-vue-next'
 import TaskColumn from './components/TaskColumn.vue'
+import WindowControls from '../coding/components/WindowControls.vue'
 import TaskEditorDialog from './components/TaskEditorDialog.vue'
 import TaskDetailDialog from './components/TaskDetailDialog.vue'
 import { useTaskDrag } from './components/useTaskDrag'
@@ -34,7 +26,6 @@ import {
 import { approveTask, rejectTask, startTask, stopTask, transitionTask } from './taskSessionBridge'
 import { useTaskStore } from '../../stores/task'
 import { useProjectStore } from '../../stores/project'
-import { getAppWindow } from '../../utils/window'
 import { taskErrorMessage } from '../../types/task'
 import type { WorkTask } from '../../types/task'
 import type { EngineWire } from '../../types/engine'
@@ -49,8 +40,6 @@ const router = useRouter()
 const message = useMessage()
 const taskStore = useTaskStore()
 const projectStore = useProjectStore()
-// 浏览器 dev 环境为 null：隐藏窗口三键（与设置页一致）
-const appWindow = getAppWindow()
 
 // ---- 项目（唯一来源 = 路由参数，prd R3） ----
 
@@ -454,29 +443,7 @@ function goBack(): void {
           {{ boardTitle }}
         </span>
       </div>
-      <div v-if="appWindow" class="flex items-center gap-0.5" data-no-drag>
-        <button
-          class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
-          title="最小化"
-          @click="appWindow.minimize()"
-        >
-          <Minus class="h-4 w-4" />
-        </button>
-        <button
-          class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
-          title="最大化 / 还原"
-          @click="appWindow.toggleMaximize()"
-        >
-          <Square class="h-3.5 w-3.5" />
-        </button>
-        <button
-          class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-red-500 hover:text-white"
-          title="关闭"
-          @click="appWindow.close()"
-        >
-          <X class="h-4 w-4" />
-        </button>
-      </div>
+      <WindowControls />
     </div>
 
     <!-- 工具栏：显示开关 + 计数 + 新建（项目由路由确定，不做返回/切换） -->

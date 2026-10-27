@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { NPopconfirm, useMessage } from 'naive-ui'
 import {
   PanelLeftClose,
@@ -23,6 +23,7 @@ import { useConversation, ensureModelOptions } from '../../../composables/useCon
 import { canPickFolder, fsService, projectNameFromPath } from '../../../services/fsService'
 import { formatRelativeTime } from '../../../utils/time'
 import SessionItem from './SessionItem.vue'
+import WindowControls from './WindowControls.vue'
 import NewSessionDialog from './NewSessionDialog.vue'
 import type { Session, NewSessionTarget } from '../../../types/session'
 import type { EngineWire } from '../../../types/engine'
@@ -33,6 +34,7 @@ const projectStore = useProjectStore()
 const { closeConnection } = useConversation()
 const message = useMessage()
 const router = useRouter()
+const route = useRoute()
 
 /** 原生目录对话框仅桌面端可用；浏览器 dev 环境按钮禁用态（R1） */
 const pickAvailable = canPickFolder()
@@ -72,9 +74,28 @@ function removeProject(projectId: string) {
 type NavKey = 'chat' | 'automation' | 'todos' | 'repo' | 'canvas'
 const activeNav = ref<NavKey>('chat')
 
+/**
+ * 侧栏高亮跟随路由。
+ *
+ * 之前只有「点了按钮」才更新 activeNav，所以从别处（或刷新）直接进
+ * /automations 时高亮还停在「聊天」，看起来像没切过去。
+ */
+function navKeyForPath(path: string): NavKey {
+  if (path.startsWith('/automations')) return 'automation'
+  if (path.startsWith('/tasks')) return 'todos'
+  return 'chat'
+}
+watch(
+  () => route.path,
+  (path) => {
+    activeNav.value = navKeyForPath(path)
+  },
+  { immediate: true },
+)
+
 /** 已接入的导航项走 `to` 路由跳转；其余为占位（侧栏内显示「尚未接入」） */
 const navItems: { key: NavKey; label: string; icon: typeof Zap; to?: string }[] = [
-  { key: 'automation', label: '自动化', icon: Zap },
+  { key: 'automation', label: '自动化', icon: Zap, to: '/automations' },
   { key: 'todos', label: '待办任务', icon: ListTodo, to: '/tasks' },
   { key: 'repo', label: '仓库面板', icon: GitBranch },
   { key: 'canvas', label: '无限画布', icon: InfinityIcon },
@@ -108,14 +129,37 @@ function commitRename() {
   renamingId.value = null
 }
 
+/**
+ * 点会话：先确保在编码工作区，再打开标签。
+ *
+ * 侧栏被 /automations 复用后，直接 openSession 会让标签打开在一个看不到它的
+ * 页面上（用户点了没反应）。
+ */
+function openSessionFromSidebar(sessionId: string): void {
+  ensureCodingRoute()
+  workspace.openSession(sessionId)
+}
+
+/**
+ * 当前不在编码工作区时切回去。
+ *
+ * 侧栏被 /automations、/tasks 复用后，「新建会话」「点会话」这类动作必须
+ * 先把路由切回 /coding —— 否则会话被打开在一个看不到它的页面上。
+ */
+function ensureCodingRoute(): void {
+  if (!route.path.startsWith('/coding')) void router.push('/coding')
+}
+
 function createSession() {
-  // 通用新建：弹窗选引擎 + 文件夹（PRD R2）；确认后创建草稿
+  // 侧栏现在也挂在 /automations 上：新建会话必须先回到编码工作区，
+  // 否则路由停在自动化页，用户看不到刚打开的会话。
+  ensureCodingRoute()
   pendingProjectId.value = null
   dialogOpen.value = true
 }
 
 function createTmpSession() {
-  // 临时会话：同样走弹窗（可选引擎 / 文件夹，默认最近项目）
+  ensureCodingRoute()
   pendingProjectId.value = null
   dialogOpen.value = true
 }
@@ -301,6 +345,11 @@ function activateProject(projectId: string) {
       >
         <Ellipsis class="h-4 w-4" />
       </button>
+      <!--
+        窗口三键也放一份在侧栏：自动化编辑器 / 任务详情这类覆盖层打开时会盖住
+        主内容区的头部，若只有那里有窗口按钮，用户就临时找不到最小化/关闭。
+      -->
+      <WindowControls compact />
     </div>
 
     <!-- 搜索框 -->
@@ -338,7 +387,7 @@ function activateProject(projectId: string) {
 
     <!-- 未接入功能的占位状态 -->
     <div
-      v-if="activeNav !== 'chat'"
+      v-if="activeNav !== 'chat' && !navItems.find((n) => n.key === activeNav)?.to"
       class="flex flex-1 flex-col items-center justify-center gap-1 px-6 text-center"
     >
       <p class="text-xs text-neutral-500">「{{ navItems.find((n) => n.key === activeNav)?.label }}」尚未接入</p>
@@ -430,7 +479,7 @@ function activateProject(projectId: string) {
             :active="s.id === workspace.activeSessionId"
             :renaming="renamingId === s.id"
             v-model:rename-draft="renameDraft"
-            @select="workspace.openSession(s.id)"
+            @select="openSessionFromSidebar(s.id)"
             @rename="startRename(s.id, s.title)"
             @commit-rename="commitRename"
             @cancel-rename="renamingId = null"
@@ -467,7 +516,7 @@ function activateProject(projectId: string) {
         :active="s.id === workspace.activeSessionId"
         :renaming="renamingId === s.id"
         v-model:rename-draft="renameDraft"
-        @select="workspace.openSession(s.id)"
+        @select="openSessionFromSidebar(s.id)"
         @rename="startRename(s.id, s.title)"
         @commit-rename="commitRename"
         @cancel-rename="renamingId = null"

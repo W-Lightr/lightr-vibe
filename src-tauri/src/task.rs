@@ -406,6 +406,12 @@ fn tasks_file_path() -> Result<PathBuf, String> {
     if let Some(p) = TEST_PATH.lock().ok().and_then(|g| g.clone()) {
         return Ok(p);
     }
+    // 测试可用环境变量覆盖（自动化 enqueue_task 的端到端测试在同一进程里跑）
+    if let Ok(p) = std::env::var("LIGHTR_TASK_TEST_PATH") {
+        if !p.trim().is_empty() {
+            return Ok(PathBuf::from(p));
+        }
+    }
     Ok(home_dir()?
         .join(".lightr-vibe")
         .join("lightr-vibe")
@@ -870,6 +876,13 @@ pub fn task_list(project_id: Option<String>) -> Result<Vec<WorkTask>, String> {
 /// 新建任务：追加到该项目列尾，status = todo
 #[tauri::command]
 pub fn task_create(draft: TaskDraft) -> Result<TaskDetails, String> {
+    create_task_internal(draft)
+}
+
+/// 新建任务的内部实现（自动化 `enqueue_task` 复用同一条落盘路径）。
+///
+/// 命令壳 `task_create` 只做转调；这里不含任何 Tauri 依赖。
+pub(crate) fn create_task_internal(draft: TaskDraft) -> Result<TaskDetails, String> {
     if draft.title.trim().is_empty() {
         return Err("io: 任务标题不能为空".into());
     }
@@ -1265,7 +1278,7 @@ pub fn broadcast<R: tauri::Runtime>(app: &tauri::AppHandle<R>, task_id: &str) {
 // ---------- 单元测试 ----------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn tmp_path(tag: &str) -> PathBuf {
@@ -1279,19 +1292,19 @@ mod tests {
     /// 用 `#[test]` 而非 `lock().unwrap()` 直接嵌套，避免某个用例 panic 后中毒级联失败。
     static STORE_LOCK: Mutex<()> = Mutex::new(());
 
-    fn lock_store() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn lock_store() -> std::sync::MutexGuard<'static, ()> {
         STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// 把共享 store 指向临时路径并清空内存态（进入用例前）
-    fn point_store_at(path: &Path) {
+    pub(crate) fn point_store_at(path: &Path) {
         *TEST_PATH.lock().unwrap() = Some(path.to_path_buf());
         *store().path.lock().unwrap() = None;
         *store().data.lock().unwrap() = None;
     }
 
     /// 退出用例：解除路径覆盖并清空内存态，避免影响下一个用例
-    fn reset_store() {
+    pub(crate) fn reset_store() {
         *TEST_PATH.lock().unwrap() = None;
         *store().path.lock().unwrap() = None;
         *store().data.lock().unwrap() = None;

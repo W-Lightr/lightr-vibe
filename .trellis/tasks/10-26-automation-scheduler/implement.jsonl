@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "Rust 命令契约、双通道 service、JSON 落盘与备份顺序、task.rs 的整体形态——automation store/service/commands 必须同构"}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "feature-local 模块放置规则（views/<feature>/*.ts 纯逻辑、service/store/types 边界），决定 automations 页面文件布局"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Pinia setup store 约定；automation store 的返回行替换与事件驱动 refresh 必须遵守"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "types/automation.ts 与 Rust camelCase 逐字段对齐的类型约定"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令（cargo test / pnpm build）与禁止模式"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "自动化横跨 rust 调度 / JSON 落盘 / ACP 复用 / 前端 store 四层，需要按该指南核对数据流与事件"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "task_create 与 acp 内核必须抽公共函数而非复制；该指南用于核对复用点"}

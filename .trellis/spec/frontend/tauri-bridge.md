@@ -1138,6 +1138,153 @@ if snapshot.corrupt {
 save_serialized(&store, &next)?;
 ```
 
+## Automation commands + scheduler invariants (`src-tauri/src/automation/`, task 10-26-automation-scheduler)
+
+把 codeg 的「自动化」搬进本仓库：一条保存好的提示词按 cron 或手动触发，每次触发
+产出一条运行记录。跨越 JSON 落盘 / cron 求值 / 进程内调度 / ACP 无头会话 / 前端
+缓存四层，所以按 code-spec 深度记录。
+
+### 1. Scope / Trigger
+
+- 新增 `automation_*` 命令面、`automations.json` 落盘格式、调度循环、无头会话。
+- 修改触发/结算/取消语义，或前端 `stores/automation.ts` 的缓存策略时必须读本节。
+
+### 2. Signatures
+
+```rust
+automation_list()                                  -> Automation[]
+automation_get(id)                                 -> Automation
+automation_create(draft)                           -> Automation
+automation_update(id, draft)                       -> Automation
+automation_set_enabled(id, enabled)                -> Automation
+automation_delete(id)                              -> ()          // 软删
+automation_mark_seen()                             -> ()          // 清零 unseenFailures
+automation_compute_next_run(cron, timezone)        -> NextRunPreview
+automation_runs(id, limit?)                        -> AutomationRun[]
+automation_run_status(runId)                       -> AutomationRun
+automation_run_now(id)                             -> String      // runId（异步：立刻返回）
+automation_cancel_run(runId)                       -> ()
+automation_run_status_values()                     -> &'static str[]
+```
+
+内部（非命令）：`service::attach_run_session` / `run_automation` / `cancel_run` /
+`boot_reconcile_interrupted`。
+
+运行时 id 形状（**不是** `task.rs::create_id` 的 8 位十六进制）：
+`auto-xxxxxxxx` / `arun-xxxxxxxx`，由 `automation::store::create_id` 生成。
+
+### 3. Contracts
+
+- **文件**：`~/.lightr-vibe/lightr-vibe/automations.json`，`{version, automations[], runs[]}`。
+  全部字段 `#[serde(default)]`，未知顶层键经 `#[serde(flatten)]` 原样回写。
+- **时间**：一律 `i64` UTC 毫秒（不引 chrono）。
+- **`connId`**：`auto-<runId>`，**确定性**——取消时靠它找回连接。
+- **事件**：`automation://changed`，payload `{id, runId?}`，前端收到**整表重读**
+  （不做增量合并；自动化数量级是几十）。
+- **cron**：5 字段，周字段 UI 语义 `0|7=周日 … 6=周六`，内部重映射为
+  `0=周日..6=周六`。时区用固定偏移表，**DST 时区按标准时偏移求值**（已知取舍）。
+- **`nextRunAt`** 永远从 `now` 向前重算：停机跨越 N 个时点，恢复后只补触发 1 次。
+
+### 4. Validation & Error Matrix
+
+| 条件 | 行为 |
+|---|---|
+| `automations.json` 缺失 | 空数据，不报错，**不创建文件** |
+| JSON 损坏 | 读退化空 + `.bak` 备份（**写于覆盖之前**）；首次写入后 `corrupt=false` |
+| 抢不到引擎独占锁 | 不 spawn 调度器；CRUD 照常可用；run/cancel → `automation engine not running` |
+| 上一条仍在跑 | 本次记 `skipped`；`run_now` 返回 `previous run still active` |
+| 项目目录不存在 | 运行 `failed("io: 项目目录不存在: <path>")`，不重建不猜 |
+| 提示词为空 | 保存时拒绝（`io: 提示词不能为空`）；脏数据触发时也 `failed` |
+| 引擎未安装 | 运行 `failed(<NotInstalled 的 hint>)` |
+| agent 中途崩 | `acp_prompt` 返回 Err 或 `stopReason != end_turn` → `failed` |
+| 进程被强杀 | 下次启动（**拿到锁之后**）把所有 `running` → `failed("interrupted by restart")` |
+
+### 5. Good/Base/Bad Cases
+
+- **Good**：`automation://changed` → `store.refresh()` → 同时刷新 `items` **和**
+  已缓存的 `runsById` → 卡片状态立刻正确。
+- **Base**：`enqueue_task` 建卡走 `task::create_task_internal`，与用户手动建卡
+  共用同一条 `tasks.json` 写入路径（不复制第二份落盘逻辑）。
+- **Bad**：拿 `store.runsById`（历史缓存）当「正在运行」的证据。
+
+### 6. Tests Required
+
+`cargo test automation::`（27 → 29 条）必须覆盖：
+- `remap_dow_field` 的 `1`=周一 / `7`→`0` / `1-5` 不含周末；
+- `compute_next_run` 时区偏移（上海 9 点 = UTC 1 点）、`0 0 30 2 *` → `None`；
+- `claim_due` 两次抢占：第一次成功并推进，第二次 `None`；
+- `settle_run` 幂等（已终态返回 `None`，不重复计 `unseenFailures`）；
+- `boot_reconcile_interrupted` 把 `running` 全判死；
+- `.bak` 写入顺序（断言备份内容是**旧**原文）；
+- 引擎锁第二次 `acquire` → `Taken`，释放后可重取；
+- **`attach_run_session` 在 `running` 期间即可写入 sessionId**，且结算后不被覆盖。
+
+`pnpm build`（`vue-tsc --noEmit` + `vite build`）必须通过。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// 拿 session_id 当「能不能拆连接」的门禁。运行在飞时它还是 None
+// （只有 settle_run 才写），于是取消只改库状态，agent 进程继续跑。
+if let Some(session_id) = run.session_id {
+    acp::shutdown_automation_conn(&app, &automation_conn_id(&run.id));
+}
+```
+
+#### Correct
+
+```rust
+// connId 是确定性的 auto-<runId>，不需要 session_id 定位；
+// 连接不存在时 shutdown 内部是安全 no-op。
+acp::shutdown_automation_conn(&app, &automation_conn_id(run_id));
+```
+
+#### Wrong
+
+```ts
+// 用历史缓存判断在飞。runNow() 后立刻拉历史会把 running 那条缓存进来，
+// 而 refresh() 只刷 items，缓存永远不更新 → 卡片永久显示「运行中」。
+const runningIds = computed(() => {
+  const set = new Set<string>()
+  for (const [id, rows] of Object.entries(store.runsById)) {
+    if (rows.some((r) => r.status === 'running')) set.add(id)
+  }
+  return set
+})
+```
+
+#### Correct
+
+```ts
+// 只信父行的 lastRunStatus（Rust 在 start_run / settle_run 原子写回，
+// 每次事件后 refresh() 都会重读）。历史缓存只用于弹窗展示。
+const runningIds = computed(() =>
+  new Set(store.items.filter((a) => a.lastRunStatus === 'running').map((a) => a.id)),
+)
+```
+
+### Gotchas
+
+> **Warning**: 无头自动化会话会**自动放行工具权限**（`ConnOwner::Automation` 时
+> `handle_client_request` 直接回 `allow_once`）。这是本功能唯一新增的安全面，
+> 只对该 conn 生效，且**不得**按引擎名分支。
+
+> **Warning**: `launch_session` 的 turn 必须在 `spawn` 里后台跑。
+> 同步 `await` 会让 `automation_run_now` 这个 command 挂到整轮结束才返回
+> （UI 会以为请求没发出去）。
+
+> **Warning**: `tokio` 不是本仓库的直接依赖，只经 tauri 传递引入。
+> 调度循环用 `tauri::async_runtime::{spawn, spawn_blocking}` + `thread::sleep`，
+> **不要**直接 `use tokio::`（编译失败）。
+
+> **Warning**: 侧栏现在被 `/automations` 复用。任何「打开会话」的入口必须先
+> `ensureCodingRoute()` 切回 `/coding`，否则标签打开在一个看不到它的页面上。
+
+> **Warning**: 自动化页的弹层用 `absolute inset-0`（不是 `fixed`），贴在
+> `WorkspaceShell` 的 `relative` 内容区上 —— 这样左侧菜单始终可见。
+
 ## Gotchas
 
 > **Warning**: `getCurrentWindow()` throws in a plain browser dev server.

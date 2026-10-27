@@ -3,6 +3,7 @@ mod acp;
 mod acp_question;
 mod agent;
 mod agent_type;
+mod automation;
 mod engine;
 mod fs;
 mod task;
@@ -68,8 +69,28 @@ pub fn run() {
             acp::acp_session_close,
             acp::acp_set_config,
             acp::acp_respond_permission,
-            acp::acp_answer_elicitation
+            acp::acp_answer_elicitation,
+            // 自动化（task 10-26-automation-scheduler）：CRUD + 调度引擎
+            automation::automation_list,
+            automation::automation_get,
+            automation::automation_create,
+            automation::automation_update,
+            automation::automation_set_enabled,
+            automation::automation_delete,
+            automation::automation_mark_seen,
+            automation::automation_compute_next_run,
+            automation::automation_runs,
+            automation::automation_run_status,
+            automation::automation_run_now,
+            automation::automation_cancel_run,
+            automation::automation_run_status_values
         ])
+        .setup(|app| {
+            // 自动化调度引擎：拿独占锁 -> boot 恢复 -> spawn 主循环。
+            // 拿不到锁时不驱动（CRUD 仍可用），见 design 5.1/5.2。
+            automation::engine::boot_engine(app.handle().clone());
+            Ok(())
+        })
         // ACP 长驻子进程清理：App.vue onBeforeUnmount 不可靠 → Rust 侧退出钩子
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

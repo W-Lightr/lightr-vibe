@@ -217,9 +217,21 @@ struct AskOutcome {
     answer: String,
 }
 
+/// 连接归属：普通用户会话 / 自动化无头会话。
+///
+/// 自动化会话没有人点「允许」，`session/request_permission` 必须在 Rust 侧自动放行
+/// （design §5.5）。归属挂在连接上判断，**不按引擎名分支**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnOwner {
+    User,
+    Automation,
+}
+
 struct AcpConn {
     /// 本地会话 id（connId）：事件/命令路由键，与 ACP 进程一一对应
     conn_id: String,
+    /// 连接归属（默认用户会话）；决定权限请求是自动放行还是转前端
+    owner: ConnOwner,
     /// 该连接绑定的引擎（建连时确定；会话级命令从连接取，不再重复传参）。
     /// 本期会话级命令无需按引擎分支，字段为「新增第 2 个引擎」预留的落点。
     #[allow(dead_code)]
@@ -243,6 +255,10 @@ struct AcpConn {
     pending_question: Mutex<HashMap<String, (QuestionReply, Vec<Question>)>>,
     q_next: AtomicU64,
     agent_info: Mutex<Value>,
+    /// session/new 拿到的 agent 侧会话 id（自动化取消时要按它发 session/cancel）
+    acp_session_id: Mutex<Option<String>>,
+    /// 本轮最后一次 assistant 文本（自动化结算时作为 summary；每轮开始清空）
+    last_assistant_text: Mutex<Option<String>>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     dead: AtomicBool,
     /// 最后一次活动时刻（prompt / update / permission 交互刷新）：空闲回收判据
@@ -371,6 +387,24 @@ fn handle_incoming(app: &AppHandle, conn: &AcpConn, msg: &Value) {
                     .and_then(|p| p.get("_meta"))
                     .cloned()
                     .unwrap_or(Value::Null);
+                // 自动化无头会话的 summary：累积 assistant 正文分片。
+                // 前端不消费这条连接，所以这里顺手在 Rust 侧留一份末轮文本。
+                if conn.owner == ConnOwner::Automation
+                    && update.get("sessionUpdate").and_then(Value::as_str)
+                        == Some("agent_message_chunk")
+                {
+                    if let Some(chunk) = update
+                        .get("content")
+                        .and_then(|c| c.get("text"))
+                        .and_then(Value::as_str)
+                    {
+                        let mut slot = conn.last_assistant_text.lock().unwrap();
+                        match slot.as_mut() {
+                            Some(buf) => buf.push_str(chunk),
+                            None => *slot = Some(chunk.to_string()),
+                        }
+                    }
+                }
                 let _ = app.emit(
                     "acp://update",
                     json!({
@@ -397,6 +431,26 @@ fn handle_incoming(app: &AppHandle, conn: &AcpConn, msg: &Value) {
     }
 }
 
+/// 自动化会话的权限自动放行选项选择（纯函数，可单测）。
+///
+/// 按 ACP 规范：优先 `allow_once`，其次 `allow_always`；都没有则返回 `None`
+/// （调用方回 `cancelled`，绝不让 agent 挂住）。**按 `kinds` 匹配，不按数组位置**。
+fn pick_auto_approve_option(options: &[Value]) -> Option<String> {
+    let find_by_kind = |kind: &str| -> Option<String> {
+        options
+            .iter()
+            .find(|o| {
+                o.get("kind")
+                    .and_then(Value::as_str)
+                    .map(|k| k == kind)
+                    .unwrap_or(false)
+            })
+            .and_then(|o| o.get("optionId").and_then(Value::as_str))
+            .map(|s| s.to_string())
+    };
+    find_by_kind("allow_once").or_else(|| find_by_kind("allow_always"))
+}
+
 fn handle_client_request(
     conn: &AcpConn,
     id: Value,
@@ -406,8 +460,28 @@ fn handle_client_request(
 ) {
     eprintln!("[acp] client request: {method} (connId={})", conn.conn_id);
     if method == "session/request_permission" {
-        let request_id = conn.perm_next.fetch_add(1, Ordering::SeqCst).to_string();
         let params = msg.get("params");
+        // Automation: headless session has no one to click Allow, so answer in Rust.
+        // Ownership comes from the connection owner, never from the engine name.
+        if conn.owner == ConnOwner::Automation {
+            let options = params
+                .and_then(|p| p.get("options"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let chosen = pick_auto_approve_option(&options);
+            let outcome = match &chosen {
+                Some(opt_id) => json!({ "outcome": { "outcome": "selected", "optionId": opt_id } }),
+                None => json!({ "outcome": { "outcome": "cancelled" } }),
+            };
+            eprintln!(
+                "[acp] auto-approved permission for automation conn {} (option={:?})",
+                conn.conn_id, chosen
+            );
+            let _ = send_line(conn, &json!({ "jsonrpc": "2.0", "id": id, "result": outcome }));
+            return;
+        }
+        let request_id = conn.perm_next.fetch_add(1, Ordering::SeqCst).to_string();
         let session_id = params
             .and_then(|p| p.get("sessionId"))
             .and_then(Value::as_str)
@@ -1004,7 +1078,12 @@ fn idle_sweep_loop(app: AppHandle) {
 
 /// 建立/复用某会话的 ACP 连接（幂等）：spawn + 读线程 + initialize 握手。
 /// 已有活连接直接返回其 agentInfo；否则启动全新进程（design §8.1）。
-fn connect_inner(app: AppHandle, conn_id: String, engine: AgentType) -> Result<StartResult, String> {
+fn connect_inner(
+    app: AppHandle,
+    conn_id: String,
+    engine: AgentType,
+    owner: ConnOwner,
+) -> Result<StartResult, String> {
     // per-session 启动锁：并发 connect 串行化
     let lock = connect_lock(&conn_id);
     let _guard = lock.lock().unwrap();
@@ -1036,6 +1115,7 @@ fn connect_inner(app: AppHandle, conn_id: String, engine: AgentType) -> Result<S
     let stderr_tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let conn = Arc::new(AcpConn {
         conn_id: conn_id.clone(),
+        owner,
         engine,
         dead_reason: Mutex::new(None),
         child: Mutex::new(child),
@@ -1047,6 +1127,8 @@ fn connect_inner(app: AppHandle, conn_id: String, engine: AgentType) -> Result<S
         pending_question: Mutex::new(HashMap::new()),
         q_next: AtomicU64::new(1),
         agent_info: Mutex::new(Value::Null),
+        acp_session_id: Mutex::new(None),
+        last_assistant_text: Mutex::new(None),
         stderr_tail: stderr_tail.clone(),
         dead: AtomicBool::new(false),
         last_activity_at: Mutex::new(Instant::now()),
@@ -1727,7 +1809,7 @@ pub async fn acp_connect(
 ) -> Result<StartResult, String> {
     let engine = AgentType::from_wire(&engine_id)
         .ok_or_else(|| format!("acp:-32602 未知引擎: {}", engine_id))?;
-    tauri::async_runtime::spawn_blocking(move || connect_inner(app, session_id, engine))
+    tauri::async_runtime::spawn_blocking(move || connect_inner(app, session_id, engine, ConnOwner::User))
         .await
         .map_err(|e| format!("acp 任务执行失败: {}", e))?
 }
@@ -2143,6 +2225,129 @@ fn render_answer_text(questions: &[Question], pairs: &[(String, Vec<String>)]) -
         "（用户未提供具体答案）".to_string()
     } else {
         parts.join("\n")
+    }
+}
+
+// ---------- 自动化无头会话（task 10-26-automation-scheduler，design 5.5） ----------
+
+/// 一次无头 turn 的结果。
+pub(crate) struct AutomationTurnOutcome {
+    pub session_id: String,
+    pub stop_reason: String,
+    /// 该轮最后一次 assistant 文本（运行记录的 summary）
+    pub summary: Option<String>,
+}
+
+/// 关闭一个自动化会话：先取消在飞 turn，再断开进程。
+///
+/// 两步都要做 —— 只 cancel 不断开会让进程挂着，只断开会让在飞 prompt 永不返回。
+/// `session/cancel` 是 notification，idle 时是安全 no-op。
+pub(crate) fn shutdown_automation_conn(app: &AppHandle, conn_id: &str) {
+    if let Some(conn) = get_conn(conn_id) {
+        let sid = conn.acp_session_id.lock().unwrap().clone();
+        if let Some(sid) = sid {
+            let _ = send_line(
+                &conn,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/cancel",
+                    "params": { "sessionId": sid }
+                }),
+            );
+        }
+        disconnect_conn(app, conn_id, &conn, "automation");
+    }
+}
+
+/// 自动化无头会话的一次完整 turn：建连 → session/new → 设模型/思考强度 → prompt。
+///
+/// **同步阻塞**（必须在 `spawn_blocking` 里调用）。返回 `stop_reason` 与末轮
+/// assistant 文本；失败返回可读错误串。无论成败，调用方负责
+/// [`shutdown_automation_conn`]。
+///
+/// 与前端会话系统的边界（prd R7）：这里用独立的 connId，且不写前端会话索引 ——
+/// 完成的判定完全靠 `rpc_call` 的阻塞返回值，不依赖前端事件总线。
+pub(crate) fn run_automation_turn(
+    app: AppHandle,
+    conn_id: String,
+    run_id: String,
+    engine: AgentType,
+    cwd: String,
+    model_id: Option<String>,
+    effort: Option<(String, String)>,
+    prompt: String,
+) -> Result<AutomationTurnOutcome, String> {
+    connect_inner(app.clone(), conn_id.clone(), engine, ConnOwner::Automation)?;
+    let conn = require_conn(&conn_id)?;
+
+    // 协议要求 cwd 是已存在的绝对路径
+    std::fs::create_dir_all(&cwd).map_err(|e| format!("io: 创建会话目录失败: {}", e))?;
+    let result = rpc_call(
+        &conn,
+        "session/new",
+        json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&conn_id) }),
+    )?;
+    touch_activity(&conn);
+    let session = parse_session_result(&result, None)?;
+    *conn.acp_session_id.lock().unwrap() = Some(session.session_id.clone());
+    // 立刻登记到运行记录：运行历史在「运行中」期间就要能看到会话 id，
+    // 否则 prd R7 的「用 acp_session_load 回放」无从谈起（settle 时才写太晚）。
+    // 失败不影响这轮运行，只丢一条可回放线索。
+    if let Err(e) = crate::automation::service::attach_run_session(&run_id, &session.session_id) {
+        eprintln!("[acp] automation run {} 登记 sessionId 失败: {}", run_id, e);
+    }
+
+    // 模型 / 思考强度：best-effort，agent 不认就保持默认，不阻断这轮运行
+    if let Some(model) = model_id.filter(|m| !m.trim().is_empty()) {
+        let _ = rpc_call(
+            &conn,
+            "session/set_config_option",
+            json!({ "sessionId": session.session_id, "configId": "model", "value": model }),
+        );
+    }
+    if let Some((config_id, value)) = effort {
+        if !config_id.trim().is_empty() && !value.trim().is_empty() {
+            let _ = rpc_call(
+                &conn,
+                "session/set_config_option",
+                json!({ "sessionId": session.session_id, "configId": config_id, "value": value }),
+            );
+        }
+    }
+
+    // 每轮开始清空 summary 槽，避免上一轮残留
+    *conn.last_assistant_text.lock().unwrap() = None;
+
+    let prompt_result = rpc_call(
+        &conn,
+        "session/prompt",
+        json!({
+            "sessionId": session.session_id,
+            "prompt": [{ "type": "text", "text": prompt }]
+        }),
+    );
+    touch_activity(&conn);
+
+    match prompt_result {
+        Ok(value) => {
+            let stop_reason = value
+                .get("stopReason")
+                .and_then(Value::as_str)
+                .unwrap_or("end_turn")
+                .to_string();
+            let summary = conn
+                .last_assistant_text
+                .lock()
+                .unwrap()
+                .clone()
+                .filter(|t| !t.trim().is_empty());
+            Ok(AutomationTurnOutcome {
+                session_id: session.session_id,
+                stop_reason,
+                summary,
+            })
+        }
+        Err(e) => Err(e),
     }
 }
 

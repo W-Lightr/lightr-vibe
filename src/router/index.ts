@@ -26,6 +26,18 @@ const router = createRouter({
       component: () => import('../views/tasks/TasksView.vue'),
       props: true,
     },
+    // 自动化页挂在 WorkspaceShell 下：保留左侧菜单（设计图要求）
+    {
+      path: '/automations',
+      component: () => import('../layouts/WorkspaceShell.vue'),
+      children: [
+        {
+          path: '',
+          name: 'automations',
+          component: () => import('../views/automations/AutomationsView.vue'),
+        },
+      ],
+    },
     {
       path: '/coding',
       component: () => import('../layouts/WorkspaceLayout.vue'),

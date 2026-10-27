@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核查新命令是否破坏既有 acp_* / task_* 契约，尤其 task_create 抽取与 AcpConn.owner 字段"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "check 阶段需要的验证命令与验收口径"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核查 rust→service→store→组件的数据流；事件 payload 是否只带 id 而前端重读整表"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "核查是否出现第二份 tasks.json 写入逻辑或第二份 cron 求值"}
