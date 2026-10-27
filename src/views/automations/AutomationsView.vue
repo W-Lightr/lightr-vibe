@@ -318,7 +318,7 @@ async function refresh() {
         <div v-else class="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <!-- 空白自动化：虚线卡，固定第一格 -->
           <button
-            class="flex h-[132px] cursor-pointer flex-col items-start rounded-xl border border-dashed border-neutral-300 px-4 py-4 text-left transition-colors hover:border-neutral-400 hover:bg-neutral-50/60"
+            class="flex min-h-[136px] cursor-pointer flex-col items-start rounded-xl border border-dashed border-neutral-300 px-4 py-4 text-left transition-colors hover:border-neutral-400 hover:bg-neutral-50/60"
             @click="openCreate"
           >
             <span
@@ -334,7 +334,7 @@ async function refresh() {
           <div
             v-for="item in store.items"
             :key="item.id"
-            class="group relative flex h-[132px] cursor-pointer flex-col items-start rounded-xl border border-neutral-200 px-4 py-4 text-left transition-colors hover:border-neutral-300 hover:shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
+            class="group relative flex min-h-[136px] cursor-pointer flex-col items-start rounded-xl border border-neutral-200 px-4 py-4 text-left transition-colors hover:border-neutral-300 hover:shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
             :class="item.enabled ? 'bg-white' : 'bg-neutral-50/50'"
             @click="openEdit(item)"
           >
@@ -361,12 +361,12 @@ async function refresh() {
             </div>
 
             <!-- 说明 -->
-            <p class="mt-1 line-clamp-2 w-full text-[11px] leading-4 text-neutral-500">
+            <p class="mt-1.5 line-clamp-2 w-full min-h-8 text-[11px] leading-4 text-neutral-500">
               {{ descriptionOf(item) }}
             </p>
 
             <!-- 触发方式胶囊 -->
-            <div class="mt-auto flex w-full items-center gap-1.5 pt-2">
+            <div class="mt-auto flex w-full shrink-0 items-center gap-1.5 pt-2.5">
               <span
                 class="max-w-full truncate rounded-md px-1.5 py-0.5 text-[10px]"
                 :class="
