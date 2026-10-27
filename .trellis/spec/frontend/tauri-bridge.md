@@ -1351,6 +1351,14 @@ const runningIds = computed(() =>
 默认 `true`；`ActivityGroup` 内所有 `MessageItem` 传 `:show-actions="false"`，
 两个工具栏（思考分支 / 正文分支）都受 `actionsVisible` 控制。
 
+
+> **Warning**: 最后一轮里，**承载操作栏的那条消息必须走 `single`**，不能被收进
+> `ActivityGroup`（那边 `show-actions=false`，工具栏会整个消失）。
+>
+> 注意：工具消息也是 `type: 'text'` 但 `content` 为空，所以不能用「最后一条消息」
+> 判断，必须找「最后一条**有正文内容**的 messages」。整轮没有正文（纯工具）时，
+> 退化为让最后一条消息走 `single`。
+
 ### 已知缺口
 
 **文件改动汇总卡片**（codex 的「已编辑 5 个文件 +137 -0 / 撤销 / 查看变更」）尚未实现。

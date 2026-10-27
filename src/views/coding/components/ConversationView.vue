@@ -135,7 +135,28 @@ const blocks = computed<Block[]>(() => {
       return
     }
 
-    // 最后一轮：把连续的过程性消息攒起来折叠，正文直接平铺
+    // 最后一轮：过程性消息折叠，正文直接平铺。
+    //
+    // **最后一条「正文」消息必须走 `single`** —— 它是「复制 / 重新生成 /
+    // 从此分叉」工具栏的宿主。若把它收进 ActivityGroup（那边 show-actions=false），
+    // 工具栏就整个消失了。
+    //
+    // 注意：工具消息也是 `type: 'text'` 但 content 为空，所以不能用「最后一条
+    // 消息」判断，必须找「最后一条有正文内容的」。
+    let lastBodyIdx = -1
+    for (let i = seg.length - 1; i >= 0; i -= 1) {
+      const m = seg[i]
+      if (m.role === 'assistant' && m.type === 'text' && m.content.trim() !== '') {
+        lastBodyIdx = i
+        break
+      }
+    }
+    // 整轮没有任何正文（纯工具）：让最后一条消息单独渲染，工具栏才不会消失。
+    // MessageItem 内部对空正文有自己的兜底渲染。
+    if (lastBodyIdx === -1 && seg.length > 0) {
+      lastBodyIdx = seg.length - 1
+    }
+
     let buffer: Session['messages'] = []
     const flush = (atEnd: boolean) => {
       if (buffer.length === 0) return
@@ -148,8 +169,11 @@ const blocks = computed<Block[]>(() => {
       })
       buffer = []
     }
-    for (const m of seg) {
-      if (isProcess(m)) {
+
+    for (let i = 0; i < seg.length; i += 1) {
+      const m = seg[i]
+      // 承载操作栏的那条正文单独渲染；其余过程消息照常折叠
+      if (isProcess(m) && i !== lastBodyIdx) {
         buffer.push(m)
         continue
       }
@@ -158,7 +182,6 @@ const blocks = computed<Block[]>(() => {
     }
     flush(true)
   }
-
   return out
 })
 </script>
