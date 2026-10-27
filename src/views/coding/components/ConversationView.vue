@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { ArrowDown, MessageSquarePlus } from 'lucide-vue-next'
 import type { Session } from '../../../types/session'
 import MessageItem from './MessageItem.vue'
+import ActivityGroup from './ActivityGroup.vue'
 import PlanCard from './PlanCard.vue'
 import { useConversationScroll } from '../../../composables/useConversationScroll'
 import { useSessionStore } from '../../../stores/session'
@@ -43,26 +44,133 @@ const generating = computed(() => workspace.isGenerating(props.session.id))
 /**
  * 渲染单元。
  *
- * 规则（用户要求）：
- * - **AI 正文永远直接渲染**，绝不折叠；
- * - 工具调用**按类别**分组折叠（`ToolCallPanel` 内部负责，如「编辑了文件 · 3 个」
- *   「运行了命令 · 1 个」）；
- * - 思考块沿用 `MessageItem` 自己的折叠头。
+ * 用户规则：
+ * 1. 连续的工具调用要折叠（不逐条平铺）；
+ * 2. 有文字就显示文字；
+ * 3. **除最后一轮外，所有轮次的结果都收纳**。
  *
- * 因此这里不再做「整段过程折成一条」的外层收纳 —— 那会和
- * `ToolCallPanel` 的分组折叠叠成两层嵌套。
+ * 所以：
+ * - 历史轮次 → 整段收成一个 `ActivityGroup`（一条摘要行）
+ * - 最后一轮 → 正文直接渲染，只把过程性消息（思考 / 带工具）折叠
  */
-type Block = { kind: 'single'; message: Session['messages'][number] }
+type Block =
+  | { kind: 'single'; key: string; message: Session['messages'][number] }
+  | {
+      kind: 'activity'
+      key: string
+      messages: Session['messages']
+      generating: boolean
+      label: string | null
+    }
 
-const blocks = computed<Block[]>(() =>
-  props.session.messages.map((message) => ({ kind: 'single' as const, message })),
-)</script>
+/** 过程性消息：思考块，或带工具调用的 assistant 消息 */
+function isProcess(m: Session['messages'][number]): boolean {
+  if (m.role !== 'assistant') return false
+  return m.type === 'thinking' || (m.toolCalls?.length ?? 0) > 0
+}
+
+const blocks = computed<Block[]>(() => {
+  const msgs = props.session.messages
+
+  // 按用户消息切段：每段 = 一条用户消息之后的一轮 assistant 产出
+  const segments: Session['messages'][] = []
+  let current: Session['messages'] = []
+  const userSlots: { message: Session['messages'][number]; segIndex: number }[] = []
+
+  for (const m of msgs) {
+    if (m.role === 'user') {
+      if (current.length > 0) segments.push(current)
+      current = []
+      userSlots.push({ message: m, segIndex: segments.length })
+      continue
+    }
+    current.push(m)
+  }
+  if (current.length > 0) segments.push(current)
+
+  const lastSeg = segments.length - 1
+  const out: Block[] = []
+
+  // 开头若有 assistant 消息（无前导用户消息），单独成段
+  const hasLeadingAssistant = msgs.length > 0 && msgs[0].role !== 'user'
+  let segCursor = 0
+
+  if (hasLeadingAssistant && segments.length > 0) {
+    const seg = segments[0]
+    pushSegment(seg, segCursor === lastSeg)
+    segCursor = 1
+  }
+
+  for (const slot of userSlots) {
+    out.push({ kind: 'single', key: slot.message.id, message: slot.message })
+    const seg = segments[segCursor]
+    if (seg) {
+      pushSegment(seg, segCursor === lastSeg)
+      segCursor += 1
+    }
+  }
+
+  /**
+   * 把一段过程变成渲染块（可能产出多个块）。
+   *
+   * - **历史轮次**：整段收进一个 ActivityGroup（一条摘要行）。
+   * - **最后一轮**：正文消息仍然直接渲染，只把「过程性消息」（思考 / 带工具）
+   *   收进 ActivityGroup。这与「AI 输出内容不要收纳」保持一致 —— 最后一轮是
+   *   用户当下要看的结果，不能藏。
+   */
+  function pushSegment(seg: Session['messages'], isLast: boolean): void {
+    if (!isLast) {
+      out.push({
+        kind: 'activity',
+        key: `act-${seg[0].id}`,
+        messages: seg,
+        generating: false,
+        label: null,
+      })
+      return
+    }
+
+    // 最后一轮：把连续的过程性消息攒起来折叠，正文直接平铺
+    let buffer: Session['messages'] = []
+    const flush = (atEnd: boolean) => {
+      if (buffer.length === 0) return
+      out.push({
+        kind: 'activity',
+        key: `act-${buffer[0].id}`,
+        messages: buffer,
+        generating: atEnd && generating.value,
+        label: null,
+      })
+      buffer = []
+    }
+    for (const m of seg) {
+      if (isProcess(m)) {
+        buffer.push(m)
+        continue
+      }
+      flush(false)
+      out.push({ kind: 'single', key: m.id, message: m })
+    }
+    flush(true)
+  }
+
+  return out
+})
+</script>
 
 <template>
   <div class="relative min-h-0 flex-1">
     <div ref="listRef" class="no-scrollbar h-full overflow-y-auto" @scroll="onScroll">
       <div class="mx-auto max-w-3xl px-6 py-6">
-        <MessageItem v-for="block in blocks" :key="block.message.id" :message="block.message" />
+        <template v-for="block in blocks" :key="block.key">
+          <MessageItem v-if="block.kind === 'single'" :message="block.message" />
+          <ActivityGroup
+            v-else
+            :messages="block.messages"
+            :generating="block.generating"
+            :label="block.label"
+          />
+        </template>
 
         <!-- 空会话引导 -->
         <div v-if="session.messages.length === 0" class="flex flex-col items-center gap-3 pt-28 text-neutral-400">
