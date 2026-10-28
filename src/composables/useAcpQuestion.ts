@@ -80,7 +80,9 @@ function pushResult(event: AcpQuestionEvent, answers: { fieldId: string; values:
   if (!store.get(event.connId)) return
   store.pushMessage(event.connId, {
     role: 'assistant',
-    type: 'text',
+    // `ask` 让渲染层把它画成卡片（而不是混进正文）—— 这是用户参与过的交互，
+    // 值得在阅读时被一眼认出来。
+    type: 'ask',
     content: buildResultText(event, answerLinesFor(event, answers)),
     status: 'done',
   })

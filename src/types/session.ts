@@ -4,7 +4,13 @@ import type { AcpAvailableCommand, AcpConfigOption, AcpPlanEntry } from './acp'
 import type { EngineWire } from './engine'
 
 export type MessageRole = 'user' | 'assistant'
-export type MessageType = 'text' | 'thinking' | 'error'
+/**
+ * 消息形态：正文 / 思考 / 错误 / **AI 提问的问答结果**。
+ *
+ * `ask` 是本地回填的消息（用户作答后写入），内容形如
+ * 「AI 提问：xxx\n我的回答：yyy」，渲染层据此画成卡片而不是普通正文。
+ */
+export type MessageType = 'text' | 'thinking' | 'error' | 'ask'
 export type MessageStatus = 'pending' | 'streaming' | 'done' | 'stopped' | 'error'
 export type SessionStatus = 'idle' | 'generating' | 'error'
 export type ExecutionMode = 'auto' | 'confirm' | 'plan'

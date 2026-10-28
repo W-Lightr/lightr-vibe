@@ -64,12 +64,29 @@ export interface ToolGroupPartData {
   streaming: boolean
 }
 
+
+/**
+ * AI 提问 + 用户回答（codeg `askQuestionResult` 的简化版）。
+ *
+ * 为什么单独成一种分区而不是拼成一行文本：问答是**用户参与过**的一次交互，
+ * 值得用卡片框出来区别于普通回答（真实数据里它就是一行
+ * 「AI 提问：xxx / 我的回答：yyy」混在正文里，很容易被忽略）。
+ */
+export interface AskResultPart {
+  type: 'ask-result'
+  /** 问题文本（多问时用 / 连接） */
+  question: string
+  /** 用户选择的答案（已跳过时为空） */
+  answers: string[]
+}
+
 export type ContentPart =
   | TextPart
   | ReasoningPart
   | ToolCallPartData
   | ToolGroupPartData
   | ReplyArtifactsPart
+  | AskResultPart
   | TurnErrorPart
 
 /**

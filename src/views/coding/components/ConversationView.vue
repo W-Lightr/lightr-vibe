@@ -139,18 +139,31 @@ const blocks = computed<Block[]>(() => {
  * 「发送新消息收起上方所有轮次」因此只是一次计数器自增，而不是遍历线程
  * （遍历会丢掉用户手动展开过的记录）。
  */
-const openTurns = ref<Record<string, boolean>>({})
+
+/**
+ * 本轮是否展开。
+ *
+ * 优先级：用户手动选择 > 默认值（`defaultOpen` = 是否仍在生成）。
+ *
+ * 手动选择用 `userChoice` 单独存，**不用 `openTurns` 的默认值兜底** ——
+ * 之前把「运行中自动展开」也混进同一张表，导致一轮跑完后仍保持展开，
+ * 用户看到「工作了 X 秒」下方内容还摊着，不符合「工作完成后收起」。
+ *
+ * 现在只有**用户真的点过折叠头**才会写 `userChoice`；其余一律跟随
+ * `defaultOpen`（运行中 true、结束后 false）。
+ */
+const userChoice = ref<Record<string, boolean>>({})
 const turnEpoch = ref<Record<string, number>>({})
 const foldEpoch = ref(0)
 
-/** 本轮是否展开：当前轮默认展开，历史轮默认收起 */
 function isTurnOpen(block: Extract<Block, { kind: 'turn' }>): boolean {
+  // epoch 不匹配：这条记录属于上一次发送之前，作废
   if (turnEpoch.value[block.key] !== foldEpoch.value) return block.defaultOpen
-  return openTurns.value[block.key] ?? block.defaultOpen
+  return userChoice.value[block.key] ?? block.defaultOpen
 }
 
 function setTurnOpen(key: string, open: boolean) {
-  openTurns.value = { ...openTurns.value, [key]: open }
+  userChoice.value = { ...userChoice.value, [key]: open }
   turnEpoch.value = { ...turnEpoch.value, [key]: foldEpoch.value }
 }
 

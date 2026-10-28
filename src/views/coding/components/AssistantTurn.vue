@@ -142,6 +142,7 @@ function partKey(part: ContentPart, i: number): string {
     case 'turn-error':
     case 'reasoning':
     case 'text':
+    case 'ask-result':
       // 文本类没有稳定 id，下标够用 —— 它们的身份就是「第几段」，且不会因
       // 合组而重排
       return `${part.type}:${i}`

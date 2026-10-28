@@ -326,6 +326,32 @@ const needsSettings = computed(
     </div>
   </div>
 
+  <!--
+    AI 提问的问答卡片。
+    问答是用户参与过的交互，用卡片框出来区别于普通正文 —— 否则它混在长回答里
+    （真实数据里就是一行「AI 提问：… / 我的回答：…」）很容易被忽略。
+  -->
+  <div
+    v-else-if="part.type === 'ask-result'"
+    class="rounded-lg border border-neutral-200 bg-neutral-50/60 px-3 py-2.5"
+  >
+    <div class="flex items-start gap-2">
+      <MessageSquareQuestion class="mt-0.5 h-3.5 w-3.5 shrink-0 text-neutral-400" />
+      <div class="min-w-0 flex-1">
+        <p class="text-xs leading-5 text-neutral-600">
+          <span class="text-neutral-400">AI 提问：</span>{{ part.question }}
+        </p>
+        <p class="mt-1 text-xs leading-5">
+          <span class="text-neutral-400">我的回答：</span>
+          <span v-if="part.answers.length > 0" class="text-neutral-800">
+            {{ part.answers.join('、') }}
+          </span>
+          <span v-else class="text-neutral-400">（已跳过）</span>
+        </p>
+      </div>
+    </div>
+  </div>
+
   <!-- 错误卡 -->
   <div
     v-else-if="isError"

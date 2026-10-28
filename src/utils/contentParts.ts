@@ -31,6 +31,33 @@ export function isAnswerPart(part: ContentPart): boolean {
   return ANSWER_PART_TYPES.has(part.type)
 }
 
+/**
+ * 解析问答回填文本。
+ *
+ * 输入形如：
+ *   `AI 提问：要重做哪个？\n我的回答：a.html、b.html`
+ * 「我的回答：」缺失或为空时视为已跳过。
+ *
+ * 不按冒号硬切整个字符串：问题本身可能含冒号，只在**行首**匹配标签。
+ */
+function parseAskResultText(text: string): { question: string; answers: string[] } {
+  const askMatch = /^AI 提问：([\s\S]*?)(?:\n我的回答：([\s\S]*))?$/m.exec(text.trim())
+  if (!askMatch) {
+    // 格式不符（旧数据 / 手工写入）：整段当问题，答案留空，至少不丢内容
+    return { question: text.trim(), answers: [] }
+  }
+  const question = (askMatch[1] ?? '').trim()
+  const answerRaw = (askMatch[2] ?? '').trim()
+  const skipped = answerRaw === '' || answerRaw === '（已跳过）'
+  const answers = skipped
+    ? []
+    : answerRaw
+        .split('、')
+        .map((a) => a.trim())
+        .filter(Boolean)
+  return { question, answers }
+}
+
 /** 把一条 ToolCall 转成分区 */
 function toToolPart(tc: NonNullable<Message['toolCalls']>[number]): ToolCallPartData {
   return {
@@ -75,6 +102,18 @@ export function toContentParts(messages: Message[]): ContentPart[] {
         type: 'turn-error',
         text: m.content,
         errorKind: m.errorKind,
+      })
+      continue
+    }
+
+    // AI 提问的问答结果：拆成独立分区，渲染成卡片而不是普通正文。
+    // 文本形如「AI 提问：xxx\n我的回答：yyy」（见 useAcpQuestion.buildResultText）。
+    if (m.type === 'ask') {
+      const parsed = parseAskResultText(m.content)
+      parts.push({
+        type: 'ask-result',
+        question: parsed.question,
+        answers: parsed.answers,
       })
       continue
     }
