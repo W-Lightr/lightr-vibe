@@ -1325,6 +1325,7 @@ Message[]  →  toContentParts()  →  splitTrailingAnswer()  →  组件
 | `tool-call` | 单条工具（独立卡片） |
 | `tool-group` | **相邻**工具聚合的胶囊（「编辑 1 次文件 · 运行 3 个命令」） |
 | `reply-artifacts` | 文件改动汇总（新增 / 改动两段） |
+| `ask-result` | AI 提问的问答（胶囊 + 展开看全部选项） |
 | `turn-error` | 错误卡 |
 
 ### 核心规则：尾部回答切分
@@ -1353,6 +1354,27 @@ end === 0 时 body 承接全部（没有过程，不存在「尾部回答」）
 > **Warning**: `trailing` 为空时（整轮以思考/工具结尾）必须走 **flatten 平铺**，
 > 不能只显示折叠头。真实会话里 55%（42/77）的轮次属于这种形态，只显示折叠头
 > 等于内容全不可见。
+
+
+### AI 问答卡片（`ask-result`）
+
+折叠态是一枚圆角胶囊 `💬 提问回答：<选中项> ⌄`，点开展开成卡片：题干 +
+标签（单选/多选/填空）+ 全部选项，选中项打勾。
+
+**数据来源与约定**：回填消息的 `content` 末尾带一段
+`\n<<ask-result>>{json}`，承载题干、`options`、`selected`、`kind`。
+
+> **Warning**: 为什么塞进 `content` 而不是新开字段：`Message` 没有通用 payload
+> 列，改持久化形状会牵动会话索引与导入导出。而「展开看全部选项」必须有选项
+> 列表 —— ACP 的 `AcpQuestionOption` 只有 `value`/`label`，回填时若不带上，
+> 事后无从还原。
+
+> **Warning**: 解析必须容错三层：没有标记（老消息）、JSON 损坏、标记在但
+> 选项为空。三种情况都退回「纯文本一行」，**不能丢正文**。
+
+> **已知限制**: ACP 的 `AcpQuestionOption` 没有 description 字段，所以选项下方
+> 无法显示说明文案（codeg 那张图里每项下面有一行小字）。
+
 
 ### 文件改动卡片（`reply-artifacts`）
 
