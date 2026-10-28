@@ -143,28 +143,51 @@ const blocks = computed<Block[]>(() => {
 /**
  * 本轮是否展开。
  *
- * 优先级：用户手动选择 > 默认值（`defaultOpen` = 是否仍在生成）。
+ * 规则（用户明确要求）：**结束后一律收起，要看自己展开**。
  *
- * 手动选择用 `userChoice` 单独存，**不用 `openTurns` 的默认值兜底** ——
- * 之前把「运行中自动展开」也混进同一张表，导致一轮跑完后仍保持展开，
- * 用户看到「工作了 X 秒」下方内容还摊着，不符合「工作完成后收起」。
+ * 所以用户的手动选择**只在运行中有效** —— 一轮跑完（`streaming` 变 false）后
+ * 选择作废，回到默认收起状态。这样：
+ * - 运行中：默认展开（看实时输出），用户可临时收起/再展开；
+ * - 结束后：不管之前怎么点过，一律收起成「工作了 X 秒」一行；
+ * - 用户想看：点一下折叠头即可，且这次展开在**下一次发送新消息前**一直有效。
  *
- * 现在只有**用户真的点过折叠头**才会写 `userChoice`；其余一律跟随
- * `defaultOpen`（运行中 true、结束后 false）。
+ * `sealedAt` 记录「用户在每个轮次上的最后一次选择」，配合 `streaming` 判断
+ * 是否仍然有效，而不是靠 epoch 遍历。
  */
 const userChoice = ref<Record<string, boolean>>({})
 const turnEpoch = ref<Record<string, number>>({})
 const foldEpoch = ref(0)
 
 function isTurnOpen(block: Extract<Block, { kind: 'turn' }>): boolean {
-  // epoch 不匹配：这条记录属于上一次发送之前，作废
-  if (turnEpoch.value[block.key] !== foldEpoch.value) return block.defaultOpen
-  return userChoice.value[block.key] ?? block.defaultOpen
+  // 运行中：默认展开，用户的临时选择优先
+  if (block.streaming) {
+    if (turnEpoch.value[block.key] !== foldEpoch.value) return block.defaultOpen
+    return userChoice.value[block.key] ?? block.defaultOpen
+  }
+  // 已结束：一律收起，除非用户**在结束后**手动展开过
+  if (turnEpoch.value[block.key] !== foldEpoch.value) return false
+  const afterEnd = endedChoices.value[block.key]
+  return afterEnd ?? false
 }
 
-function setTurnOpen(key: string, open: boolean) {
-  userChoice.value = { ...userChoice.value, [key]: open }
-  turnEpoch.value = { ...turnEpoch.value, [key]: foldEpoch.value }
+/**
+ * 结束之后用户手动展开的记录。
+ *
+ * 与运行中的临时选择分开存：运行中的点击属于「临时收起/展开」，不该跨越
+ * 结算边界；只有结算后的操作才代表「我要看这一轮」。
+ */
+const endedChoices = ref<Record<string, boolean>>({})
+
+function setTurnOpen(block: Extract<Block, { kind: 'turn' }>, open: boolean) {
+  if (block.streaming) {
+    // 运行中：临时选择，结算即作废
+    userChoice.value = { ...userChoice.value, [block.key]: open }
+    turnEpoch.value = { ...turnEpoch.value, [block.key]: foldEpoch.value }
+    return
+  }
+  // 已结束：这才是「用户要一直看这一轮」的记录
+  endedChoices.value = { ...endedChoices.value, [block.key]: open }
+  turnEpoch.value = { ...turnEpoch.value, [block.key]: foldEpoch.value }
 }
 
 // 用户消息数变化 = 发送了新消息 → epoch +1 → 上方全部回到默认收起
@@ -219,7 +242,7 @@ function onFork(block: Extract<Block, { kind: 'turn' }>) {
             :completed-at="block.completedAt"
             :open="isTurnOpen(block)"
             :project-id="block.projectId"
-            @update:open="(open) => setTurnOpen(block.key, open)"
+            @update:open="(open) => setTurnOpen(block, open)"
             @regenerate="onRegenerate(block)"
             @fork="onFork(block)"
           />
