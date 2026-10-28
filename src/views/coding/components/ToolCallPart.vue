@@ -83,6 +83,39 @@ const summary = computed(() => {
 
 const hasDetail = computed(() => Boolean(props.part.input || props.part.result))
 
+/** 类别动词（图3 胶囊里的「等待 / 运行」位） */
+const kindLabel = computed(() => {
+  if (props.part.status === 'running') {
+    switch (props.part.kind) {
+      case 'execute':
+        return '运行'
+      case 'edit':
+        return '编辑'
+      case 'read':
+        return '读取'
+      case 'search':
+        return '搜索'
+      default:
+        return '执行'
+    }
+  }
+  switch (props.part.kind) {
+    case 'execute':
+      return '命令'
+    case 'edit':
+    case 'delete':
+    case 'move':
+      return '编辑'
+    case 'read':
+      return '读取'
+    case 'search':
+    case 'fetch':
+      return '搜索'
+    default:
+      return '工具'
+  }
+})
+
 /** 状态胶囊：codeg 用「✓ 已完成」这种文字胶囊，而不是裸图标 */
 const statusLabel = computed(() => {
   switch (props.part.status) {
@@ -97,20 +130,35 @@ const statusLabel = computed(() => {
 </script>
 
 <template>
-  <div class="max-w-full overflow-hidden rounded-lg border border-neutral-200 bg-white">
+  <div class="max-w-full overflow-hidden rounded-md">
     <button
-      class="flex w-full min-w-0 items-center gap-2 px-2.5 py-2 text-left text-xs transition-colors hover:bg-neutral-50"
+      class="flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs transition-colors hover:bg-neutral-100/70"
       :class="hasDetail ? 'cursor-pointer' : 'cursor-default'"
       :disabled="!hasDetail"
       @click="expanded = !expanded"
     >
-      <!-- 工具图标 -->
-      <component :is="icon" class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+      <!-- 状态点：运行中绿点脉冲（图3 的「●」），结束变灰 -->
+      <span
+        class="h-1.5 w-1.5 shrink-0 rounded-full"
+        :class="{
+          'bg-emerald-500': part.status === 'running',
+          'bg-red-500': part.status === 'error',
+          'bg-neutral-300': part.status === 'done',
+        }"
+      />
+
+      <!-- 类别胶囊：图标 + 动词（图3 的「[🌐 等待]」形态） -->
+      <span
+        class="flex shrink-0 items-center gap-1 rounded-md bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-500"
+      >
+        <component :is="icon" class="h-3 w-3" />
+        {{ kindLabel }}
+      </span>
 
       <!-- 标题 + 摘要。命令类只显示 `$ xxx`，标题已在胶囊里聚合过，不必重复 -->
       <span
         v-if="summary"
-        class="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-600"
+        class="min-w-0 flex-1 truncate font-mono text-[11px] tabular-nums text-neutral-600"
         :title="summary"
       >
         <span v-if="part.kind === 'execute'" class="text-neutral-400">$ </span>{{ summary }}
@@ -119,9 +167,9 @@ const statusLabel = computed(() => {
 
       <!-- 状态胶囊 -->
       <span
-        class="flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
+        class="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[11px]"
         :class="{
-          'bg-emerald-50 text-emerald-600': part.status === 'done',
+          'bg-neutral-100 text-neutral-500': part.status === 'done',
           'bg-red-50 text-red-600': part.status === 'error',
           'bg-blue-50 text-blue-600': part.status === 'running',
         }"
@@ -136,7 +184,7 @@ const statusLabel = computed(() => {
       <ChevronRight v-else-if="hasDetail" class="h-3.5 w-3.5 shrink-0 text-neutral-300" />
     </button>
 
-    <div v-if="expanded && hasDetail" class="border-t border-neutral-100 px-2.5 py-2">
+    <div v-if="expanded && hasDetail" class="mt-1 px-1.5 pb-1">
       <template v-if="part.input">
         <p class="text-[10px] font-medium text-neutral-400">参数</p>
         <pre

@@ -224,13 +224,20 @@ function onFork(block: Extract<Block, { kind: 'turn' }>) {
         <!-- 计划卡（plan update）：随会话 planEntries 渲染，无条目则隐藏 -->
         <PlanCard :entries="session.planEntries ?? []" />
 
-        <!-- 生成中提示：脉冲蓝点 + 微光扫过文字（Shimmer） -->
+        <!--
+          生成中兜底提示：三个点依次跳起（typing indicator）。
+          之前是「脉冲蓝点 + 扫光文字」，蓝点与下方内容抢注意力，且扫光在长文本
+          状态里显得吵；三点跳动是最小、最不打扰的「还在动」信号。
+        -->
         <div
           v-if="generating && !lastTurnStreaming"
-          class="mb-4 flex items-center gap-2 text-xs text-neutral-400"
+          class="mb-4 flex items-center gap-1.5 text-xs text-neutral-400"
         >
-          <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
-          <span class="shimmer font-medium">正在生成…</span>
+          <span class="typing-dots" aria-hidden="true" title="正在生成">
+            <span />
+            <span />
+            <span />
+          </span>
         </div>
       </div>
     </div>
@@ -246,3 +253,54 @@ function onFork(block: Extract<Block, { kind: 'turn' }>) {
     </button>
   </div>
 </template>
+
+<style scoped>
+/*
+ * 三点跳动加载指示。
+ * 每个点用同样的 keyframes，靠 animation-delay 错开，形成依次起落的节奏。
+ * 用 opacity + translateY 而不是缩放：在 12px 文字旁缩放几乎看不出来，
+ * 位移才让人感到「在动」。
+ */
+.typing-dots {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 16px;
+}
+
+.typing-dots > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background-color: currentColor;
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+
+.typing-dots > span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.typing-dots > span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-5px);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing-dots > span {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+</style>

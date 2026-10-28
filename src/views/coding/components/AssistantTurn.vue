@@ -56,18 +56,38 @@ const hasProgress = computed(() =>
 )
 
 /**
- * 是否退化平铺（不做折叠）。
+ * 是否可以折叠（把过程收起来）。
  *
- * 触发条件：`trailing` 为空 —— 整段都以思考/工具结尾，没有「最终回答」。
- * 这时如果还按折叠渲染，界面上只剩一个「工作了 X 秒」，正文内容全被藏在
- * 折叠块里，看起来像「内容全没了」（真实会话里大量出现）。
+ * 对齐 codeg 的 `foldable`：
+ * `progress.length > 0 && (!completed || hasVisibleAnswer(answer))`
  *
- * 所以这种轮次直接平铺全部内容：宁可长一点，也不能让人以为回复是空的。
+ * 关键在 `!completed` 这一半 —— **运行中的回复永远可折叠，且默认展开**。
+ * 收尾正文还没写出来，用它来判断「有没有回答」会把整段流式输出都藏掉。
+ *
+ * 反过来，如果一轮**已结束**且**没有最终回答**（整段以思考/工具结尾），
+ * 折叠起来会只剩一个光秃秃的标题，这才是真的「内容全没了」—— 那种轮次
+ * 平铺显示（`flatten = true`）。
  */
-const flatten = computed(() => split.value.trailing.length === 0)
+const canFold = computed(() => {
+  if (!hasProgress.value) return false
+  // 运行中：永远可折叠（正文还没写完，不能拿「没有回答」否掉）
+  if (props.streaming) return true
+  // 已结束：只有存在可见回答时才折叠，否则平铺，避免折叠成空壳
+  return split.value.trailing.length > 0
+})
 
-/** 真正可折叠时才显示折叠头 */
-const canCollapse = computed(() => hasProgress.value && !flatten.value)
+/** 平铺：已结束且没有最终回答（折叠会变成空壳） */
+const flatten = computed(() => hasProgress.value && !canFold.value)
+
+/**
+ * 是否显示顶部状态行。
+ *
+ * 只要 body 里有过程分区就显示 —— **包括运行中**。
+ *
+ * 之前是 `hasProgress && !flatten`，而运行中 trailing 为空 → flatten=true →
+ * 状态行被隐藏，工具卡孤零零挂在左侧、没有上下文，显得很突兀。
+ */
+const showHeader = computed(() => hasProgress.value)
 
 const copyText = computed(() => collectText(props.parts))
 
@@ -130,8 +150,47 @@ function partKey(part: ContentPart, i: number): string {
 
 
 /** 标题行：`工作了 39 秒`（运行中显示「正在工作」） */
+/** 正在执行的那条工具（取 body 里最后一条 running 的） */
+const activeTool = computed(() => {
+  if (!props.streaming) return null
+  const all = [...split.value.body, ...split.value.trailing]
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    const p = all[i]
+    if (p.type === 'tool-call' && p.status === 'running') return p
+    if (p.type === 'tool-group') {
+      for (let j = p.items.length - 1; j >= 0; j -= 1) {
+        if (p.items[j].status === 'running') return p.items[j]
+      }
+    }
+  }
+  return null
+})
+
+/** 运行中工具的动词短语（比裸「运行中」信息量高） */
+const RUNNING_LABEL: Record<string, string> = {
+  execute: '正在运行命令',
+  edit: '正在编辑文件',
+  delete: '正在删除文件',
+  move: '正在移动文件',
+  read: '正在读取文件',
+  search: '正在搜索',
+  fetch: '正在抓取网页',
+  think: '正在思考',
+}
+
+/**
+ * 状态行文案。
+ *
+ * 运行中优先显示**当前正在做什么**（「正在运行命令」），而不是笼统的
+ * 「正在工作」—— 用户看进度行时最想知道的就是这个。
+ */
 const workedLabel = computed(() => {
-  if (props.streaming) return '正在工作'
+  if (props.streaming) {
+    const tool = activeTool.value
+    if (tool?.kind && RUNNING_LABEL[tool.kind]) return RUNNING_LABEL[tool.kind]
+    if (tool) return '正在执行'
+    return '正在思考'
+  }
   if (props.durationMs === null) return '工作已完成'
   return `工作了 ${formatDuration(props.durationMs)}`
 })
@@ -148,12 +207,17 @@ function toggle() {
       只有 body 里真有过程内容时才出现 —— 纯文本回复不该有个空折叠头。
     -->
     <button
-      v-if="canCollapse"
+      v-if="showHeader"
       class="flex w-full cursor-pointer items-center gap-1 border-b border-neutral-200 pb-1.5 text-xs font-medium text-neutral-400 transition-colors hover:text-neutral-600"
       :title="open ? '收起过程' : '展开过程'"
       @click="toggle"
     >
-      <span :class="streaming && 'worked-shimmer'">{{ workedLabel }}</span>
+      <!--
+        运行中给文字加扫光（codeg 的 Shimmer）。
+        底色是**黑字**（neutral-800），扫光用中性灰高亮掠过 —— 上一版用的是
+        蓝色渐变，在状态行这种小字号里太抢眼，已按反馈改为黑字。
+      -->
+      <span :class="streaming ? 'shimmer-dark' : 'text-neutral-500'">{{ workedLabel }}</span>
       <span class="flex-1" />
       <svg
         class="h-3.5 w-3.5 shrink-0 opacity-50 transition-transform"
@@ -181,7 +245,7 @@ function toggle() {
     </template>
 
     <!-- 被折叠的过程内容 -->
-    <div v-else-if="canCollapse && open" class="space-y-3">
+    <div v-else-if="canFold && open" class="space-y-3">
       <ContentPartView
         v-for="(part, i) in bodyParts"
         :key="`body:${partKey(part, i)}`"
@@ -215,25 +279,32 @@ function toggle() {
 </template>
 
 <style scoped>
-/* 运行中标题的扫光（codeg 用 Shimmer 组件，这里用 CSS 达到同样效果） */
-.worked-shimmer {
+
+
+/*
+ * 黑字扫光（运行中的状态下标题）。
+ * background-clip: text + 渐变高亮从右向左掠过；底色保持深灰，不偏色。
+ */
+.shimmer-dark {
+  --shimmer-base: #404040;
+  --shimmer-hi: #a3a3a3;
   background-image: linear-gradient(
     90deg,
-    currentColor 0%,
-    currentColor 35%,
-    #3b82f6 50%,
-    currentColor 65%,
-    currentColor 100%
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 35%,
+    var(--shimmer-hi) 50%,
+    var(--shimmer-base) 65%,
+    var(--shimmer-base) 100%
   );
   background-size: 250% 100%;
   background-repeat: no-repeat;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: worked-sweep 1.4s linear infinite;
+  animation: shimmer-dark-sweep 2s linear infinite;
 }
 
-@keyframes worked-sweep {
+@keyframes shimmer-dark-sweep {
   from {
     background-position: 100% center;
   }
@@ -243,10 +314,11 @@ function toggle() {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .worked-shimmer {
+  .shimmer-dark {
     animation: none;
-    color: inherit;
+    color: var(--shimmer-base);
     -webkit-text-fill-color: currentColor;
   }
 }
+
 </style>

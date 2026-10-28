@@ -20,7 +20,7 @@ import {
 } from 'lucide-vue-next'
 import MarkdownContent from './MarkdownContent.vue'
 import ToolCallPart from './ToolCallPart.vue'
-import { baseName, groupSummary } from '../../../utils/contentParts'
+import { baseName } from '../../../utils/contentParts'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { useProjectStore } from '../../../stores/project'
 import type { ContentPart } from '../../../types/contentPart'
@@ -112,6 +112,9 @@ function dirOf(path: string): string {
   return idx > 0 ? normalized.slice(0, idx) : ''
 }
 
+/** 工具分组的展开态：默认折叠，只显示「N 个工具」标题行 */
+const groupOpen = ref(false)
+
 /**
  * 新增文件段的展开态。
  *
@@ -123,11 +126,6 @@ const addedOpen = ref(false)
 /** 改动文件段的展开态（默认折叠，与新增保持一致） */
 const changedOpen = ref(false)
 
-/** 工具胶囊的展开态 */
-const groupOpen = ref(false)
-const groupTitle = computed(() =>
-  props.part.type === 'tool-group' ? groupSummary(props.part.items) : '',
-)
 
 /**
  * 改动段的合计增删行数。
@@ -193,23 +191,32 @@ const needsSettings = computed(
   <ToolCallPart v-else-if="part.type === 'tool-call'" :part="part" class="max-w-full" />
 
   <!-- 连续工具：灰色圆角胶囊（对齐 codeg 的 ws-msg-chip） -->
+  <!--
+    工具分组：两行结构（对齐设计图2）。
+      第一行 = 分组标题「N 个工具 ⌄」，无背景、可点折叠；
+      第二行起 = 缩进的工具条目，左侧一条竖线把它们串成一组。
+    条目本身不再套边框卡片（那张边框是图1 的形态，已按图2 去掉）。
+  -->
   <div v-else-if="part.type === 'tool-group'" class="min-w-0 max-w-full">
     <button
-      class="inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-lg bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-500 transition-colors hover:bg-neutral-200/70 hover:text-neutral-700"
+      class="flex max-w-full cursor-pointer items-center gap-1 text-xs font-medium text-neutral-700 transition-colors hover:text-neutral-900"
       :title="groupOpen ? '收起' : '展开'"
       @click="groupOpen = !groupOpen"
     >
+      <!-- 分组标题不加扫光：工具计数是静态信息，动画留给状态行 -->
+      <span class="min-w-0 truncate">{{ part.items.length }} 个工具</span>
+      <!--
+        `>` 折叠、`⌄` 展开（图3 的形态）。
+        用 rotate-90 而不是换图标：过渡时形状连续，不会突然跳成另一个符号。
+      -->
       <ChevronRight
-        class="h-3 w-3 shrink-0 opacity-60 transition-transform"
+        class="h-3.5 w-3.5 shrink-0 text-neutral-400 transition-transform"
         :class="groupOpen && 'rotate-90'"
       />
-      <span class="min-w-0 truncate" :class="part.streaming && 'group-shimmer'">
-        {{ groupTitle }}
-      </span>
     </button>
 
-    <!-- 展开后逐条显示工具卡 -->
-    <div v-if="groupOpen" class="mt-3 space-y-3">
+    <!-- 条目：左侧竖线把同组工具串起来 -->
+    <div v-if="groupOpen" class="mt-2 flex flex-col gap-2 border-l border-neutral-200 pl-3">
       <ToolCallPart v-for="item in part.items" :key="item.id" :part="item" />
     </div>
   </div>
@@ -339,38 +346,5 @@ const needsSettings = computed(
 </template>
 
 <style scoped>
-/* 运行中的工具胶囊：文字扫光，与 codeg 的 Shimmer 同效果 */
-.group-shimmer {
-  background-image: linear-gradient(
-    90deg,
-    currentColor 0%,
-    currentColor 35%,
-    #3b82f6 50%,
-    currentColor 65%,
-    currentColor 100%
-  );
-  background-size: 250% 100%;
-  background-repeat: no-repeat;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: group-sweep 1.4s linear infinite;
-}
 
-@keyframes group-sweep {
-  from {
-    background-position: 100% center;
-  }
-  to {
-    background-position: 0% center;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .group-shimmer {
-    animation: none;
-    color: inherit;
-    -webkit-text-fill-color: currentColor;
-  }
-}
 </style>
