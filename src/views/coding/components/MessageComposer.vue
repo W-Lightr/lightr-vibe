@@ -29,8 +29,11 @@ import { useEngineStore } from '../../../stores/engine'
 import { useProjectStore } from '../../../stores/project'
 import { useAcpPermission } from '../../../composables/useAcpPermission'
 import { useAcpQuestion } from '../../../composables/useAcpQuestion'
+import { enqueue, getQueueLength, requestFlush } from '../../../composables/useMessageQueue'
+import { shouldQueueDirectSend } from '../../../utils/queueFlush'
 import PermissionCard from './PermissionCard.vue'
 import AskQuestionCard from './AskQuestionCard.vue'
+import MessageQueueList from './MessageQueueList.vue'
 import {
   useConversation,
   ensureModelOptions,
@@ -74,7 +77,8 @@ const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 
 const generating = computed(() => workspace.isGenerating(props.sessionId))
-const canSend = computed(() => draft.value.trim().length > 0 && !generating.value)
+// 生成中也能点：发送会落到队列（design §5）。仅「草稿为空」时禁用。
+const canSend = computed(() => draft.value.trim().length > 0)
 const session = computed(() => sessionStore.get(props.sessionId))
 
 /** 模型配置项（session/new configOptions）——无则用 MODELS 静态兜底 */
@@ -430,11 +434,32 @@ onMounted(() => {
 
 function submit() {
   const text = draft.value.trim()
-  if (!text || generating.value) return
+  if (!text) return
   draft.value = ''
   attachments.value = []
   nextTick(autoResize)
-  void send(props.sessionId, text)
+
+  // FIFO 路由（design §5）：队列非空时，即使用户此刻空闲，新消息也必须排到队尾，
+  // 否则会插到已排队的消息之前。生成中同理（send 会返回 'would-queue'）。
+  if (shouldQueueDirectSend(false, getQueueLength(props.sessionId))) {
+    enqueue(props.sessionId, text)
+    message.info('已加入发送队列')
+    return
+  }
+
+  // 直发前先请求一次消费：若这一拍 turn 恰好在收尾，它的兜底 flush 会先于
+  // 「直发失败再入队」跑完；提前请求保证入队后一定会有人来取（useMessageQueue 注释）。
+  requestFlush(props.sessionId)
+  void send(props.sessionId, text).then((r) => {
+    if (r !== 'would-queue') return
+    // 竞态兜底：判定时还没在生成，真正 send 时已有 turn 在跑（另一入口触发）。
+    // 不丢消息，补进队尾。
+    if (enqueue(props.sessionId, text)) message.info('已加入发送队列')
+  }).catch(() => {
+    // send 自身已把失败写进错误卡（catch 分支）；这里只兜「连队列都进不去」的
+    // 极端情况，不能让用户以为消息发出去了 —— 同一条消息回填到草稿框。
+    if (!draft.value.trim()) draft.value = text
+  })
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -454,6 +479,10 @@ function pickFiles(e: Event) {
 <template>
   <div class="shrink-0 px-6 pb-3">
     <div class="mx-auto max-w-3xl">
+      <!-- 发送队列：生成中连发的消息在此排队，本轮结束后逐条发出。
+           空队列时组件自身 v-if 不渲染，不占位。 -->
+      <MessageQueueList :key="props.sessionId" :session-id="props.sessionId" :generating="generating" />
+
       <!-- 重试横幅：可重试错误（非失败卡），生成期间显示在输入框上方（AC5） -->
       <div
         v-if="retryState"

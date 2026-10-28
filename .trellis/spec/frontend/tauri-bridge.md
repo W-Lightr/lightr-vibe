@@ -1444,3 +1444,97 @@ end === 0 时 body 承接全部（没有过程，不存在「尾部回答」）
 > **Warning**: `opencode` config keys are schema-versioned; top-level small
 > model is `small_model` (snake_case), not `smallModel`. Verify against
 > https://opencode.ai/config.json before writing new keys.
+
+## 会话消息队列（task 10-28-chat-message-queue）
+
+生成中用户继续发送不再丢弃：消息进队列，当前 turn 结束后自动逐条发出。
+参照 codeg `use-message-queue.ts` + `queue-flush.ts`，但按本仓库的纯文本
+`send(sessionId, content)` 简化。
+
+### 模块边界
+
+| 文件 | 职责 |
+|---|---|
+| `src/utils/queueFlush.ts` | 纯函数：`shouldQueueDirectSend` / `flushRetryDelayMs`（可离线验证） |
+| `src/composables/useMessageQueue.ts` | 队列本体：模块级 `Map<sessionId, reactive{items}>`，按会话隔离、不落盘 |
+| `src/composables/useConversation.ts` | 发送链路：`send` 的三态返回 + `scheduleFlush` / `flushOnce` / `clearQueue` |
+| `MessageQueueList.vue` / `MessageQueueItem.vue` | 输入框上方的队列 UI（行内编辑 / 上移 / 优先发送 / 删除） |
+
+队列放 composable 而不是 Pinia store，理由与 `useAcpPermission` / `useAcpQuestion`
+一致：它是会话的运行期附属状态，**不该持久化**。
+
+### `send` 的三态返回（关键契约）
+
+```ts
+type SendResult = 'sent' | 'would-queue' | 'rejected'
+```
+
+- `'would-queue'`：生成中（非 fromFlush）——调用方决定入队，底层函数**不偷偷入队**。
+- `'rejected'`：门禁未通过（`passGate` false = 引擎不可用）或内容为空，**消息没发出**。
+- 只有 `'sent'` 算成功。
+
+> **Gotcha（曾导致消息静默丢失）**: `flushOnce` 早期用
+> `result !== 'would-queue'` 判成功，于是 `passGate` 失败返回的 `undefined`
+> 被当成「已发出」，队首消息被 dequeue 后既不回队也不发送。任何新增的
+> `send` 早退分支都必须返回 `'rejected'`，不能裸 `return`。
+
+### flush 的四道门禁 + 先发后删
+
+`flushOnce`：队列非空 → `!isGenerating` → 过退避窗口 →（插入在飞 turn 已降级，
+无此门禁）→ `dequeue` → `send({fromFlush:true})` → **失败则 `requeueFront`**。
+
+用「先 dequeue 再 send，失败回队首」而不是「peek 再删」：用队列自己的门禁去猜
+`send` 会不会接受，猜错就是「取走了然后被静默丢弃」。最坏情况是重复发一次。
+
+### 防重入：定时器句柄是唯一判据
+
+`flushTimers: Map<sessionId, {timer, delayMs}>`。**不要**再加一个 `Set<string>`
+表示「已排」—— 两份状态不同步就会排出无人取消的僵尸定时器。
+
+- `scheduleFlush(id, delay)`：已有定时器且其 delay ≤ 新 delay 时直接返回；
+  否则 `clearTimeout` 后重排（「取更早的那个」，避免一次长退避盖住兜底 flush）。
+- 回调里**先** `flushTimers.delete` 再 `void flushOnce(id)`，否则 flushOnce 内
+  再次 `scheduleFlush` 会误判「已有一发在排队」。
+- `send` 的 `finally` 在 `!opts?.fromFlush` 时才兜底 `scheduleFlush`：flush 自己
+  发出的那一轮若也排，就会无视退避立刻把同一条取回来重发。
+- `flushOnce` 成功后仅在 `!flushTimers.has(id)` 时续跑，否则 delay 0 的覆盖会
+  打出第二次 `flushOnce`（并发两条 prompt）。
+
+### FIFO 路由
+
+```ts
+shouldQueueDirectSend(fromFlush, queueLength) // fromFlush → false；否则 queueLength > 0
+```
+
+自动 flush 永远直发；用户直发时**队列非空就尾部入队**（否则会插队）。
+`MessageComposer.submit` 还必须在直发前 `requestFlush(id)`：若这一拍 turn 恰好
+收尾，它的兜底 flush 可能先跑完，提前请求保证入队后一定会有人来取。
+
+### 退避
+
+失败后记 `flushBouncedAt`，窗口 1s。门禁拒绝（`passGate`）用 10s
+（`FLUSH_REJECTED_WINDOW_MS`）：`passGate` 每次都弹提示并跳设置页，1s 重试是提示轰炸。
+
+### 「插入在飞 turn」的降级
+
+`acp_prompt` 是阻塞式「发一条等一个 stopReason」，不支持 turn 中追加输入。
+按钮保留但语义改为「**移到队首**（下一轮优先进）」，文案如实写
+「移到队首，本轮结束后优先发送」，不假装已插入。将来 `acp.rs` 支持追加输入再升级。
+
+### 生命周期
+
+- 队列按 `sessionId` 隔离；`closeConnection` 的 `finally` 调 `clearQueue`
+  （连接已断，排队消息再也发不出去，同时清掉在途定时器）。
+- `regenerate` 在队列非空时直接不响应：它会先删掉该回合消息，而 `send` 此时会
+  返回 `'would-queue'`，结果是「消息消失了却没发出去」。
+- `MessageQueueList` 的 `items` 必须**按 `props.sessionId` 重新 `useQueue`**
+  （computed 内），并且 `MessageComposer` 挂载处带 `:key="sessionId"`：
+  Composer 在切会话时复用同一实例，只在 setup 取一次会显示上一个会话的队列（AC9）。
+- `taskSessionBridge` 的提词器不接受排队：收到 `'would-queue'` 就 toast 告知未发送，
+  任务靠「停止 + 打回」兜底出口收敛。
+
+### 行内编辑的提交语义
+
+`commitEdit` **先**把 `editing = false` 置位再 `emit`：Enter 提交后 textarea 卸载
+触发 blur，若状态还开着会二次 emit；取消按钮的 click 也会先被 blur 提交掉。
+`@mousedown.prevent` 只用于「保存 / 取消」两个按钮（click 仍要触发）。

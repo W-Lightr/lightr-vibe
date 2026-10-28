@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核查是否误用了 ACP 不支持的并发 prompt；send 改造是否破坏既有调用方"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "核查队列状态放置是否越界（composable 而非 store）"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "核查门禁判断是否重复实现；shouldQueueDirectSend 是否只有一处"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核查「先发后删、失败回队首」在所有路径上成立；队列是否真的按会话隔离"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "check 阶段的验证命令与验收口径"}

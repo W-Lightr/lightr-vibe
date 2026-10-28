@@ -354,7 +354,12 @@ export async function startTask(taskId: string): Promise<void> {
     // 7 · 发送提示词（不 await：turn 可能跑很久，结论由 onTurnSettled 回流）。
     //     `send` 内部的早退（生成中 / 未通过启用门槛）不会抛错——此时任务会停在
     //     running 且没有 turn 可回流，由详情里的「停止 + 打回」兜底（R4 的同一出口）。
-    void conversation.send(sessionId, task.prompt)
+    //     生成中 `send` 会返回 'would-queue'（消息队列改造）。任务提示词是「这一轮
+    //     的全部工作」，不能被排进队列等一个不属于它的 turn 结束，故丢弃并显式打日志。
+    //     'rejected'（引擎未就绪）也不会抛错，passGate 已 toast 并跳设置页，同样靠兜底出口。
+    void conversation.send(sessionId, task.prompt).then((r) => {
+      if (r === 'would-queue') useMessage().warning('会话仍在生成中，任务提示词未发送')
+    })
   } finally {
     starting.delete(taskId)
   }

@@ -18,7 +18,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "10-28-chat-message-queue"
+  ],
   "parent": "10-26-automation-scheduler",
   "relatedFiles": [],
   "notes": "",

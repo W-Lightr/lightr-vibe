@@ -28,6 +28,8 @@ import { useWorkspaceStore } from '../stores/workspace'
 import { useAgentStore } from '../stores/agent'
 import { useAcpPermission } from './useAcpPermission'
 import { useAcpQuestion } from './useAcpQuestion'
+import { dequeue, dropQueue, getQueueLength, onQueueFlushNeeded, requeueFront } from './useMessageQueue'
+import { flushRetryDelayMs } from '../utils/queueFlush'
 import { isTauri } from '../utils/isTauri'
 import { tmpSessionDirSync } from '../utils/appData'
 import { hasRetryMeta, parseRetryState } from '../utils/sessionUpdateMeta'
@@ -54,6 +56,10 @@ function toolHostKey(sessionId: string, toolCallId: string): string {
 
 /** 当前 turn 的会话级状态（turnId 用于消息分组与停止标记） */
 const turns = new Map<string, { turnId: string }>()
+
+/** 队列 flush 因「门禁未通过」（引擎不可用）被拒时的退避窗口。
+ *  比瞬时失败宽得多：passGate 失败每次都弹提示 + 跳设置页，短窗口会变成轰炸。 */
+const FLUSH_REJECTED_WINDOW_MS = 10_000
 
 /** 关闭连接进行中的会话（防重入，避免重复 acp_disconnect） */
 const closingConnections = new Set<string>()
@@ -825,10 +831,22 @@ export function useConversation() {
     return false
   }
 
-  async function send(sessionId: string, content: string) {
-    if (!content.trim() || workspace.isGenerating(sessionId)) return
+  /** send 的三种明确结果（design §4.1）：
+   *  - `'sent'`：本轮已开始（或已正常结束）
+   *  - `'would-queue'`：生成中，调用方应入队
+   *  - `'rejected'`：门禁未通过（引擎不可用 / 空内容），**消息没有发出**
+   *  第三态是队列回滚的关键：以前 passGate 失败返回 `undefined`，flushOnce 用
+   *  `result !== 'would-queue'` 判定会把「被丢弃的消息」当成「已发出」。 */
+  type SendResult = 'sent' | 'would-queue' | 'rejected'
+
+  async function send(sessionId: string, content: string, opts?: { fromFlush?: boolean }): Promise<SendResult> {
+    if (!content.trim()) return 'rejected'
+    // 生成中：不在这里丢弃也不偷偷入队 —— 底层函数替调用方做决定会让调用方拿到
+    // 「已发送」的假象。明确返回 'would-queue'，由输入框决定入队（design §4.1）。
+    // fromFlush 是队列自己的自动发送，它已经过了门禁，必须直发。
+    if (workspace.isGenerating(sessionId) && !opts?.fromFlush) return 'would-queue'
     const engineId = sessionStore.get(sessionId)?.engineId ?? DEFAULT_ENGINE_WIRE
-    if (!(await passGate(engineId))) return
+    if (!(await passGate(engineId))) return 'rejected'
 
     // 首次发送：草稿正式入库（延迟入列，PRD R4）。顺序必须在 ensureMessages /
     // pushMessage / applyAutoTitle 之前，保证「发送 = 入列表 + 落盘」
@@ -968,8 +986,105 @@ export function useConversation() {
         errorText: settledErrorText,
         startedAt: turnStartedAt,
       })
+      // 本轮彻底结束后再尝试消费队列（design §4.2）。放在 finally 最末尾：
+      // 此时 isGenerating 已为 false、状态已收敛，flush 取队的门禁看到的是终态。
+      // 但 flush 自己发出的那一轮不能再触发一次：失败时 flushOnce 会先把消息
+      // requeueFront 并设好退避，这里若立刻再排一次，就会立刻把同一条取回来重发，
+      // 退避形同虚设（同一条消息被连发两次）。续跑由 flushOnce 自己负责。
+      if (!opts?.fromFlush) scheduleFlush(sessionId)
     }
+    return 'sent'
   }
+
+  /** 上次 flush 被拒的时间戳：退避窗口的依据（design §4.4） */
+  const flushBouncedAt = new Map<string, number>()
+  /** 会话已排上的 flush 定时器句柄。**它就是防重入的唯一判据**：
+   *  Map 里没有句柄 = 当前没有排队的 flush。不再额外维护「已排」布尔/集合，
+   *  两份状态一旦不同步（例如 clear 只清了其中一份）就会排出一个没人取消的僵尸定时器。 */
+  const flushTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; delayMs: number }>()
+
+  /**
+   * 安排一次队列消费。用 setTimeout(0) 而不是直接递归调用 send：
+   * finally 里刚落下的状态写入需要一个干净的调用栈，否则 send 与 flush 互相嵌套。
+   */
+  function scheduleFlush(sessionId: string, delayMs = 0): void {
+    const existing = flushTimers.get(sessionId)
+    if (existing) {
+      // 已经有一发在排队时，若新请求要求更早触发（delay 更小），就用更早的那个：
+      // 否则一次长退避会盖住后来的「兜底 flush」，让队列多等一个窗口。
+      if (existing.delayMs <= delayMs) return
+      clearTimeout(existing.timer)
+      flushTimers.delete(sessionId)
+    }
+    const timer = setTimeout(() => {
+      // 先摘句柄再跑：回调里的 flushOnce / send 可能立刻再次 scheduleFlush，
+      // 残留的旧句柄会让那次调用误以为「已有一发在排队」而直接返回。
+      flushTimers.delete(sessionId)
+      void flushOnce(sessionId)
+    }, delayMs)
+    flushTimers.set(sessionId, { timer, delayMs })
+  }
+
+  /**
+   * 消费队首一条。
+   *
+   * 关键取舍是「先 dequeue 再 send，失败 requeueFront」而不是「先 peek 再 send 再删」：
+   * 用队列自己的门禁去猜 send 会不会接受，一旦猜错就是「从队列取走了，然后 send
+   * 静默丢弃」。先发后删让消息在任何失败路径上都回到队首，最坏是重复发一次而不是丢。
+   */
+  async function flushOnce(sessionId: string): Promise<void> {
+    if (getQueueLength(sessionId) === 0) return
+    if (workspace.isGenerating(sessionId)) return
+    const wait = flushRetryDelayMs(Date.now(), flushBouncedAt.get(sessionId) ?? 0)
+    if (wait > 0) {
+      scheduleFlush(sessionId, wait)
+      return
+    }
+
+    const item = dequeue(sessionId)
+    if (!item) return
+
+    let ok = false
+    let rejected = false
+    try {
+      // 只有 'sent' 算成功：'would-queue'（又被拒）与 'rejected'（门禁未通过，
+      // 消息根本没发出）都必须回队首，否则就是「从队列取出后静默丢弃」。
+      const result = await send(sessionId, item.content, { fromFlush: true })
+      ok = result === 'sent'
+      rejected = result === 'rejected'
+    } catch {
+      ok = false
+    }
+
+    if (ok) {
+      flushBouncedAt.delete(sessionId)
+      // 续跑「一条接一条」。send 的 finally 对 fromFlush 这一条**故意不排**（见 send
+      // 末尾注释：那里排会无视退避立刻重发同一条），所以由这里负责。
+      // 关键：只在这一刻**没有**待执行的 flush 时才排（delay 0 会让 scheduleFlush
+      // 用「更早者」覆盖掉等待中的退避定时器，从而绕过退避/并发打出第二次 flushOnce）。
+      if (getQueueLength(sessionId) > 0 && !flushTimers.has(sessionId)) scheduleFlush(sessionId)
+      return
+    }
+    requeueFront(sessionId, item)
+    flushBouncedAt.set(sessionId, Date.now())
+    // 门禁拒绝（引擎未就绪）时退避要放宽：passGate 每失败一次都会弹提示并跳设置页，
+    // 1s 一次的固定窗口会变成提示轰炸。等待宽度与窗口成比例（1s → 10s）。
+    const window = rejected ? FLUSH_REJECTED_WINDOW_MS : undefined
+    scheduleFlush(sessionId, flushRetryDelayMs(Date.now(), flushBouncedAt.get(sessionId) ?? 0, window))
+  }
+
+  /** 丢弃该会话的队列与所有在途 flush 定时器（删会话/断连时调用） */
+  function clearQueue(sessionId: string): void {
+    const pending = flushTimers.get(sessionId)
+    if (pending) clearTimeout(pending.timer)
+    flushTimers.delete(sessionId)
+    flushBouncedAt.delete(sessionId)
+    dropQueue(sessionId)
+  }
+
+  // 队列侧请求消费（requestFlush）接到本实例的 scheduleFlush 上：
+  // 队列逻辑不认识发送链路，反向注册避免 composable 之间循环依赖。
+  onQueueFlushNeeded(scheduleFlush)
 
   /** 停止：session/cancel（44ms 内回 cancelled，probe §4）+ 本地 pending permission 回 cancelled。
    * connId = 本地会话 id（定位该会话进程）；acpSessionId = agent-side id（方法参数）。 */
@@ -1006,6 +1121,9 @@ export function useConversation() {
       await acpService.disconnect(sessionId).catch(() => undefined)
     } finally {
       closingConnections.delete(sessionId)
+      // 连接已断，排队中的消息再也发不出去：连同在途 flush 定时器一并丢弃，
+      // 否则定时器醒来会对一个已断开的会话反复重试退避。
+      clearQueue(sessionId)
     }
   }
 
@@ -1205,18 +1323,21 @@ export function useConversation() {
     void refreshContextWindow(session, session.model, modelCapacityHint(session, session.model))
   }
 
-  /** 重新生成：移除该回合全部消息（含用户消息，send 会重新入库避免重复气泡），重发 */
+  /** 重新生成：移除该回合全部消息（含用户消息，send 会重新入库避免重复气泡），重发。
+   *  队列非空时不重发：send 会返回 'would-queue'，而这里已经把该回合消息删了 ——
+   *  结果是「消息消失了却没发出去」。队列未消化完时直接不响应，等 flush 跑完再点。 */
   function regenerate(sessionId: string, assistantMessageId: string) {
     const session = sessionStore.get(sessionId)
     const target = session?.messages.find((m) => m.id === assistantMessageId)
     if (!session || !target?.turnId || workspace.isGenerating(sessionId)) return
+    if (getQueueLength(sessionId) > 0) return
     const turnId = target.turnId
     const userMsg = [...session.messages].reverse().find((m) => m.turnId === turnId && m.role === 'user')
     session.messages = session.messages.filter((m) => m.turnId !== turnId)
     if (userMsg) void send(sessionId, userMsg.content)
   }
 
-  return { send, stop, closeConnection, regenerate, setModel, setConfigOption, fork, reconnect, reconnecting, ensureConnected, resolveContextWindow }
+  return { send, stop, closeConnection, regenerate, setModel, setConfigOption, fork, reconnect, reconnecting, ensureConnected, resolveContextWindow, clearQueue }
 }
 
 /** ACP update 类型收窄辅助（组件/测试可复用） */

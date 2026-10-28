@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "ACP 发送链路契约（acp_prompt 阻塞语义、不支持的并发 prompt），决定「插入在飞 turn」为何必须降级"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "composable vs store 的边界；队列为何用模块级 Map（与 useAcpPermission/useAcpQuestion 同构）"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "QueuedMessage 与 send 返回值类型化；no any / 无非空断言"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "MessageQueueList/Item 的 script setup、类型化 props/emits 写法"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令（pnpm build / cargo test）与禁止模式"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "队列跨 send 链路 / composable / UI 三层，需按指南核对数据流与失败路径"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "flush 门禁必须复用 send 自身的就绪判断，不能另写一套更宽松的"}
