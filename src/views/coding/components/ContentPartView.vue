@@ -112,9 +112,15 @@ function dirOf(path: string): string {
   return idx > 0 ? normalized.slice(0, idx) : ''
 }
 
-/** 新增文件段的展开态（默认展开，对齐 codeg） */
-const addedOpen = ref(true)
-/** 改动文件段的展开态（默认折叠） */
+/**
+ * 新增文件段的展开态。
+ *
+ * 默认**折叠**（用户要求）。codeg 这里是默认展开的 —— 它的理由是「刚写的文件
+ * 通常想直接打开」，但实际对话里文件卡片一出现就展开会顶开大段内容，把回答
+ * 挤走。折叠后保留标题行（「新增文件 1 个文件」），想看再点。
+ */
+const addedOpen = ref(false)
+/** 改动文件段的展开态（默认折叠，与新增保持一致） */
 const changedOpen = ref(false)
 
 /** 工具胶囊的展开态 */
