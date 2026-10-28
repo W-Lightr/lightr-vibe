@@ -1301,104 +1301,79 @@ const runningIds = computed(() =>
 > 挂在带侧栏的布局下。新增独立顶层路由时记得走 `WorkspaceShell`，否则该页会
 > 既没有左侧菜单、也没有设置入口。
 
-## 对话过程收纳（codex 风格 · `ActivityGroup.vue` + `ToolCallPanel.vue`）
+## 对话渲染：part 驱动（task 10-27-chat-ui-parity）
 
-### 用户规则
+一条 assistant 回复的渲染链：
 
-1. **连续工具调用必须折叠**，不逐条平铺；
-2. **有文字就显示文字**；
-3. **除最后一轮外，所有轮次的结果都收纳**；
-4. 摘要行统一为 **`活动 · 用时 X`**（运行中 `活动 · 正在运行`），不显示工具条数；
-5. 折叠内**不显示**「重新生成 / 从此分叉」—— 只挂在**最后一条输出**上。
+```
+Message[]  →  toContentParts()  →  splitTrailingAnswer()  →  组件
+             (utils/contentParts.ts，纯函数)
+```
 
-### 视觉约定（对齐 codex / Claude 的对话流）
+`ConversationView` 只负责把消息切成「用户气泡 / 一轮 assistant」，不做内容判断；
+`AssistantTurn` 组合折叠头 + 回答区 + 统计栏；`ContentPartView` 按分区类型分发。
 
-- **摘要行**：左侧方框线条图标 + `活动` + `· 用时 X`，右侧是状态图标
-  （转圈 / 折叠箭头）。**不用**纯文字按钮。
-- **工具行**：类别图标（终端 / 文件笔 / 文件 / 搜索 / 扳手）+ 标题 + `· N 个`，
-  右侧状态前缀由等宽小方块承载（✓ 绿 / ✕ 红 / 转圈蓝）。
-- **工具条目**：命令或路径用等宽字体放进浅灰 code 小块；`result` 在下方 `pre`。
+**旧的 `ActivityGroup.vue` / `ToolCallPanel.vue` / `TurnProgressRow.vue` 已删除。**
+不要再引入「按轮次或按类别整体收纳」的第二套逻辑。
 
-### 三层折叠结构
+### 分区类型（`types/contentPart.ts`，6 种）
 
-| 层 | 组件 | 作用 |
-|---|---|---|
-| 轮次层 | `ActivityGroup` | 一整轮 assistant 产出 → 一条「活动 · 用时 X」 |
-| 过程层 | `ActivityGroup` 内部 chunk | 展开后，**连续**过程消息再收一节 |
-| 类别层 | `ToolCallPanel` | 单条消息内按工具类别分小节 |
-
-### 分类依据：优先 `kind`，回退关键词
-
-`ToolCall.kind` 存 ACP 的 `toolCall.kind`（`read` / `edit` / `execute` / `search`
-等），`ToolCall.paths` 存 `locations[].path`。**这是结构化依据，不要只靠猜标题。**
-
-没有 `kind` 的老消息才回退到从 `name` 推断关键词；此时：
-
-> **Warning**: 只看 `name`，**不看 `input`**。input 是命令文本或路径，出现
-> `read` / `edit` 会被误判（「已运行 read C:/…」实际是读文件）。
-> `command` 关键词排最后 —— 它最容易被「运行了 read xxx」带偏。
-
-`kind` → 类别映射：`execute`→command；`edit`/`delete`/`move`→edit；
-`read`→read；`search`/`fetch`→search；其余→other。
-
-### 最后一轮的例外
-
-`ConversationView.blocks` 对最后一轮**只折叠过程性消息**，正文直接渲染。
-最后一轮是用户当下要看的结果，不能藏。
-
-### 操作栏可见性（`MessageItem.showActions`）
-
-默认 `true`；`ActivityGroup` 内所有 `MessageItem` 传 `:show-actions="false"`，
-两个工具栏（思考分支 / 正文分支）都受 `actionsVisible` 控制。
-
-
-> **Warning**: 最后一轮里，**承载操作栏的那条消息必须走 `single`**，不能被收进
-> `ActivityGroup`（那边 `show-actions=false`，工具栏会整个消失）。
->
-> 注意：工具消息也是 `type: 'text'` 但 `content` 为空，所以不能用「最后一条消息」
-> 判断，必须找「最后一条**有正文内容**的 messages」。整轮没有正文（纯工具）时，
-> 退化为让最后一条消息走 `single`。
-
-### 已知缺口
-
-**文件改动汇总卡片**（codex 的「已编辑 5 个文件 +137 -0 / 撤销 / 查看变更」）尚未实现。
-它需要 diff 原文来统计增删行数，而当前 `ToolCall.input` 存的是
-`summarizeRawInput()` 之后的**摘要字符串**，原始 diff 已被丢掉。
-要实现需要在 `applyToolCall` 里额外保留 `rawInput`（或解析后的 diff 文本）。
-
-### 运行中的标题与动画
-
-运行中标题**不再是笼统的「活动」**，而是当前正在执行的工具：
-
-| 来源 | 映射 |
+| 类型 | 含义 |
 |---|---|
-| `toolCall.kind === 'execute'` | 正在运行命令 |
-| `kind === 'edit'` / `delete` / `move` | 正在编辑文件 / 正在删除文件 / 正在移动文件 |
-| `kind === 'read'` | 正在读取文件 |
-| `kind === 'search'` / `fetch` | 正在搜索 / 正在抓取网页 |
-| `kind === 'think'` | 正在思考 |
-| 无 `kind`（老消息） | 从 `name` 关键词推断 |
-| 没有 `status === 'running'` 的工具 | 正在处理 |
+| `text` | 正文（markdown） |
+| `reasoning` | 思考块（折叠） |
+| `tool-call` | 单条工具（独立卡片） |
+| `tool-group` | **相邻**工具聚合的胶囊（「编辑 1 次文件 · 运行 3 个命令」） |
+| `reply-artifacts` | 文件改动汇总（新增 / 改动两段） |
+| `turn-error` | 错误卡 |
 
-取**最后一条** `status === 'running'` 的工具（从数组尾部往前找）。
+### 核心规则：尾部回答切分
 
-视觉：`.running-label` 用 `background-clip: text` 做蓝色渐变扫光
-（`running-sweep` 2.4s 循环）；`prefers-reduced-motion` 下退化为纯色。
-展开区套 `<Transition name="expand">`，淡入 + 2px 位移。
+```
+从尾部往前跳过所有 answer 类分区（text / turn-error），得到边界 end
+body     = parts[0..end]   ← 可折叠（过程）
+trailing = parts[end..]    ← 常驻可见（回答）
+end === 0 时 body 承接全部（没有过程，不存在「尾部回答」）
+```
 
+> **Warning**: `end === 0` 是「全是回答」的判据，**不是** `end === parts.length`。
+> 用后者会把纯文本回复误判成「body 空、trailing 全是」，两个信号互相打架。
 
-### 陷阱
+> **Warning**: 「要不要显示折叠头」要看 **body 里有没有过程分区**
+> （`reasoning` / `tool-call` / `tool-group`），不能看 trailing 是否为空 ——
+> 纯文本回复的 trailing 也是空的。
 
-> **Warning**: 摘要行不要回退成「N 个工具」。用户明确要求用「活动 · 用时」。
+### 折叠默认值
 
-> **Warning**: `Message` 只有 `createdAt`，没有 `updatedAt`。「用时」用首尾
-> `createdAt` 求差，是近似值。
+- `defaultOpen = streaming`，**不是** `current`。
+  用「是不是最后一段」当默认值会导致打开历史会话时最后一轮自动展开。
+- 发送新消息时 `foldEpoch += 1`，旧 epoch 的展开记录一律失效。
+- 运行中**允许手动折叠**（不要 `if (running) return`）。
 
-> **Warning**: 展开态用**派生值**（`running || userExpanded`），不要在
-> `watch(running)` 里改 state —— 否则用户手动折叠会被下一帧撑开。
+> **Warning**: `trailing` 为空时（整轮以思考/工具结尾）必须走 **flatten 平铺**，
+> 不能只显示折叠头。真实会话里 55%（42/77）的轮次属于这种形态，只显示折叠头
+> 等于内容全不可见。
 
-> **Warning**: 不要再引入「整轮连正文一起收起来」的行为。历史 `TurnGroup.vue`
-> 就是这样，导致用户只看到「用时 X · N 个工具」而看不到回答，已删除。
+### 文件改动卡片（`reply-artifacts`）
+
+- 数据来源：编辑类工具的 `input`（JSON，含 `filePath` + `content` 或
+  `oldString`/`newString`）。**`paths` 字段实际为 null**（ACP 未给 `locations`）。
+- 「新增 vs 改动」是**启发式**（整文件 `content` 写入 + 本轮只写一次 = 新增），
+  不是 diff 确证。codeg 靠 unified diff 的 `--- /dev/null` 判断，我们拿不到。
+- 增删行数只有 `oldString`/`newString` 形态能算（`diffLineDelta`，滚动数组 LCS）。
+- 每个文件是**可点卡片**，点开走 `workspace.openFile`（与 FilesTree 同一入口）。
+
+> **Warning**: 路径判定必须**按项目根目录的平台风格**（`isAbsolutePath(path, rootPath)`）：
+> Windows 根下 `/out.txt` 是相对路径（当绝对会拼丢根目录）；POSIX 根下它就是绝对
+> （当相对会拼成 `/home/me/proj/home/me/proj/out.txt`）。
+
+> **Warning**: `openArtifact` 在 `projectId` 缺失或项目已被移除时必须**直接返回**，
+> 否则会开出无处归属的标签。
+
+### 已知遗留
+
+`MessageItem.vue` 现在只渲染用户气泡（assistant 侧全部移交 `AssistantTurn`），
+名字已名不副实。改名需要动 `ConversationView` 的引用，收益低，暂缓。
 
 
 ## ACP 请求超时：prompt 必须用「活动性超时」

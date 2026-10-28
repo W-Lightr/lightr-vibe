@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "核查 ContentPart 联合类型是否穷尽、有无 any / 非空断言"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "核查验证命令是否执行、有无死代码与 console.log 残留"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "核查 split 逻辑是否只有一处实现、新旧组件是否残留重复渲染路径"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核查 Message → parts 的派生是否只在一处发生，组件是否私自解析消息字段"}

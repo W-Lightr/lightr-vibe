@@ -3,9 +3,12 @@ import { computed, ref, watch } from 'vue'
 import { ArrowDown, MessageSquarePlus } from 'lucide-vue-next'
 import type { Session } from '../../../types/session'
 import MessageItem from './MessageItem.vue'
-import ActivityGroup from './ActivityGroup.vue'
+import AssistantTurn from './AssistantTurn.vue'
+import { toContentParts } from '../../../utils/contentParts'
+import type { TokenUsage } from '../../../types/session'
 import PlanCard from './PlanCard.vue'
 import { useConversationScroll } from '../../../composables/useConversationScroll'
+import { useConversation } from '../../../composables/useConversation'
 import { useSessionStore } from '../../../stores/session'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import { isTauri } from '../../../utils/isTauri'
@@ -50,140 +53,141 @@ const generating = computed(() => workspace.isGenerating(props.session.id))
  * 3. **除最后一轮外，所有轮次的结果都收纳**。
  *
  * 所以：
- * - 历史轮次 → 整段收成一个 `ActivityGroup`（一条摘要行）
- * - 最后一轮 → 正文直接渲染，只把过程性消息（思考 / 带工具）折叠
+ * - 每轮交给 `AssistantTurn`，由它派生 parts 并切出「进度 / 尾部回答」
+ * - 进度可折叠，尾部回答恒可见
  */
 type Block =
-  | { kind: 'single'; key: string; message: Session['messages'][number] }
+  | { kind: 'user'; key: string; message: Session['messages'][number] }
   | {
-      kind: 'activity'
+      kind: 'turn'
       key: string
+      /** 本轮全部 assistant 消息（按原顺序） */
       messages: Session['messages']
-      generating: boolean
-      label: string | null
+      /** 本轮最后一条消息 id —— 重新生成 / 分叉用它定位 */
+      lastMessageId: string
+      streaming: boolean
+      current: boolean
+      /**
+       * 默认是否展开。
+       *
+       * 只有**正在生成**的那一轮默认展开；历史会话打开时全部折叠。
+       * 之前直接用 `current`（= 最后一段）当默认值，导致打开旧会话时
+       * 最后一轮自动展开，看起来像「内容全都没折叠」。
+       */
+      defaultOpen: boolean
+      /** 会话所属项目 —— 文件卡片点开时需要它定位项目 */
+      projectId: string
+      durationMs: number | null
+      completedAt: number | null
+      usage: TokenUsage | null
     }
 
-/** 过程性消息：思考块，或带工具调用的 assistant 消息 */
-function isProcess(m: Session['messages'][number]): boolean {
-  if (m.role !== 'assistant') return false
-  return m.type === 'thinking' || (m.toolCalls?.length ?? 0) > 0
-}
-
-/** 是否存在「正在生成」的活动块（用于抑制重复的底部提示） */
-const hasLiveActivity = computed(() =>
-  blocks.value.some((b) => b.kind === 'activity' && b.generating),
-)
-
+/**
+ * 把消息序列切成「用户气泡 / assistant 轮次」的块列表。
+ *
+ * 一条用户消息之后、下一条用户消息之前的所有 assistant 消息算一轮。
+ * 每轮交给 `AssistantTurn`，由它做 parts 派生与「进度 / 回答」切分 ——
+ * 这一层只负责分组和计算用时，不做任何内容判断。
+ */
 const blocks = computed<Block[]>(() => {
   const msgs = props.session.messages
+  const out: Block[] = []
+  let turn: Session['messages'] = []
 
-  // 按用户消息切段：每段 = 一条用户消息之后的一轮 assistant 产出
-  const segments: Session['messages'][] = []
-  let current: Session['messages'] = []
-  const userSlots: { message: Session['messages'][number]; segIndex: number }[] = []
+  const flushTurn = (isLast: boolean) => {
+    if (turn.length === 0) return
+    const first = turn[0]
+    const last = turn[turn.length - 1]
+    const streaming = isLast && generating.value
+    // 用时 = 首尾消息 createdAt 之差。Message 没有 updatedAt，这是近似值
+    // （正文消息在流式开始时就创建，实际耗时会略偏短）。
+    const durationMs =
+      last.createdAt >= first.createdAt ? last.createdAt - first.createdAt : null
+    out.push({
+      kind: 'turn',
+      key: `turn-${first.id}`,
+      messages: turn,
+      lastMessageId: last.id,
+      streaming,
+      current: isLast,
+      defaultOpen: streaming,
+      projectId: props.session.projectId ?? '',
+      durationMs,
+      completedAt: streaming ? null : last.createdAt,
+      usage: isLast ? (props.session.tokenUsage ?? null) : null,
+    })
+    turn = []
+  }
 
   for (const m of msgs) {
     if (m.role === 'user') {
-      if (current.length > 0) segments.push(current)
-      current = []
-      userSlots.push({ message: m, segIndex: segments.length })
+      flushTurn(false)
+      out.push({ kind: 'user', key: m.id, message: m })
       continue
     }
-    current.push(m)
+    turn.push(m)
   }
-  if (current.length > 0) segments.push(current)
+  flushTurn(true)
 
-  const lastSeg = segments.length - 1
-  const out: Block[] = []
-
-  // 开头若有 assistant 消息（无前导用户消息），单独成段
-  const hasLeadingAssistant = msgs.length > 0 && msgs[0].role !== 'user'
-  let segCursor = 0
-
-  if (hasLeadingAssistant && segments.length > 0) {
-    const seg = segments[0]
-    pushSegment(seg, segCursor === lastSeg)
-    segCursor = 1
-  }
-
-  for (const slot of userSlots) {
-    out.push({ kind: 'single', key: slot.message.id, message: slot.message })
-    const seg = segments[segCursor]
-    if (seg) {
-      pushSegment(seg, segCursor === lastSeg)
-      segCursor += 1
-    }
-  }
-
-  /**
-   * 把一段过程变成渲染块（可能产出多个块）。
-   *
-   * - **历史轮次**：整段收进一个 ActivityGroup（一条摘要行）。
-   * - **最后一轮**：正文消息仍然直接渲染，只把「过程性消息」（思考 / 带工具）
-   *   收进 ActivityGroup。这与「AI 输出内容不要收纳」保持一致 —— 最后一轮是
-   *   用户当下要看的结果，不能藏。
-   */
-  function pushSegment(seg: Session['messages'], isLast: boolean): void {
-    if (!isLast) {
-      out.push({
-        kind: 'activity',
-        key: `act-${seg[0].id}`,
-        messages: seg,
-        generating: false,
-        label: null,
-      })
-      return
-    }
-
-    // 最后一轮：过程性消息折叠，正文直接平铺。
-    //
-    // **最后一条「正文」消息必须走 `single`** —— 它是「复制 / 重新生成 /
-    // 从此分叉」工具栏的宿主。若把它收进 ActivityGroup（那边 show-actions=false），
-    // 工具栏就整个消失了。
-    //
-    // 注意：工具消息也是 `type: 'text'` 但 content 为空，所以不能用「最后一条
-    // 消息」判断，必须找「最后一条有正文内容的」。
-    let lastBodyIdx = -1
-    for (let i = seg.length - 1; i >= 0; i -= 1) {
-      const m = seg[i]
-      if (m.role === 'assistant' && m.type === 'text' && m.content.trim() !== '') {
-        lastBodyIdx = i
-        break
-      }
-    }
-    // 整轮没有任何正文（纯工具）：让最后一条消息单独渲染，工具栏才不会消失。
-    // MessageItem 内部对空正文有自己的兜底渲染。
-    if (lastBodyIdx === -1 && seg.length > 0) {
-      lastBodyIdx = seg.length - 1
-    }
-
-    let buffer: Session['messages'] = []
-    const flush = (atEnd: boolean) => {
-      if (buffer.length === 0) return
-      out.push({
-        kind: 'activity',
-        key: `act-${buffer[0].id}`,
-        messages: buffer,
-        generating: atEnd && generating.value,
-        label: null,
-      })
-      buffer = []
-    }
-
-    for (let i = 0; i < seg.length; i += 1) {
-      const m = seg[i]
-      // 承载操作栏的那条正文单独渲染；其余过程消息照常折叠
-      if (isProcess(m) && i !== lastBodyIdx) {
-        buffer.push(m)
-        continue
-      }
-      flush(false)
-      out.push({ kind: 'single', key: m.id, message: m })
-    }
-    flush(true)
-  }
   return out
 })
+
+/**
+ * 折叠态，按轮次 key 存开合。
+ *
+ * `foldEpoch` 在每次发送新消息时 +1，旧 epoch 的记录一律失效 ——
+ * 「发送新消息收起上方所有轮次」因此只是一次计数器自增，而不是遍历线程
+ * （遍历会丢掉用户手动展开过的记录）。
+ */
+const openTurns = ref<Record<string, boolean>>({})
+const turnEpoch = ref<Record<string, number>>({})
+const foldEpoch = ref(0)
+
+/** 本轮是否展开：当前轮默认展开，历史轮默认收起 */
+function isTurnOpen(block: Extract<Block, { kind: 'turn' }>): boolean {
+  if (turnEpoch.value[block.key] !== foldEpoch.value) return block.defaultOpen
+  return openTurns.value[block.key] ?? block.defaultOpen
+}
+
+function setTurnOpen(key: string, open: boolean) {
+  openTurns.value = { ...openTurns.value, [key]: open }
+  turnEpoch.value = { ...turnEpoch.value, [key]: foldEpoch.value }
+}
+
+// 用户消息数变化 = 发送了新消息 → epoch +1 → 上方全部回到默认收起
+watch(
+  () => props.session.messages.filter((m) => m.role === 'user').length,
+  () => {
+    foldEpoch.value += 1
+  },
+)
+
+/**
+ * 最后一段（当前轮）是否仍在生成。
+ *
+ * 用于抑制底部的「正在生成…」兜底提示 —— 当前轮的进度行已经有 spinner，
+ * 两处同时提示属于重复表达。
+ */
+const lastTurnStreaming = computed(() => {
+  const msgs = props.session.messages
+  for (let i = msgs.length - 1; i >= 0; i -= 1) {
+    if (msgs[i].role === 'assistant') {
+      return generating.value && i === msgs.length - 1
+    }
+  }
+  return false
+})
+
+const { regenerate, fork } = useConversation()
+
+function onRegenerate(block: Extract<Block, { kind: 'turn' }>) {
+  regenerate(props.session.id, block.lastMessageId)
+}
+
+function onFork(block: Extract<Block, { kind: 'turn' }>) {
+  const forked = fork(props.session.id, block.lastMessageId)
+  if (forked) workspace.openSession(forked.id)
+}
 </script>
 
 <template>
@@ -191,12 +195,20 @@ const blocks = computed<Block[]>(() => {
     <div ref="listRef" class="no-scrollbar h-full overflow-y-auto" @scroll="onScroll">
       <div class="mx-auto max-w-3xl px-6 py-6">
         <template v-for="block in blocks" :key="block.key">
-          <MessageItem v-if="block.kind === 'single'" :message="block.message" />
-          <ActivityGroup
+          <MessageItem v-if="block.kind === 'user'" :message="block.message" />
+          <AssistantTurn
             v-else
-            :messages="block.messages"
-            :generating="block.generating"
-            :label="block.label"
+            :parts="toContentParts(block.messages)"
+            :streaming="block.streaming"
+            :current="block.current"
+            :duration-ms="block.durationMs"
+            :usage="block.usage"
+            :completed-at="block.completedAt"
+            :open="isTurnOpen(block)"
+            :project-id="block.projectId"
+            @update:open="(open) => setTurnOpen(block.key, open)"
+            @regenerate="onRegenerate(block)"
+            @fork="onFork(block)"
           />
         </template>
 
@@ -214,7 +226,7 @@ const blocks = computed<Block[]>(() => {
 
         <!-- 生成中提示：脉冲蓝点 + 微光扫过文字（Shimmer） -->
         <div
-          v-if="generating && !hasLiveActivity"
+          v-if="generating && !lastTurnStreaming"
           class="mb-4 flex items-center gap-2 text-xs text-neutral-400"
         >
           <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />

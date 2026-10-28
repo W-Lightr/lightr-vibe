@@ -18,7 +18,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "10-27-chat-ui-parity"
+  ],
   "parent": null,
   "relatedFiles": [],
   "notes": "",

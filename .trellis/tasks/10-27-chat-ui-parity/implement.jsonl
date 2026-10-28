@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "views/<feature>/ 下组件放置规则、types/utils 的边界——决定 contentPart.ts 放 types、contentParts.ts 放 utils"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "ContentPart 联合类型的写法约定（string-literal union、no any、nullability）"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "折叠态放在 ConversationView 而非子组件，需符合 setup store / 组件状态的边界约定"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "defineProps/defineEmits 类型化写法、组件拆分粒度"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "验证命令（pnpm build / cargo test）与禁止模式"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "迁移期新旧组件共存、避免重复实现 split 逻辑"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Message → ContentPart → 组件的派生边界，避免多处重复解析同一契约"}
