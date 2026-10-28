@@ -15,11 +15,36 @@ const queue = ref<AcpQuestionEvent[]>([])
 
 let subscribed = false
 
-/** 把问题与答案整理成回填消息文本（R6：用户能看到「问了什么、答了什么」） */
+/**
+ * 把问题与答案整理成回填消息文本（R6：用户能看到「问了什么、答了什么」）。
+ *
+ * 末尾附一段 `\n<<ask-result>>{json}`，携带**题干 + 完整选项列表**。
+ *
+ * 为什么要塞进 content 而不是新开字段：`Message` 没有通用 payload 列，
+ * 改持久化形状会牵动会话索引与导入导出。而渲染成「提问回答：<选项> ⌄
+ * 展开看全部选项」这种胶囊形态**必须有选项列表**（否则只能显示答案文本，
+ * 点开也没东西可看）。约定一个行首标记，解析失败时退回纯文本，不丢内容。
+ */
 function buildResultText(event: AcpQuestionEvent, answerLines: string[]): string {
   const prompt = event.questions.map((q) => q.prompt || q.id).join(' / ')
   const answer = answerLines.length ? answerLines.join('、') : '（已跳过）'
-  return `AI 提问：${prompt}\n我的回答：${answer}`
+  const plain = `AI 提问：${prompt}\n我的回答：${answer}`
+
+  // 只带第一问的选项（本期一次一问，design D3/D4）
+  const first = event.questions[0]
+  const options = (first?.options ?? []).map((o) => ({ value: o.value, label: o.label }))
+  if (options.length === 0) return plain
+
+  const payload = {
+    question: first?.prompt || first?.id || '',
+    kind: first?.kind ?? 'single',
+    options,
+    // 已选中的 value（多选时多个）
+    selected: answerLines
+      .map((label) => first?.options.find((o) => o.label === label)?.value)
+      .filter((v): v is string => typeof v === 'string'),
+  }
+  return `${plain}\n<<ask-result>>${JSON.stringify(payload)}`
 }
 
 /** 把用户答案渲染为可读文本（选项 label 优先，回退 value；文本原样） */

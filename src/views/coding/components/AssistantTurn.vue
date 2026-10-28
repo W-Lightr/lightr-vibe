@@ -176,7 +176,7 @@ const RUNNING_LABEL: Record<string, string> = {
   read: '正在读取文件',
   search: '正在搜索',
   fetch: '正在抓取网页',
-  think: '正在思考',
+  think: '正在工作',
 }
 
 /**
@@ -190,7 +190,7 @@ const workedLabel = computed(() => {
     const tool = activeTool.value
     if (tool?.kind && RUNNING_LABEL[tool.kind]) return RUNNING_LABEL[tool.kind]
     if (tool) return '正在执行'
-    return '正在思考'
+    return '正在工作'
   }
   if (props.durationMs === null) return '工作已完成'
   return `工作了 ${formatDuration(props.durationMs)}`

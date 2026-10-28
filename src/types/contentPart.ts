@@ -78,6 +78,15 @@ export interface AskResultPart {
   question: string
   /** 用户选择的答案（已跳过时为空） */
   answers: string[]
+  /**
+   * 完整选项列表（老消息没有这段，`options` 为空）。
+   * 有它才能在展开时显示所有候选，而不是只显示答案。
+   */
+  options: { value: string; label: string }[]
+  /** 已选中的 value（多选时多个） */
+  selected: string[]
+  /** single / multi / text */
+  kind: string
 }
 
 export type ContentPart =

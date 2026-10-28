@@ -112,6 +112,9 @@ function dirOf(path: string): string {
   return idx > 0 ? normalized.slice(0, idx) : ''
 }
 
+/** AI 提问卡片的展开态 */
+const askOpen = ref(false)
+
 /** 工具分组的展开态：默认折叠，只显示「N 个工具」标题行 */
 const groupOpen = ref(false)
 
@@ -327,32 +330,83 @@ const needsSettings = computed(
   </div>
 
   <!--
-    AI 提问的问答卡片。
-    问答是用户参与过的交互，用卡片框出来区别于普通正文 —— 否则它混在长回答里
-    （真实数据里就是一行「AI 提问：… / 我的回答：…」）很容易被忽略。
+    AI 提问的问答（对齐设计图）：
+      - 折叠态：胶囊「💬 提问回答：<选中项> ⌄」
+      - 展开态：一张卡片，列出题干 + 全部选项，选中项打勾
+    老消息没有选项数据（只有文本），此时退回纯文本一行，不假装有选项。
   -->
-  <div
-    v-else-if="part.type === 'ask-result'"
-    class="rounded-lg border border-neutral-200 bg-neutral-50/60 px-3 py-2.5"
-  >
-    <div class="flex items-start gap-2">
-      <MessageSquareQuestion class="mt-0.5 h-3.5 w-3.5 shrink-0 text-neutral-400" />
-      <div class="min-w-0 flex-1">
-        <p class="text-xs leading-5 text-neutral-600">
-          <span class="text-neutral-400">AI 提问：</span>{{ part.question }}
-        </p>
-        <p class="mt-1 text-xs leading-5">
-          <span class="text-neutral-400">我的回答：</span>
-          <span v-if="part.answers.length > 0" class="text-neutral-800">
-            {{ part.answers.join('、') }}
+  <div v-else-if="part.type === 'ask-result'" class="min-w-0 max-w-full">
+    <!-- 胶囊 -->
+    <button
+      class="inline-flex max-w-full cursor-pointer items-center gap-2 rounded-full border border-neutral-200 bg-white px-3 py-1.5 text-xs transition-colors hover:bg-neutral-50"
+      :title="askOpen ? '收起' : '展开'"
+      @click="askOpen = !askOpen"
+    >
+      <MessageCircleQuestion class="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+      <span class="shrink-0 text-neutral-400">提问回答：</span>
+      <span class="min-w-0 truncate text-neutral-700">
+        {{ part.answers.length > 0 ? part.answers.join('、') : '（已跳过）' }}
+      </span>
+      <ChevronDown
+        v-if="part.options.length > 0"
+        class="h-3.5 w-3.5 shrink-0 text-neutral-400 transition-transform"
+        :class="askOpen && 'rotate-180'"
+      />
+    </button>
+
+    <!-- 展开：题干 + 全部选项 -->
+    <div
+      v-if="askOpen && part.options.length > 0"
+      class="mt-2 max-w-full rounded-xl border border-neutral-200 bg-white p-3"
+    >
+      <div class="flex items-start gap-2">
+        <MessageCircleQuestion class="mt-0.5 h-3.5 w-3.5 shrink-0 text-neutral-400" />
+        <span class="text-xs font-medium text-neutral-800">提问</span>
+      </div>
+
+      <div class="mt-2 flex items-start gap-2">
+        <span
+          class="shrink-0 rounded border border-neutral-200 bg-neutral-50 px-1.5 py-0.5 text-[10px] text-neutral-500"
+        >
+          {{ part.kind === 'multi' ? '多选' : part.kind === 'text' ? '填空' : '单选' }}
+        </span>
+        <span class="min-w-0 flex-1 text-xs leading-5 text-neutral-700">{{ part.question }}</span>
+      </div>
+
+      <div class="mt-2.5 flex flex-col gap-1.5">
+        <div
+          v-for="opt in part.options"
+          :key="opt.value"
+          class="flex items-start gap-2 rounded-lg border px-2.5 py-2 transition-colors"
+          :class="
+            part.selected.includes(opt.value)
+              ? 'border-neutral-400 bg-neutral-100'
+              : 'border-neutral-200 bg-white'
+          "
+        >
+          <!-- 选中标记：单选圆点 / 多选方块；未选中只有外框 -->
+          <span
+            class="mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center border"
+            :class="[
+              part.kind === 'multi' ? 'rounded-[3px]' : 'rounded-full',
+              part.selected.includes(opt.value)
+                ? 'border-neutral-700'
+                : 'border-neutral-300',
+            ]"
+          >
+            <span
+              v-if="part.selected.includes(opt.value)"
+              class="border-neutral-700 bg-neutral-700"
+              :class="part.kind === 'multi' ? 'h-2 w-2 rounded-[1px]' : 'h-2 w-2 rounded-full'"
+            />
           </span>
-          <span v-else class="text-neutral-400">（已跳过）</span>
-        </p>
+          <span class="min-w-0 flex-1 text-xs leading-5 text-neutral-700">{{ opt.label }}</span>
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- 错误卡 -->
+<!-- 错误卡 -->
   <div
     v-else-if="isError"
     class="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-600"

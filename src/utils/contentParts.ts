@@ -40,14 +40,40 @@ export function isAnswerPart(part: ContentPart): boolean {
  *
  * 不按冒号硬切整个字符串：问题本身可能含冒号，只在**行首**匹配标签。
  */
-function parseAskResultText(text: string): { question: string; answers: string[] } {
-  const askMatch = /^AI 提问：([\s\S]*?)(?:\n我的回答：([\s\S]*))?$/m.exec(text.trim())
-  if (!askMatch) {
-    // 格式不符（旧数据 / 手工写入）：整段当问题，答案留空，至少不丢内容
-    return { question: text.trim(), answers: [] }
+function parseAskResultText(text: string): {
+  question: string
+  answers: string[]
+  options: { value: string; label: string }[]
+  selected: string[]
+  kind: string
+} {
+  const trimmed = text.trim()
+  // 尾部可能带 `\n<<ask-result>>{json}`，先切出来
+  const marker = '\n<<ask-result>>'
+  const markerAt = trimmed.lastIndexOf(marker)
+
+  let plain = trimmed
+  let payload: {
+    question?: string
+    kind?: string
+    options?: { value: string; label: string }[]
+    selected?: string[]
+  } | null = null
+
+  if (markerAt !== -1) {
+    plain = trimmed.slice(0, markerAt).trim()
+    const raw = trimmed.slice(markerAt + marker.length).trim()
+    try {
+      payload = JSON.parse(raw)
+    } catch {
+      // 解析失败就退回纯文本，不丢内容
+      payload = null
+    }
   }
-  const question = (askMatch[1] ?? '').trim()
-  const answerRaw = (askMatch[2] ?? '').trim()
+
+  const askMatch = /^AI 提问：([\s\S]*?)(?:\n我的回答：([\s\S]*))?$/m.exec(plain)
+  const question = askMatch ? (askMatch[1] ?? '').trim() : plain
+  const answerRaw = askMatch ? (askMatch[2] ?? '').trim() : ''
   const skipped = answerRaw === '' || answerRaw === '（已跳过）'
   const answers = skipped
     ? []
@@ -55,7 +81,19 @@ function parseAskResultText(text: string): { question: string; answers: string[]
         .split('、')
         .map((a) => a.trim())
         .filter(Boolean)
-  return { question, answers }
+
+  const options = (payload?.options ?? []).filter(
+    (o): o is { value: string; label: string } =>
+      typeof o?.value === 'string' && typeof o?.label === 'string',
+  )
+
+  return {
+    question: payload?.question?.trim() || question,
+    answers,
+    options,
+    selected: payload?.selected ?? [],
+    kind: payload?.kind ?? 'single',
+  }
 }
 
 /** 把一条 ToolCall 转成分区 */
@@ -114,6 +152,9 @@ export function toContentParts(messages: Message[]): ContentPart[] {
         type: 'ask-result',
         question: parsed.question,
         answers: parsed.answers,
+        options: parsed.options,
+        selected: parsed.selected,
+        kind: parsed.kind,
       })
       continue
     }
