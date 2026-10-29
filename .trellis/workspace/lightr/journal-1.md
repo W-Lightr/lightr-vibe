@@ -145,3 +145,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 7: 收尾会话消息队列 + 子代理展示调研
+<!-- trellis-session: v=2 fp=4a07f40ee8de9f73 -->
+
+**Date**: 2026-10-29
+**Task**: 收尾会话消息队列 + 子代理展示调研
+**Branch**: `main`
+
+### Summary
+
+归档 10-28-chat-message-queue（消息队列已实现：生成中连发入队、turn 结束自动续发、FIFO 路由、退避、会话隔离；R6 插入在飞 turn 因 acp_prompt 不支持并发 prompt 而如实降级为「移到队首」）。pnpm build 通过，无 Rust 改动。另完成子代理展示的三引擎调研：claude-agent-acp 走 ACP 标准 subagents RFD（声明 clientCapabilities.subagents 即得子会话 id / 实时流 / openRequests，与 subagent-transcript 互斥）；opencode 1.19 无该协议，只能解析 task 工具帧且子会话 id 仅在完成帧出现（session/load 可回放）；codex-acp 走 collab rawInput。codeg 用「解析期改名 Agent + AgentExecutionStats + 一卡多引擎」归一，但其解析器读磁盘/DB，我们是 ACP 客户端不可照搬。调研文档暂存 C:\\Users\\29028\\AppData\\Local\\Temp\\opencode\\research-subagent-pending\\subagent-display.md，待建子代理任务时移入。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0b61b77` | feat(chat): 会话消息队列 — 生成中连发入队、本轮结束自动续发 |
+
+### Status
+
+[OK] **Completed**

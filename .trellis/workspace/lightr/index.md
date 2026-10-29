@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
-- **Last Active**: 2026-10-15
+- **Total Sessions**: 7
+- **Last Active**: 2026-10-29
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~147 | Active |
+| `journal-1.md` | ~169 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-10-29 | 收尾会话消息队列 + 子代理展示调研 | `0b61b77` | `main` |
 | 6 | 2026-10-15 | 消费 session/update 全量种类 | `5b11c12` | `main` |
 | 5 | 2026-10-15 | 注入自有 ask 工具（任意引擎可提问） | `341a5a2`, `e8bc3d9` | `main` |
 | 4 | 2026-10-14 | 权限授权富化：changes/diff/队列 + 弹窗定位与样式迭代 | `2ca3959`, `86a0b69`, `a6dde63`, `127bec7`, `700a25e`, `c677be9`, `6abaf9d`, `7c430f8` | `main` |
