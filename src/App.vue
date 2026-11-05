@@ -18,20 +18,21 @@ function dragTarget(e: MouseEvent): HTMLElement | null {
 }
 
 function onMouseDown(e: MouseEvent) {
-  if (appWindow && dragTarget(e)) void appWindow.startDragging()
-}
-
-function onDblClick(e: MouseEvent) {
-  if (appWindow && dragTarget(e)) void appWindow.toggleMaximize()
+  if (!appWindow || !dragTarget(e)) return
+  // 双击拖拽区放大/还原：必须在 mousedown 里判断 click 次数。
+  // 原生 startDragging() 会进入系统拖拽循环，后续 dblclick 事件不会到达。
+  if (e.detail === 2) {
+    void appWindow.toggleMaximize()
+    return
+  }
+  void appWindow.startDragging()
 }
 
 onMounted(() => {
   window.addEventListener('mousedown', onMouseDown)
-  window.addEventListener('dblclick', onDblClick)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('mousedown', onMouseDown)
-  window.removeEventListener('dblclick', onDblClick)
 })
 </script>
 

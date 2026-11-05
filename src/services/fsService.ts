@@ -83,6 +83,12 @@ export const fsService = {
     }
     await invoke('fs_write_text', { path, text })
   },
+
+  /** 用系统文件管理器打开目录；浏览器 dev 无桌面文件管理器，直接返回 */
+  async openFolder(path: string): Promise<void> {
+    if (!isTauri()) return
+    await invoke('open_folder', { path })
+  },
 }
 
 /** 从目录名生成稳定的项目 ID（同一路径重复打开可复用；大小写不敏感） */

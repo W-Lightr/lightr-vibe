@@ -14,6 +14,13 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+/// 用系统文件管理器打开目录（右键「打开文件资源」）。
+/// 直接走 Rust 调 opener，避开插件 open_path 对路径 scope 的要求。
+#[tauri::command]
+fn open_folder(path: String) -> Result<(), String> {
+    tauri_plugin_opener::open_path(path, None::<&str>).map_err(|err| err.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -24,6 +31,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            open_folder,
             agent::agent_detect,
             agent::agent_read_config,
             agent::agent_write_config,

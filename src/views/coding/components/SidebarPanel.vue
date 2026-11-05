@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, h, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NPopconfirm, useMessage } from 'naive-ui'
+import { NDropdown, NPopconfirm, useDialog, useMessage } from 'naive-ui'
+import type { DropdownDividerOption, DropdownOption } from 'naive-ui'
 import {
   PanelLeftClose,
   Search,
@@ -15,6 +16,7 @@ import {
   FolderOpen,
   FolderInput,
   ChevronRight,
+  ChevronDown,
   Trash2,
 } from 'lucide-vue-next'
 import { useWorkspaceStore } from '../../../stores/workspace'
@@ -33,6 +35,7 @@ const sessionStore = useSessionStore()
 const projectStore = useProjectStore()
 const { closeConnection } = useConversation()
 const message = useMessage()
+const dialog = useDialog()
 const router = useRouter()
 const route = useRoute()
 
@@ -68,6 +71,88 @@ async function openFolder() {
 function removeProject(projectId: string) {
   sessionStore.orphanSessionsOf(projectId)
   projectStore.removeProject(projectId)
+}
+
+// ---- 文件夹右键菜单：新建会话 / 打开文件资源 / 删除 ----
+
+const folderMenu = ref<{
+  open: boolean
+  x: number
+  y: number
+  projectId: string | null
+}>({ open: false, x: 0, y: 0, projectId: null })
+
+/** 菜单项；「打开文件资源」仅桌面端可用（浏览器 dev 无文件管理器） */
+const folderMenuOptions: (DropdownOption | DropdownDividerOption)[] = [
+  {
+    key: 'new-session',
+    label: '新建会话',
+    icon: () => h(SquarePen, { class: 'h-3.5 w-3.5' }),
+  },
+  {
+    key: 'open-folder',
+    label: '打开文件资源',
+    disabled: !pickAvailable,
+    icon: () => h(FolderOpen, { class: 'h-3.5 w-3.5' }),
+  },
+  { key: 'divider', type: 'divider' },
+  {
+    key: 'remove',
+    label: '删除',
+    icon: () => h(Trash2, { class: 'h-3.5 w-3.5' }),
+    props: { style: 'color: #dc2626' },
+  },
+]
+
+/** 在鼠标位置打开文件夹菜单；阻止系统默认菜单 */
+function openFolderMenu(e: MouseEvent, projectId: string) {
+  folderMenu.value = { open: true, x: e.clientX, y: e.clientY, projectId }
+}
+
+function closeFolderMenu() {
+  if (folderMenu.value.open) folderMenu.value = { ...folderMenu.value, open: false }
+}
+
+/**
+ * 用系统文件管理器打开项目根目录（进入目录内部，而不是在父目录中选中）。
+ *
+ * 走 Rust 自定义命令 open_folder：opener 插件的 open_path 需要静态路径 scope，
+ * 无法覆盖用户任意选择的项目目录，因此由 Rust 侧直接调用 opener。
+ */
+async function openProjectFolder(projectId: string) {
+  const project = projectStore.get(projectId)
+  if (!project) return
+  if (!pickAvailable) {
+    message.info('打开文件资源仅桌面端可用')
+    return
+  }
+  try {
+    await fsService.openFolder(project.rootPath)
+  } catch {
+    message.error('打开文件资源失败')
+  }
+}
+
+/** 右键菜单删除：先弹确认，避免误触 */
+function confirmRemoveProject(projectId: string) {
+  const project = projectStore.get(projectId)
+  if (!project) return
+  dialog.warning({
+    title: '移除项目',
+    content: `移除项目「${project.name}」？磁盘文件不会被删除，其会话将归入「聊天」组。`,
+    positiveText: '移除',
+    negativeText: '取消',
+    onPositiveClick: () => removeProject(projectId),
+  })
+}
+
+function onFolderMenuSelect(key: string | number) {
+  const projectId = folderMenu.value.projectId
+  closeFolderMenu()
+  if (!projectId) return
+  if (key === 'new-session') createSessionInProject(projectId)
+  else if (key === 'open-folder') void openProjectFolder(projectId)
+  else if (key === 'remove') confirmRemoveProject(projectId)
 }
 
 // 侧栏内导航选中项（chat 之外的菜单为占位状态）
@@ -278,15 +363,39 @@ function filterSessions(list: Session[]) {
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
+// ---- 会话分页：每组默认 5 个，「显示更多」每次追加 5 个 ----
+
+/** 每组首屏最多展示的会话数 */
+const SESSION_PAGE_SIZE = 5
+/** 临时会话分组的 key（避免与 project id 冲突） */
+const TMP_GROUP_KEY = '__tmp__'
+/** 各分组已展开到的数量；未记录时按 SESSION_PAGE_SIZE 处理 */
+const visibleCounts = ref<Record<string, number>>({})
+
+function visibleCountOf(key: string): number {
+  return visibleCounts.value[key] ?? SESSION_PAGE_SIZE
+}
+
+function showMoreSessions(key: string): void {
+  visibleCounts.value = {
+    ...visibleCounts.value,
+    [key]: visibleCountOf(key) + SESSION_PAGE_SIZE,
+  }
+}
+
 /** 文件夹分组：每个文件夹项目 + 其下会话；计数用搜索前的总数，避免折叠/搜索时数字跳动 */
 const folderGroups = computed(() =>
   projectStore.projects
     .map((project) => {
       const all = sessionStore.sessions.filter((s) => s.projectId === project.id)
       const sessions = filterSessions(all)
+      const limit = visibleCountOf(project.id)
       return {
         project,
         sessions,
+        // 搜索时忽略分页，命中项全部显示（与搜索忽略折叠保持一致）
+        visibleSessions: searching.value ? sessions : sessions.slice(0, limit),
+        hasMore: !searching.value && sessions.length > limit,
         total: all.length,
         generating: hasGenerating(all),
         collapsed: isCollapsed(project.id),
@@ -300,6 +409,16 @@ const tmpSessions = computed(() =>
   filterSessions(
     sessionStore.sessions.filter((s) => s.kind === 'tmp' || !projectStore.get(s.projectId)),
   ),
+)
+
+/** 临时会话的可见切片：搜索时全部显示，否则按分组展开数量截断 */
+const visibleTmpSessions = computed(() => {
+  const limit = visibleCountOf(TMP_GROUP_KEY)
+  return searching.value ? tmpSessions.value : tmpSessions.value.slice(0, limit)
+})
+
+const tmpHasMore = computed(
+  () => !searching.value && tmpSessions.value.length > visibleCountOf(TMP_GROUP_KEY),
 )
 
 /** 「最近」分组：lastOpenedAt 倒序前 5 个项目（R3） */
@@ -405,7 +524,7 @@ function activateProject(projectId: string) {
     </div>
 
     <!-- 会话区：文件夹 / 聊天（临时会话）/ 最近 -->
-    <div v-else class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+    <div v-else class="min-h-0 flex-1 overflow-y-auto px-2 pb-2" @scroll="closeFolderMenu">
       <!-- 文件夹 -->
       <div class="mb-1 flex items-center justify-between px-2.5 pt-1 pb-1">
         <span class="text-[11px] text-neutral-400">文件夹</span>
@@ -424,6 +543,7 @@ function activateProject(projectId: string) {
         <div
           class="flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-xs text-neutral-600 hover:bg-neutral-200/50"
           :title="group.project.rootPath"
+          @contextmenu.prevent.stop="openFolderMenu($event, group.project.id)"
           @click="onFolderRowClick(group.project.id)"
         >
           <!-- 折叠箭头：仅此区域切换折叠，整行点击仍是「打开该项目」 -->
@@ -481,7 +601,7 @@ function activateProject(projectId: string) {
         <!-- 收起时不渲染会话列表；仍然保留空项目提示只在展开态出现 -->
         <div v-if="!group.collapsed" class="ml-4 border-l border-neutral-300/80 pl-1.5">
           <SessionItem
-            v-for="s in group.sessions"
+            v-for="s in group.visibleSessions"
             :key="s.id"
             :session="s"
             :active="s.id === workspace.activeSessionId"
@@ -496,6 +616,15 @@ function activateProject(projectId: string) {
           <p v-if="group.sessions.length === 0" class="px-2.5 py-1.5 text-[11px] text-neutral-400">
             暂无会话
           </p>
+          <button
+            v-else-if="group.hasMore"
+            class="flex w-full cursor-pointer items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] text-neutral-400 hover:bg-neutral-200/50 hover:text-neutral-600"
+            title="每次再显示 5 个会话"
+            @click="showMoreSessions(group.project.id)"
+          >
+            显示更多（还有 {{ group.sessions.length - group.visibleSessions.length }} 个）
+            <ChevronDown class="h-3 w-3" />
+          </button>
         </div>
       </div>
       <p v-if="folderGroups.length === 0" class="px-2.5 py-1 text-[11px] text-neutral-400">
@@ -518,7 +647,7 @@ function activateProject(projectId: string) {
         </button>
       </div>
       <SessionItem
-        v-for="s in tmpSessions"
+        v-for="s in visibleTmpSessions"
         :key="s.id"
         :session="s"
         :active="s.id === workspace.activeSessionId"
@@ -533,6 +662,15 @@ function activateProject(projectId: string) {
       <p v-if="tmpSessions.length === 0" class="px-2.5 py-1.5 text-[11px] text-neutral-400">
         暂无临时会话
       </p>
+      <button
+        v-else-if="tmpHasMore"
+        class="flex w-full cursor-pointer items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] text-neutral-400 hover:bg-neutral-200/50 hover:text-neutral-600"
+        title="每次再显示 5 个会话"
+        @click="showMoreSessions(TMP_GROUP_KEY)"
+      >
+        显示更多（还有 {{ tmpSessions.length - visibleTmpSessions.length }} 个）
+        <ChevronDown class="h-3 w-3" />
+      </button>
 
       <!-- 最近：lastOpenedAt 倒序前 5 个项目（父任务 Q3） -->
       <button
@@ -582,6 +720,18 @@ function activateProject(projectId: string) {
       </button>
       <span class="pr-1 text-[11px] text-neutral-400">{{ sessionStore.sessions.length }} 个会话</span>
     </div>
+
+    <!-- 文件夹右键菜单（manual 定位到鼠标坐标） -->
+    <NDropdown
+      trigger="manual"
+      placement="bottom-start"
+      :show="folderMenu.open"
+      :x="folderMenu.x"
+      :y="folderMenu.y"
+      :options="folderMenuOptions"
+      @select="onFolderMenuSelect"
+      @clickoutside="closeFolderMenu"
+    />
 
     <!-- 新建会话弹窗（选引擎 + 目标，PRD R5）；文件夹行触发时为 engineOnly（文件夹已定） -->
     <NewSessionDialog
