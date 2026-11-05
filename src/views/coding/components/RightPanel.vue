@@ -1,15 +1,26 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { defineAsyncComponent, ref } from 'vue'
 import { FolderOpen, GitBranch, Info } from 'lucide-vue-next'
 import type { Session } from '../../../types/session'
 import FilesTree from './FilesTree.vue'
-import DiffViewer from './DiffViewer.vue'
 import SessionInspector from './SessionInspector.vue'
+import EditorLoading from './EditorLoading.vue'
+import AsyncPanelError from './AsyncPanelError.vue'
+import { loadDiffViewer } from '../lazyWorkspace'
 
 defineProps<{ session: Session | null }>()
 
 type RightTab = 'files' | 'changes' | 'detail'
 const tab = ref<RightTab>('files')
+
+// 变更页签内含 Monaco：异步加载，避免工作区首屏静态拉入编辑器核心。
+const DiffViewer = defineAsyncComponent({
+  loader: loadDiffViewer,
+  loadingComponent: EditorLoading,
+  errorComponent: AsyncPanelError,
+  delay: 0,
+  timeout: 30_000,
+})
 
 const tabs: { key: RightTab; label: string; icon: typeof Info }[] = [
   { key: 'files', label: '文件', icon: FolderOpen },

@@ -3,6 +3,8 @@
 // mtime + text，design D5）；保存（按钮 + Ctrl+S）走 fs_write_file 带基线
 // mtime 冲突校验；conflict → naive-ui 对话框「重新加载 / 覆盖」二选一，
 // 绝不静默覆盖（R5）。too-large/binary 等错误显示提示面板，Monaco 不挂载。
+// monacoSetup 必须是首行 import：Monaco 求值前先装好 worker 工厂。
+import '../monacoSetup'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MonacoEditor from 'monaco-editor-vue'
 import { useDialog, useMessage } from 'naive-ui'

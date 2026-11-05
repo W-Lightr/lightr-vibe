@@ -112,11 +112,16 @@ const emit = defineEmits<{
 - **lucide-vue-next**: icon source, named imports per icon
   (`import { Pencil, Trash2 } from 'lucide-vue-next'`).
 - **@xterm/xterm** + addon-fit: terminal (`TerminalPanel.vue`); its CSS is
-  imported once in `main.ts`.
-- **monaco-editor** with `monaco-editor-vue`: file editing (`FileEditorView.vue`).
-  Monaco workers are configured in `main.ts` via Vite `?worker` imports — do
-  not re-configure per component. Note `optimizeDeps.exclude: ['monaco-editor']`
-  in `vite.config.ts`.
+  imported by `TerminalPanel.vue` itself so it loads with the terminal chunk.
+- **monaco-editor** with `monaco-editor-vue`: file editing (`FileEditorView.vue`)
+  and diff view (`DiffViewer.vue`). Monaco workers are configured in
+  `src/views/coding/monacoSetup.ts` via Vite `?worker` imports; every Monaco
+  consumer imports it on its first line, before `monaco-editor-vue`. Do not
+  configure workers in `main.ts` or per component.
+  Note `optimizeDeps.exclude: ['monaco-editor']` in `vite.config.ts`.
+- Editor, diff view and terminal are loaded through `defineAsyncComponent` in
+  `CodingWorkspace.vue` / `RightPanel.vue` (see `lazy-loading.md`); never
+  re-add static imports.
 - **splitpanes**: pane layout in the workspace.
 - **marked**: markdown → HTML for `MarkdownContent.vue` (rendered via `v-html`
   on trusted local content only).

@@ -1,20 +1,39 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 import { MessageSquarePlus } from 'lucide-vue-next'
 import TopBar from './components/TopBar.vue'
 import SidebarPanel from './components/SidebarPanel.vue'
 import WorkspaceHeader from './components/WorkspaceHeader.vue'
 import ConversationView from './components/ConversationView.vue'
 import MessageComposer from './components/MessageComposer.vue'
-import FileEditorView from './components/FileEditorView.vue'
 import RightPanel from './components/RightPanel.vue'
-import TerminalPanel from './components/TerminalPanel.vue'
 import NewSessionDialog from './components/NewSessionDialog.vue'
+import EditorLoading from './components/EditorLoading.vue'
+import TerminalLoading from './components/TerminalLoading.vue'
+import AsyncPanelError from './components/AsyncPanelError.vue'
+import { loadFileEditor, loadTerminal, prefetchFileEditor, scheduleIdle } from './lazyWorkspace'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { useSessionStore } from '../../stores/session'
 import { useProjectStore } from '../../stores/project'
 import type { EngineWire } from '../../types/engine'
 import type { NewSessionTarget } from '../../types/session'
+
+// 编辑器（Monaco）与终端（xterm）合计数 MB，且首次进入并不渲染：
+// 必须走异步组件，不能出现在工作区首屏 chunk 的静态依赖里。
+const FileEditorView = defineAsyncComponent({
+  loader: loadFileEditor,
+  loadingComponent: EditorLoading,
+  errorComponent: AsyncPanelError,
+  delay: 0,
+  timeout: 30_000,
+})
+const TerminalPanel = defineAsyncComponent({
+  loader: loadTerminal,
+  loadingComponent: TerminalLoading,
+  errorComponent: AsyncPanelError,
+  delay: 0,
+  timeout: 30_000,
+})
 
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
@@ -129,6 +148,8 @@ onMounted(() => {
   syncContainerWidth()
   window.addEventListener('resize', onResize)
   window.addEventListener('resize', syncContainerWidth)
+  // 首帧之后再空闲预取编辑器 chunk（Monaco），首次打开文件时不必等下载
+  scheduleIdle(prefetchFileEditor, 3000)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
@@ -191,8 +212,8 @@ onBeforeUnmount(() => {
           <template v-if="activeTab?.kind === 'session' && activeSession">
             <WorkspaceHeader :session="activeSession" />
             <ConversationView :key="activeSession.id" :session="activeSession" />
-            <!-- 终端抽屉 -->
-            <div v-if="terminalVisible" class="h-60 shrink-0 border-t border-neutral-200">
+            <!-- 终端抽屉：深色底避免 loading 占位与终端主题之间闪白 -->
+            <div v-if="terminalVisible" class="h-60 shrink-0 border-t border-neutral-200 bg-neutral-900">
               <TerminalPanel />
             </div>
             <MessageComposer :session-id="activeSession.id" />

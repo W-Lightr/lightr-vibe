@@ -24,6 +24,7 @@ This directory documents the actual conventions of the Lightr-vibe frontend
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, verification commands, forbidden patterns | Filled |
 | [Type Safety](./type-safety.md) | Type patterns, nullability conventions | Filled |
 | [UI Style](./ui-style.md) | Visual design language: color, type, shape, motion | Filled |
+| [Lazy Loading](./lazy-loading.md) | Route-level lazy entries, async heavy dependencies, prefetch | Filled |
 | [Tauri Bridge](./tauri-bridge.md) | Rust command contracts, dual-channel services, JSONC safe-write | Filled |
 
 ---

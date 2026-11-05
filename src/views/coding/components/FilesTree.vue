@@ -8,6 +8,7 @@ import { useWorkspaceStore } from '../../../stores/workspace'
 import { useSessionStore } from '../../../stores/session'
 import { useProjectStore } from '../../../stores/project'
 import { fsErrorMessage } from '../../../types/project'
+import { prefetchFileEditor } from '../lazyWorkspace'
 import FilesTreeNode from './FilesTreeNode.vue'
 import { createTreeController, treeControllerKey } from './filesTreeState'
 
@@ -82,7 +83,8 @@ async function refresh() {
         </button>
       </div>
 
-      <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <!-- 悬停文件树即预取编辑器 chunk（Monaco），缩短首次打开文件的等待 -->
+      <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2" @pointerenter="prefetchFileEditor">
         <!-- 根目录 loading -->
         <div
           v-if="controller.isLoading(project.rootPath)"

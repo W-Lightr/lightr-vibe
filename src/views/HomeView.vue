@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
+import type { Component } from 'vue'
 import { Code, Minus, Settings, Square, X } from 'lucide-vue-next'
 import { getAppWindow } from '../utils/window'
 
@@ -7,14 +8,34 @@ const router = useRouter()
 // 浏览器 dev 环境为 null：隐藏窗口三键（AC7）
 const appWindow = getAppWindow()
 
+interface FeatureEntry {
+  id: string
+  name: string
+  icon: Component
+  route: string
+  description: string
+  /**
+   * 可选的入口预热：悬停/聚焦时提前加载目标路由外壳 chunk。
+   * 只允许预热路由外壳，重依赖（编辑器/终端/画布）必须留在目标功能的异步子模块里。
+   */
+  prefetch?: () => void
+}
+
 // 配置数组驱动渲染，后续新功能只需在此追加
-const features = [
+const features: FeatureEntry[] = [
   {
     id: 'coding',
     name: '编码',
     icon: Code,
     route: '/coding',
     description: 'AI 辅助编码工作区',
+    prefetch: () => {
+      // 必须显式取 default（与路由处一致）：直接用整段模块命名空间会让打包器生成
+      // 命名空间包装，其 helper 目前被分到 Monaco chunk，反把 editor.api 拉回静态依赖。
+      void import('../views/coding/CodingWorkspace.vue')
+        .then((m) => m.default)
+        .catch(() => undefined)
+    },
   },
 ]
 </script>
@@ -66,6 +87,8 @@ const features = [
         v-for="feature in features"
         :key="feature.id"
         class="group flex cursor-pointer flex-col items-start gap-3 rounded-xl border border-neutral-200 bg-white p-6 text-left shadow-sm transition-colors hover:border-blue-300 hover:shadow-md"
+        @pointerenter="feature.prefetch?.()"
+        @focus="feature.prefetch?.()"
         @click="router.push(feature.route)"
       >
         <span

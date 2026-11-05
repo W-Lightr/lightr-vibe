@@ -1,4 +1,6 @@
 <script setup lang="ts">
+// xterm 样式随终端 chunk 一起按需加载（原先在 main.ts 全局导入）。
+import '@xterm/xterm/css/xterm.css'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'

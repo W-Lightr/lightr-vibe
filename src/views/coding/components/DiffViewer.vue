@@ -1,4 +1,6 @@
 <script setup lang="ts">
+// monacoSetup 必须是首行 import：Monaco 求值前先装好 worker 工厂。
+import '../monacoSetup'
 import { ref } from 'vue'
 import MonacoEditor from 'monaco-editor-vue'
 

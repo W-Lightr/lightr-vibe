@@ -1,0 +1,6 @@
+{"file": ".trellis/tasks/11-05-coding-entry-perf/research/entry-loading-evidence.md", "reason": "逐条比对改前基线：入口是否不再静态引用 editor.api/xterm，拆分后 chunk 体积与预取触发点是否符合设计"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "check 阶段验证命令与验收口径：pnpm build 必须通过，dev:tauri 手动验证清单需逐项确认"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "核查新增 SFC 的 script setup / props / Tailwind 写法，以及 Monaco worker 文档更新后是否与代码一致"}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "核查 lazyWorkspace.ts、monacoSetup.ts、loading 组件的放置位置与命名符合 feature-local 约定"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "核查异步组件 loader、requestIdleCallback 兼容分支、错误 fallback props 无 any / 非空断言"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "核查预取去重与 loading 反馈只有一处实现，HomeView/TopBar/FilesTree 只调用不复制逻辑"}

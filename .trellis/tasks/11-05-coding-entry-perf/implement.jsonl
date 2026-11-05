@@ -1,0 +1,6 @@
+{"file": ".trellis/tasks/11-05-coding-entry-perf/research/entry-loading-evidence.md", "reason": "改前基线：Monaco/xterm 如何被静态拉入 /coding，以及 dist 体积与 file:line 证据；实现时用它核对拆分是否真正生效"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "新增 loading/error 小组件与 defineAsyncComponent 写法必须遵循现有 <script setup>、类型化 props、Tailwind 约定；Monaco worker 位置说明需同步更新"}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "lazyWorkspace.ts / monacoSetup.ts 应放在 feature-local 位置，不能提升到全局 utils 或 components"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "本项目无 lint/测试，验证口径是 pnpm build + dev:tauri 手动流程；同时约束不得留下 console.log、不得弱化 strict"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "scheduleIdle、prefetch Promise 去重、异步组件 props 需要类型化降级，禁止 any / 非空断言"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "预取与 loading 逻辑只实现一处，避免 CodingWorkspace/TopBar/FilesTree 各写一套"}

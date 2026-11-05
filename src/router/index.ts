@@ -59,7 +59,10 @@ const router = createRouter({
         {
           path: '',
           name: 'coding',
-          component: () => import('../views/coding/CodingWorkspace.vue'),
+          // 必须显式取 default：直接返回整段模块命名空间会让打包器生成命名空间包装，
+          // 该包装的 helper 目前被分到 Monaco chunk，会把 editor.api 拉回入口静态依赖。
+          // 同理，HomeView 的入口预热也必须 .then((m) => m.default)。
+          component: () => import('../views/coding/CodingWorkspace.vue').then((m) => m.default),
         },
       ],
     },
