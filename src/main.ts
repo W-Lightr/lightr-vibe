@@ -59,6 +59,9 @@ async function bootstrap() {
     delegation.upsert(record)
     const sessionStore = useSessionStore(pinia)
     const child = sessionStore.registerDelegatedSession(record)
+    // 子代理启动即切到既有右侧查看器，让流式进度与待处理交互无需额外点击即可可见。
+    // 委派卡片仍保留入口，供用户关闭抽屉后再次打开。
+    useWorkspaceStore(pinia).openDelegatedChild(child.id)
     // 子 prompt 从 Rust broker 发出，没有经过 useConversation.send；这里补齐
     // 本地用户消息与生成态，使 ACP 的流式 update 能自然写入子会话 transcript。
     if (child.messages.length === 0) {
