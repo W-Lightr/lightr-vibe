@@ -10,12 +10,14 @@ import type { EngineWire } from '../../../types/engine'
 import { BUILTIN_ENGINE_WIRES } from '../../../types/engine'
 import { useAgentStore } from '../../../stores/agent'
 import { useEngineStore } from '../../../stores/engine'
+import { useDelegationStore } from '../../../stores/delegation'
 import AgentListItem from './AgentListItem.vue'
 import OpencodeDetail from './OpencodeDetail.vue'
 import EngineDetail from './EngineDetail.vue'
 
 const agentStore = useAgentStore()
 const engineStore = useEngineStore()
+const delegationStore = useDelegationStore()
 const message = useMessage()
 
 /** 注册表已包含的引擎 wire 集合（用于判定占位行是否已可配置） */
@@ -95,11 +97,30 @@ async function onDefaultEngineChange(wire: string) {
   }
 }
 
+/** 全局委派开关默认关闭；开启后，兼容 MCP 的 Agent 可直接调用委派工具。 */
+async function setDelegationEnabled(enabled: boolean) {
+  try {
+    await delegationStore.saveSettings({ ...delegationStore.settings, enabled })
+    message.success(enabled ? '已启用子代理直接委派' : '已关闭子代理直接委派')
+  } catch (e) {
+    message.error(`保存委派设置失败：${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+async function setDelegationDepth(depthLimit: number) {
+  try {
+    await delegationStore.saveSettings({ ...delegationStore.settings, depthLimit })
+  } catch (e) {
+    message.error(`保存委派层级失败：${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
 onMounted(async () => {
   // 先拉注册表，再按注册表逐个检测（徽章各引擎独立，不共用一次检测结果）。
   // detectAll 只按当前聚焦引擎加载一次配置/环境变量，避免后测的引擎把先测的缓存清掉。
   try {
     await engineStore.load()
+    await delegationStore.load()
     // 初次聚焦即写 activeEngineId（watch 不覆盖初值），保证详情与列表选中一致
     if ((BUILTIN_ENGINE_WIRES as string[]).includes(selectedAgentId.value)) {
       agentStore.activeEngineId = selectedAgentId.value as EngineWire
@@ -143,6 +164,34 @@ onMounted(async () => {
           </option>
         </select>
         <p class="mt-1.5 text-[11px] text-neutral-400">新建会话时默认预选该引擎</p>
+      </div>
+
+      <div class="border-t border-neutral-200 p-3">
+        <div class="flex items-center justify-between gap-2">
+          <div class="text-xs font-medium text-neutral-500">子代理委派</div>
+          <input
+            type="checkbox"
+            class="h-4 w-4 accent-blue-600"
+            :checked="delegationStore.settings.enabled"
+            @change="setDelegationEnabled(($event.target as HTMLInputElement).checked)"
+          />
+        </div>
+        <p class="mt-1.5 text-[11px] leading-4 text-neutral-400">
+          默认关闭。开启后，Agent 可通过 MCP 创建独立子会话；开关仅在新建或重连会话后生效。
+        </p>
+        <label class="mt-2 flex items-center justify-between gap-2 text-[11px] text-neutral-500">
+          最大层级
+          <select
+            class="rounded border border-neutral-200 bg-white px-1.5 py-1 text-[11px] text-neutral-600 outline-none focus:border-blue-400"
+            :value="delegationStore.settings.depthLimit"
+            @change="setDelegationDepth(Number(($event.target as HTMLSelectElement).value))"
+          >
+            <option :value="1">1（仅直接委派）</option>
+            <option :value="2">2</option>
+            <option :value="3">3</option>
+            <option :value="4">4</option>
+          </select>
+        </label>
       </div>
     </aside>
 

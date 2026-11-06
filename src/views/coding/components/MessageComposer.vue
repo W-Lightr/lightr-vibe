@@ -48,7 +48,11 @@ import {
 import type { AcpConfigOption, AcpConfigOptionGroup, AcpConfigOptionValue } from '../../../types/acp'
 import { formatTokens } from '../../../utils/time'
 
-const props = defineProps<{ sessionId: string }>()
+const props = defineProps<{
+  sessionId: string
+  /** 委派子会话由 Rust broker 驱动；抽屉只承载权限/提问，不得再次新建 ACP session。 */
+  passive?: boolean
+}>()
 
 const workspace = useWorkspaceStore()
 const sessionStore = useSessionStore()
@@ -363,12 +367,13 @@ watch(
 watch(
   () => [modelConfig.value?.id, currentModel.value] as const,
   ([id]) => {
-    if (id) resolveContextWindow(props.sessionId)
+    if (!props.passive && id) resolveContextWindow(props.sessionId)
   },
 )
 
 /** 重新连接：杀死该会话进程 + 全新 spawn + load-or-new */
 async function onReconnect() {
+  if (props.passive) return
   await reconnect(props.sessionId)
   healthOpen.value = false
 }
@@ -408,16 +413,19 @@ watch(
     panel.value = 'root'
     modelSearch.value = ''
     nextTick(autoResize)
-    // 后台便利探针：会话无模型项时补齐真实列表（失败静默，不阻塞 UI）
-    void ensureModelOptions(props.sessionId)
-    // 刷新连接健康（该会话独立连接；切会话时同步一次）
-    void refreshAcpStatus(props.sessionId)
-    // 打开会话即自动建连（对齐 codeg：标签激活即 connect；best-effort 静默）
-    void ensureConnected(props.sessionId)
+    if (!props.passive) {
+      // 后台便利探针：会话无模型项时补齐真实列表（失败静默，不阻塞 UI）
+      void ensureModelOptions(props.sessionId)
+      // 刷新连接健康（该会话独立连接；切会话时同步一次）
+      void refreshAcpStatus(props.sessionId)
+      // 打开会话即自动建连（对齐 codeg：标签激活即 connect；best-effort 静默）
+      void ensureConnected(props.sessionId)
+    }
   },
 )
 
 onMounted(() => {
+  if (props.passive) return
   // 仅在页面初次进入且无其他焦点时自动聚焦
   const active = document.activeElement
   if (!active || active === document.body) textareaEl.value?.focus()
@@ -433,6 +441,7 @@ onMounted(() => {
 })
 
 function submit() {
+  if (props.passive) return
   const text = draft.value.trim()
   if (!text) return
   draft.value = ''
@@ -520,6 +529,7 @@ function pickFiles(e: Event) {
         />
       </div>
 
+      <template v-if="!passive">
       <!-- 输入容器：Codex 风格单卡片布局 -->
       <div
         class="rounded-2xl border border-neutral-200 bg-white shadow-sm transition-colors focus-within:border-neutral-300"
@@ -905,6 +915,10 @@ function pickFiles(e: Event) {
           </div>
         </NPopover>
       </div>
+      </template>
+      <p v-else class="px-3 py-2 text-center text-[11px] text-neutral-400">
+        子代理正在独立执行；可在上方处理它的授权或提问。
+      </p>
     </div>
   </div>
 </template>

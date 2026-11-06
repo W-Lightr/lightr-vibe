@@ -95,6 +95,10 @@ export interface Session {
   engineId: EngineWire
   /** 会话类型：文件夹会话 / 临时聊天会话 */
   kind: SessionKind
+  /** 普通用户会话 / broker 创建的子代理会话；旧数据缺失按 user 处理。 */
+  origin?: 'user' | 'delegation'
+  /** delegated 子会话的父本地 Session id；普通会话无此字段。 */
+  parentSessionId?: string
   /** 所属项目（工作区）；临时会话无项目 */
   projectId?: string
   /** 临时会话的落盘路径（~/.lightr-vibe/lightr-vibe/tmpsession） */

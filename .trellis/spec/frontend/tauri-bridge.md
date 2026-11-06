@@ -250,6 +250,107 @@ needed for codeg's single-slot snapshot, which we do not have).
 > no card). This is the event-routing invariant applied to the permission queue;
 > the mock hides it only if its `sessionNew` happens to return the local id.
 
+## Scenario: Universal delegated sub-agents (`delegation.rs`, task 11-06-subagent-delegation)
+
+### 1. Scope / Trigger
+
+Applies when a feature creates child Agent work from an existing ACP session.
+ACP carries each parent or child session; it does **not** define delegation orchestration.
+The universal control plane is the authenticated, injected local companion MCP,
+not Codex-specific collaboration payloads.
+
+### 2. Signatures
+
+Rust commands and events use camelCase payload fields:
+
+```rust
+#[tauri::command]
+pub fn delegation_get_settings() -> DelegationSettings
+
+#[tauri::command]
+pub fn delegation_set_settings(settings: DelegationSettings) -> Result<DelegationSettings, String>
+
+#[tauri::command]
+pub fn delegation_list() -> Vec<DelegationRecord>
+```
+
+The per-ACP-session companion MCP exposes `delegate_to_agent`,
+`get_delegation_status`, and `cancel_delegation` only when the persisted
+delegation setting is enabled. Lifecycle notifications emitted to the frontend
+are `delegation://started` and `delegation://updated`.
+
+### 3. Contracts
+
+- `delegate_to_agent` receives a self-contained task, an engine wire id, and an
+  optional working directory; it returns a stable task id immediately while the
+  child runs asynchronously.
+- `DelegationRecord` contains the task id, parent and child **local** session
+  ids, selected engine, effective cwd, status, timestamps and bounded terminal
+  summary/error. It must never contain the parent transcript or secrets.
+- Status vocabulary is closed: `running`, `waiting_permission`,
+  `waiting_question`, `completed`, `failed`, `canceled`, `interrupted`.
+- A delegated child is a normal `Session` with `origin: 'delegation'` and
+  `parentSessionId`; it remains addressable by `sessionStore.get`, but normal
+  sidebar selectors exclude it.
+- `delegation://started` is emitted **before** starting the child ACP
+  `session/new`, so frontend registration exists before child `acp://update`,
+  permission, or question events arrive.
+- Child drawers are passive viewers: do not auto-connect, create another
+  ACP session, or mount a message composer that can send an unrelated turn.
+
+### 4. Validation & Error Matrix
+
+| Condition | Behavior |
+|---|---|
+| delegation disabled | MCP tools are not advertised to newly connected sessions; direct request is rejected |
+| unknown/unavailable engine | broker returns terminal `failed` with a readable code; do not spawn |
+| cwd outside parent project root | reject before allocating child work |
+| depth exceeds configured limit | reject with terminal depth error; no recursive spawn |
+| parent stop/disconnect | cancel only direct active children; sibling child cancellation must not cancel the parent |
+| child permission/question | project state to `waiting_permission` / `waiting_question`; UI routes by child local `connId` |
+| child refusal, token/turn limit, empty result, cancellation | terminal state is `failed` or `canceled`, never `completed` |
+| app restart while child is nonterminal | persist and restore it as `interrupted`, never as live `running` |
+
+### 5. Good / Base / Bad Cases
+
+- **Good**: enabled parent delegates two independent self-contained tasks; each
+  gets a child session/process and its own permission card; cancellation of one
+  leaves the other and the parent intact.
+- **Base**: a browser mock emits the same typed lifecycle events and cards but
+  never launches a process.
+- **Bad**: treating a Codex `collabAgentToolCall` as the universal control plane,
+  copying parent history into a child, or opening a child drawer by calling
+  `session/new` again.
+
+### 6. Tests Required
+
+- Unit-test settings/default-off, cwd/depth/engine validation, transition
+  classification and restart interruption recovery.
+- Test parent cascade cancellation and sibling isolation.
+- Test MCP companion tool routing and preservation of `ask_user_question`.
+- Assert `started` precedes child ACP output, and that no terminal failure path
+  is labeled completed.
+- Browser/type check: delegated sessions are hidden from ordinary sidebar lists,
+  cards degrade safely for malformed Codex data, and drawers are passive.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+// A child viewer treats its persisted acpSessionId as a reason to reconnect.
+// That can create a second agent-side session and overwrite broker state.
+void conversation.ensureConnected(childSessionId)
+```
+
+#### Correct
+
+```ts
+// The broker owns the child connection. The viewer only projects the child id's
+// existing transcript, question and permission queues.
+<ConversationView :session-id="childSessionId" passive />
+```
+
 ### AI questions / `elicitation/create` (task 10-14-acp-elicitation)
 
 `elicitation/create` (server→client) is how an agent asks the user a question

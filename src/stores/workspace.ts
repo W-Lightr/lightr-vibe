@@ -28,6 +28,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    * 在那里渲染），所以关掉不会锁死。
    */
   const inspectorVisible = ref(false)
+  /** 委派卡片打开的只读子会话；显示在既有右侧栏，不污染普通标签历史。 */
+  const delegatedChildSessionId = ref<string | null>(null)
   /** 左/右栏宽度（px），拖拽分隔条调整 */
   const leftWidth = ref(260)
   const rightWidth = ref(335)
@@ -52,6 +54,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       tabs.value.push(tab)
     }
     activeTabId.value = tab.id
+  }
+
+  function openDelegatedChild(sessionId: string) {
+    delegatedChildSessionId.value = sessionId
+    inspectorVisible.value = true
+  }
+
+  function closeDelegatedChild() {
+    delegatedChildSessionId.value = null
   }
 
   /** 打开文件编辑标签（同路径复用） */
@@ -113,6 +124,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     activeSessionId,
     sidebarVisible,
     inspectorVisible,
+    delegatedChildSessionId,
     leftWidth,
     rightWidth,
     sidebarSearchOpen,
@@ -121,6 +133,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     generatingSessionIds,
     dirtyFileTabs,
     openSession,
+    openDelegatedChild,
+    closeDelegatedChild,
     openFile,
     closeTab,
     forgetSession,

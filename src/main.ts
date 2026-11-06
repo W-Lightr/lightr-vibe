@@ -7,7 +7,10 @@ import './assets/main.css'
 import { initAppData } from './utils/appData'
 import { useProjectStore } from './stores/project'
 import { useSessionStore } from './stores/session'
+import { useWorkspaceStore } from './stores/workspace'
+import { useDelegationStore } from './stores/delegation'
 import { initAcpListeners } from './services/acpService'
+import { onDelegationStarted, onDelegationUpdated } from './services/acpEvents'
 import { handleExternalLinkClick } from './utils/externalLink'
 import { wireTaskSessionBridge } from './views/tasks/taskSessionBridge'
 
@@ -46,6 +49,40 @@ async function bootstrap() {
   } catch {
     // 会话索引损坏/缺失不阻塞启动：以空会话列表进入
   }
+  const delegation = useDelegationStore(pinia)
+  try {
+    await delegation.load()
+  } catch {
+    // 委派数据不可读不阻塞普通会话；默认关闭仍保持安全。
+  }
+  onDelegationStarted(({ record }) => {
+    delegation.upsert(record)
+    const sessionStore = useSessionStore(pinia)
+    const child = sessionStore.registerDelegatedSession(record)
+    // 子 prompt 从 Rust broker 发出，没有经过 useConversation.send；这里补齐
+    // 本地用户消息与生成态，使 ACP 的流式 update 能自然写入子会话 transcript。
+    if (child.messages.length === 0) {
+      sessionStore.pushMessage(record.childSessionId, {
+        role: 'user', type: 'text', content: record.task, status: 'done',
+      })
+    }
+    sessionStore.setStatus(record.childSessionId, 'generating')
+    useWorkspaceStore(pinia).setGenerating(record.childSessionId, true)
+  })
+  onDelegationUpdated((record) => {
+    delegation.upsert(record)
+    if (!['completed', 'failed', 'canceled', 'interrupted'].includes(record.status)) return
+    const sessionStore = useSessionStore(pinia)
+    const finalStatus = record.status === 'completed' ? 'done' : 'stopped'
+    for (const message of sessionStore.get(record.childSessionId)?.messages ?? []) {
+      if (message.status === 'streaming') {
+        sessionStore.patchMessage(record.childSessionId, message.id, { status: finalStatus })
+      }
+    }
+    sessionStore.setStatus(record.childSessionId, record.status === 'failed' ? 'error' : 'idle')
+    useWorkspaceStore(pinia).setGenerating(record.childSessionId, false)
+    void sessionStore.persistMessages(record.childSessionId)
+  })
   void initAcpListeners()
   // 任务看板 ↔ ACP 会话联动：turn 结束回流订阅为模块级单订阅，必须与页面无关地
   // 在启动时装上（用户从任务页启动后切到编码页，turn 会在编码页结束）

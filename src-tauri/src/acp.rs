@@ -261,6 +261,8 @@ struct AcpConn {
     /// 本期会话级命令无需按引擎分支，字段为「新增第 2 个引擎」预留的落点。
     #[allow(dead_code)]
     engine: AgentType,
+    /// 本地会话的工作目录。委派只能从 session/new/load 已确认的根目录派生。
+    cwd: Mutex<Option<String>>,
     /// 进程死亡原因（dead 后写入，acp_status(connId) 与事件共用）
     dead_reason: Mutex<Option<String>>,
     child: Mutex<Child>,
@@ -452,7 +454,8 @@ fn handle_incoming(app: &AppHandle, conn: &AcpConn, msg: &Value) {
                     .unwrap_or(Value::Null);
                 // 自动化无头会话的 summary：累积 assistant 正文分片。
                 // 前端不消费这条连接，所以这里顺手在 Rust 侧留一份末轮文本。
-                if conn.owner == ConnOwner::Automation
+                if (conn.owner == ConnOwner::Automation
+                    || crate::delegation::is_active_child(&conn.conn_id))
                     && update.get("sessionUpdate").and_then(Value::as_str)
                         == Some("agent_message_chunk")
                 {
@@ -554,6 +557,7 @@ fn handle_client_request(
             .lock()
             .unwrap()
             .insert(request_id.clone(), (id, session_id.clone()));
+        crate::delegation::mark_child_waiting(app, &conn.conn_id, false);
         // toolCall 原样透传；顺带对 rawInput 注入 `_start_line`（best-effort，仅供前端 diff 定位；
         // 失败保持原值，不阻断事件，不 host 任何 fs/terminal）。
         let mut tool_call = params
@@ -625,6 +629,7 @@ fn handle_elicitation_request(conn: &AcpConn, id: Value, msg: &Value, app: &AppH
                 request_id.clone(),
                 (QuestionReply::Acp(id.clone()), questions.clone()),
             );
+            crate::delegation::mark_child_waiting(app, &conn.conn_id, true);
             let questions_json =
                 serde_json::to_value(&questions).unwrap_or(Value::Array(Vec::new()));
             let _ = app.emit(
@@ -964,11 +969,12 @@ fn mcp_servers_for(conn_id: &str) -> Value {
         return Value::Array(Vec::new());
     };
     let token = ask_token_for(conn_id);
+    let delegation_enabled = crate::delegation::get_settings().enabled;
     json!([{
         "type": "stdio",
         "name": "lightr-ask",
         "command": bin.to_string_lossy(),
-        "args": ["--socket", addr, "--token", token, "--conn-id", conn_id],
+        "args": ["--socket", addr, "--token", token, "--conn-id", conn_id, "--delegation-enabled", delegation_enabled.to_string()],
         "env": []
     }])
 }
@@ -991,6 +997,7 @@ fn handle_ask_connection(app: AppHandle, stream: std::net::TcpStream) {
     };
     let token = req.get("token").and_then(Value::as_str).unwrap_or("");
     let conn_id = req.get("connId").and_then(Value::as_str).unwrap_or("");
+    let kind = req.get("kind").and_then(Value::as_str).unwrap_or("ask");
     let arguments = req.get("arguments").cloned().unwrap_or(Value::Null);
 
     // 校验 token（仅本机；防串会话）
@@ -1011,6 +1018,42 @@ fn handle_ask_connection(app: AppHandle, stream: std::net::TcpStream) {
         }
     };
 
+    // 委派控制面复用已认证的回环 companion；父连接和 cwd 从主进程取得，
+    // 不信任 MCP 参数里可能伪造的 parent id。
+    if kind == "delegate" || kind == "status" || kind == "cancel" {
+        let result: Result<Value, String> = match kind {
+            "delegate" => {
+                let agent_type = arguments.get("agent_type").or_else(|| arguments.get("agentType")).and_then(Value::as_str).unwrap_or("").to_string();
+                let task = arguments.get("task").and_then(Value::as_str).unwrap_or("").to_string();
+                let cwd = arguments.get("working_dir").or_else(|| arguments.get("workingDir")).and_then(Value::as_str).map(str::to_string);
+                conn.cwd
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .ok_or_else(|| "session-cwd-unavailable".to_string())
+                    .and_then(|parent_cwd| {
+                        crate::delegation::delegate(app.clone(), conn_id.to_string(), parent_cwd, agent_type, task, cwd)
+                    })
+                    .and_then(|r| serde_json::to_value(r).map_err(|e| e.to_string()))
+            }
+            "status" => {
+                let ids = arguments.get("task_ids").or_else(|| arguments.get("taskIds")).and_then(Value::as_array)
+                    .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
+                Ok(json!({ "tasks": crate::delegation::status_for_parent(conn_id, &ids) }))
+            }
+            _ => {
+                let task_id = arguments.get("task_id").or_else(|| arguments.get("taskId")).and_then(Value::as_str).unwrap_or("");
+                crate::delegation::cancel(&app, conn_id, task_id).and_then(|r| serde_json::to_value(r).map_err(|e| e.to_string()))
+            }
+        };
+        let payload = match result {
+            Ok(value) => json!({ "ok": true, "result": value }),
+            Err(error) => json!({ "ok": false, "error": error }),
+        };
+        let _ = write_ask_raw_response(&stream, &payload);
+        return;
+    }
+
     let questions = questions_from_mcp_args(&arguments);
     if questions.is_empty() {
         // 参数不合法（缺 question）→ 直接 declined，模型据此继续
@@ -1024,6 +1067,9 @@ fn handle_ask_connection(app: AppHandle, stream: std::net::TcpStream) {
         .lock()
         .unwrap()
         .insert(request_id.clone(), (QuestionReply::Mcp(tx), questions.clone()));
+    // 注入的 ask MCP 与原生 elicitation 一样会阻塞 child；若这是委派子会话，
+    // 先投影为等待回答，用户才能从父会话的委派卡知道需要打开子会话处理。
+    crate::delegation::mark_child_waiting(&app, conn_id, true);
     let questions_json = serde_json::to_value(&questions).unwrap_or(Value::Array(Vec::new()));
     let _ = app.emit(
         "acp://question",
@@ -1046,6 +1092,13 @@ fn handle_ask_connection(app: AppHandle, stream: std::net::TcpStream) {
             let _ = write_ask_response(&stream, true, "");
         }
     }
+}
+
+fn write_ask_raw_response(mut stream: &std::net::TcpStream, value: &Value) -> std::io::Result<()> {
+    let mut line = value.to_string();
+    line.push('\n');
+    stream.write_all(line.as_bytes())?;
+    stream.flush()
 }
 
 /// 写回一行应答并关闭连接。
@@ -1180,6 +1233,7 @@ fn connect_inner(
         conn_id: conn_id.clone(),
         owner,
         engine,
+        cwd: Mutex::new(None),
         dead_reason: Mutex::new(None),
         child: Mutex::new(child),
         stdin: Mutex::new(Some(BufWriter::new(stdin))),
@@ -1453,7 +1507,7 @@ fn probe_options_inner(cwd: Option<String>, engine: AgentType) -> Result<ProbeRe
 
     // stderr 独立线程 drain（防管道满死锁，tauri-bridge spec §4）；探针丢弃内容
     std::thread::spawn(move || {
-        for _ in BufReader::new(stderr).lines().flatten() {}
+        for _ in BufReader::new(stderr).lines().map_while(Result::ok) {}
     });
 
     // ProbeChild::drop 保证任何提前 return 都收尸；stdout 行经独立线程 + channel 转发，
@@ -1862,6 +1916,100 @@ fn model_context_window_opencode(provider: &str, model: &str) -> Option<u64> {
 
 // ---------- Tauri commands ----------
 
+/// DelegationBroker 的窄 ACP 入口：子任务使用与普通会话完全相同的一进程一连接
+/// 模型，但生命周期/状态由 delegation 模块拥有。此函数只在后台线程中运行。
+pub(crate) fn run_delegated_child(
+    app: AppHandle,
+    task_id: String,
+    child_session_id: String,
+    engine: AgentType,
+    cwd: String,
+    prompt: String,
+) {
+    let outcome = (|| -> Result<String, String> {
+        connect_inner(app.clone(), child_session_id.clone(), engine, ConnOwner::User)?;
+        let conn = require_conn(&child_session_id)?;
+        std::fs::create_dir_all(&cwd).map_err(|e| format!("创建子会话目录失败: {e}"))?;
+        *conn.cwd.lock().unwrap() = Some(cwd.clone());
+        let created = rpc_call(&conn, "session/new", json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&child_session_id) }))?;
+        let session = parse_session_result(&created, None)?;
+        *conn.acp_session_id.lock().unwrap() = Some(session.session_id.clone());
+        let result = rpc_call(&conn, "session/prompt", json!({
+            "sessionId": session.session_id,
+            "prompt": [{ "type": "text", "text": prompt }]
+        }))?;
+        Ok(result.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn").to_string())
+    })();
+    match outcome {
+        Ok(stop_reason) => {
+            let summary = get_conn(&child_session_id)
+                .and_then(|c| c.last_assistant_text.lock().unwrap().clone())
+                .filter(|text| !text.trim().is_empty());
+            let (status, message, error_code) = delegated_stop_outcome(&stop_reason, summary.is_some());
+            crate::delegation::set_status(&app, &task_id, status, Some(message), summary, error_code);
+        }
+        Err(error) => crate::delegation::set_status(&app, &task_id, crate::delegation::DelegationStatus::Failed,
+            Some(error.clone()), None, Some("subagent_error".into())),
+    }
+}
+
+/// ACP 的 `stopReason` 不等价于委派任务成功：例如 token/turn 限制、拒答和无输出
+/// 都必须让父会话得到可操作的失败信息，而不是误显示为“已完成”。
+fn delegated_stop_outcome(
+    stop_reason: &str,
+    has_summary: bool,
+) -> (crate::delegation::DelegationStatus, String, Option<String>) {
+    use crate::delegation::DelegationStatus;
+
+    match stop_reason {
+        "end_turn" if has_summary => (
+            DelegationStatus::Completed,
+            "子代理已完成".into(),
+            None,
+        ),
+        "end_turn" => (
+            DelegationStatus::Failed,
+            "子代理未返回可显示的结果".into(),
+            Some("no_output".into()),
+        ),
+        "cancelled" => (
+            DelegationStatus::Canceled,
+            "子代理已取消".into(),
+            Some("canceled".into()),
+        ),
+        "refusal" => (
+            DelegationStatus::Failed,
+            "子代理拒绝继续执行".into(),
+            Some("child_refusal".into()),
+        ),
+        "max_tokens" => (
+            DelegationStatus::Failed,
+            "子代理达到输出 token 限制".into(),
+            Some("max_tokens".into()),
+        ),
+        "max_turn_requests" => (
+            DelegationStatus::Failed,
+            "子代理达到轮次限制".into(),
+            Some("max_turn_requests".into()),
+        ),
+        other => (
+            DelegationStatus::Failed,
+            format!("子代理以未完成状态结束（{other}）"),
+            Some("unexpected_stop_reason".into()),
+        ),
+    }
+}
+
+/// 仅供 delegation broker 调用：先向 child 发 cancel，再断开进程；不存在是幂等 no-op。
+pub(crate) fn cancel_delegated_child(app: &AppHandle, child_session_id: &str) {
+    if let Some(conn) = get_conn(child_session_id) {
+        if let Some(acp_session_id) = conn.acp_session_id.lock().unwrap().clone() {
+            let _ = send_line(&conn, &json!({ "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": acp_session_id } }));
+        }
+        disconnect_conn(app, child_session_id, &conn, "delegation-cancel");
+    }
+}
+
 /// 建立/复用某会话的 ACP 连接（幂等）：为该 connId spawn 独立进程 + initialize 握手。
 /// 已有活连接直接返回其 agentInfo（避免重复 ~1.2s 握手）。engine_id 为 wire 值。
 #[tauri::command]
@@ -1882,6 +2030,7 @@ pub async fn acp_connect(
 #[tauri::command]
 pub async fn acp_disconnect(app: AppHandle, session_id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        crate::delegation::cancel_children(&app, &session_id);
         if let Some(conn) = get_conn(&session_id) {
             disconnect_conn(&app, &session_id, &conn, "manual");
         }
@@ -1978,6 +2127,7 @@ pub async fn acp_session_new(conn_id: String, cwd: String) -> Result<SessionResu
         let conn = require_conn(&conn_id)?;
         // cwd 必须存在（协议 §9 绝对路径）；tmpsession 目录首次使用时自动创建
         std::fs::create_dir_all(&cwd).map_err(|e| format!("创建会话目录失败: {}", e))?;
+        *conn.cwd.lock().unwrap() = Some(cwd.clone());
         // 注入我们的提问 MCP 服务器（任意引擎可提问；无法定位 bin 时为空数组，零回归）
         let result = rpc_call(
             &conn,
@@ -2001,6 +2151,7 @@ pub async fn acp_session_load(
 ) -> Result<SessionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = require_conn(&conn_id)?;
+        *conn.cwd.lock().unwrap() = Some(cwd.clone());
         let id = acp_session_id.clone();
         let result = rpc_call(
             &conn,
@@ -2051,8 +2202,11 @@ pub async fn acp_prompt(
 /// 停止 turn：session/cancel notification（无响应；idle 时为安全 no-op，probe §4）
 /// + client 义务：该会话 pending 的 request_permission 一律回 cancelled（协议 §5）
 #[tauri::command]
-pub fn acp_cancel(conn_id: String, session_id: String) -> Result<(), String> {
+pub fn acp_cancel(app: AppHandle, conn_id: String, session_id: String) -> Result<(), String> {
     let conn = require_conn(&conn_id)?;
+    // “停止”父会话的当前轮次也必须止住直属 child；仅在断连时取消会留下
+    // 后台子代理继续改动文件，违背父会话取消的生命周期契约。
+    crate::delegation::cancel_children(&app, &conn_id);
     send_line(
         &conn,
         &json!({ "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": session_id } }),
@@ -2102,7 +2256,7 @@ pub async fn acp_session_close(conn_id: String, session_id: String) -> Result<()
 /// 在 `result.configOptions` 中按 `id` 或 `category` 命中 config_id，取 `currentValue`：
 /// - 命中且为字符串且 != requested → `Some(actual)`（被拒绝/调整）。
 /// - 相等 / 缺项 / currentValue 非字符串 → `None`（不发，避免误报）。
-/// 纯函数，无副作用，便于单测（design §2.1）。
+///   纯函数，无副作用，便于单测（design §2.1）。
 fn detect_config_rejection(result: &Value, config_id: &str, requested: &str) -> Option<String> {
     let options = result.get("configOptions")?.as_array()?;
     let hit = options.iter().find(|o| {
@@ -2159,13 +2313,16 @@ pub async fn acp_set_config(
 /// 答复权限请求；option_id 为 None = cancelled 语义（design §2，协议 §5）
 #[tauri::command]
 pub fn acp_respond_permission(
+    app: AppHandle,
     conn_id: String,
     request_id: String,
     option_id: Option<String>,
 ) -> Result<(), String> {
     let conn = require_conn(&conn_id)?;
     touch_activity(&conn);
-    respond_permission_inner(&conn, &request_id, option_id.as_deref())
+    let result = respond_permission_inner(&conn, &request_id, option_id.as_deref());
+    if result.is_ok() { crate::delegation::mark_child_running(&app, &conn_id); }
+    result
 }
 
 fn respond_permission_inner(
@@ -2204,6 +2361,7 @@ pub struct AnswerItem {
 /// 未命中（重复/过期/已答复/已死）→ `Ok(())` 安全 no-op（design §3.3）。
 #[tauri::command]
 pub fn acp_answer_elicitation(
+    app: AppHandle,
     conn_id: String,
     request_id: String,
     answers: Vec<AnswerItem>,
@@ -2214,6 +2372,7 @@ pub fn acp_answer_elicitation(
     if declined {
         // 用户跳过 / 拒答：回 decline（找不到也安全 no-op）
         let _ = decline_elicitation_inner(&conn, &request_id);
+        crate::delegation::mark_child_running(&app, &conn_id);
         return Ok(());
     }
     let entry = conn.pending_question.lock().unwrap().remove(&request_id);
@@ -2226,7 +2385,7 @@ pub fn acp_answer_elicitation(
         .map(|a| (a.field_id, a.values))
         .collect();
     eprintln!("[acp] answer question requestId={request_id}");
-    match reply {
+    let result = match reply {
         // 原生 ACP elicitation：回写 JSON-RPC 响应
         QuestionReply::Acp(rpc_id) => {
             let result = build_elicitation_result(&questions, &pairs, false);
@@ -2244,7 +2403,9 @@ pub fn acp_answer_elicitation(
             });
             Ok(())
         }
-    }
+    };
+    if result.is_ok() { crate::delegation::mark_child_running(&app, &conn_id); }
+    result
 }
 
 /// 内部：对某挂起 elicitation 回 `{"action":"decline"}` 并移除（找不到则 no-op）。
@@ -2865,5 +3026,31 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn delegated_stop_reason_only_completes_with_a_result() {
+        use crate::delegation::DelegationStatus;
+
+        let (status, _, code) = delegated_stop_outcome("end_turn", true);
+        assert!(matches!(status, DelegationStatus::Completed));
+        assert!(code.is_none());
+
+        let (status, _, code) = delegated_stop_outcome("end_turn", false);
+        assert!(matches!(status, DelegationStatus::Failed));
+        assert_eq!(code.as_deref(), Some("no_output"));
+    }
+
+    #[test]
+    fn delegated_stop_reason_preserves_non_success_terminal_states() {
+        use crate::delegation::DelegationStatus;
+
+        let (status, _, code) = delegated_stop_outcome("cancelled", true);
+        assert!(matches!(status, DelegationStatus::Canceled));
+        assert_eq!(code.as_deref(), Some("canceled"));
+
+        let (status, _, code) = delegated_stop_outcome("max_tokens", true);
+        assert!(matches!(status, DelegationStatus::Failed));
+        assert_eq!(code.as_deref(), Some("max_tokens"));
     }
 }

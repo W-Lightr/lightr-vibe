@@ -269,6 +269,8 @@ export interface SessionIndexEntry {
   mode?: string
   /** 会话绑定的引擎 wire 标识；旧索引缺该字段 → 加载时回退 open_code（AC5） */
   engineId?: EngineWire
+  origin?: 'user' | 'delegation'
+  parentSessionId?: string
   createdAt: number
   updatedAt: number
 }

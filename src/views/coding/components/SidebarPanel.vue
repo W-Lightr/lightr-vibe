@@ -387,7 +387,7 @@ function showMoreSessions(key: string): void {
 const folderGroups = computed(() =>
   projectStore.projects
     .map((project) => {
-      const all = sessionStore.sessions.filter((s) => s.projectId === project.id)
+      const all = sessionStore.sessions.filter((s) => s.origin !== 'delegation' && s.projectId === project.id)
       const sessions = filterSessions(all)
       const limit = visibleCountOf(project.id)
       return {
@@ -407,7 +407,7 @@ const folderGroups = computed(() =>
 /** 临时聊天会话（含项目被移除后归入的孤儿会话，design D4） */
 const tmpSessions = computed(() =>
   filterSessions(
-    sessionStore.sessions.filter((s) => s.kind === 'tmp' || !projectStore.get(s.projectId)),
+    sessionStore.sessions.filter((s) => s.origin !== 'delegation' && (s.kind === 'tmp' || !projectStore.get(s.projectId))),
   ),
 )
 
@@ -718,7 +718,7 @@ function activateProject(projectId: string) {
       >
         <Settings class="h-4 w-4" />
       </button>
-      <span class="pr-1 text-[11px] text-neutral-400">{{ sessionStore.sessions.length }} 个会话</span>
+      <span class="pr-1 text-[11px] text-neutral-400">{{ sessionStore.sessions.filter((s) => s.origin !== 'delegation').length }} 个会话</span>
     </div>
 
     <!-- 文件夹右键菜单（manual 定位到鼠标坐标） -->

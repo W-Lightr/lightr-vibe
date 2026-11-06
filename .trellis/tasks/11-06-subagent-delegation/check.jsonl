@@ -1,0 +1,1 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "跨 Rust/Tauri/前端双通道和 ACP 连接契约的检查基线"}

@@ -57,6 +57,7 @@ struct Args {
     token: String,
     conn_id: String,
     parent_pid: Option<u32>,
+    delegation_enabled: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -64,6 +65,7 @@ fn parse_args() -> Result<Args, String> {
     let mut token = None;
     let mut conn_id = None;
     let mut parent_pid = None;
+    let mut delegation_enabled = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -71,6 +73,7 @@ fn parse_args() -> Result<Args, String> {
             "--token" => token = Some(it.next().unwrap_or_default()),
             "--conn-id" => conn_id = Some(it.next().unwrap_or_default()),
             "--parent-pid" => parent_pid = it.next().and_then(|v| v.parse::<u32>().ok()),
+            "--delegation-enabled" => delegation_enabled = it.next().is_some_and(|v| v == "true"),
             _ => {}
         }
     }
@@ -79,6 +82,7 @@ fn parse_args() -> Result<Args, String> {
         token: token.ok_or("missing --token")?,
         conn_id: conn_id.ok_or("missing --conn-id")?,
         parent_pid,
+        delegation_enabled,
     })
 }
 
@@ -99,21 +103,28 @@ fn handle_line(msg: &serde_json::Value, args: &Args) -> Option<serde_json::Value
                 "serverInfo": { "name": "lightr-ask", "version": "0.1.0" }
             }),
         )),
-        "tools/list" => Some(ok(
-            &id,
-            serde_json::json!({ "tools": [ tool_def() ] }),
-        )),
+        "tools/list" => {
+            let mut tools = vec![ask_tool_def()];
+            if args.delegation_enabled { tools.extend(delegation_tool_defs()); }
+            Some(ok(&id, serde_json::json!({ "tools": tools })))
+        }
         "tools/call" => {
             let params = msg.get("params").cloned().unwrap_or(serde_json::Value::Null);
             let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            if name != "ask_user_question" {
+            if name != "ask_user_question" && !(args.delegation_enabled && matches!(name, "delegate_to_agent" | "get_delegation_status" | "cancel_delegation")) {
                 return Some(err(&id, -32602, &format!("unknown tool: {name}")));
             }
             let arguments = params
                 .get("arguments")
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
-            match ask_via_socket(args, &arguments) {
+            let kind = match name {
+                "ask_user_question" => "ask",
+                "delegate_to_agent" => "delegate",
+                "get_delegation_status" => "status",
+                _ => "cancel",
+            };
+            match call_via_socket(args, kind, &arguments) {
                 Ok(result) => Some(ok(&id, result)),
                 Err(e) => Some(ok(
                     &id,
@@ -130,7 +141,7 @@ fn handle_line(msg: &serde_json::Value, args: &Args) -> Option<serde_json::Value
 }
 
 /// `ask_user_question` 的工具定义（schema 对齐 codeg/Claude Code 形态，本期最小）。
-fn tool_def() -> serde_json::Value {
+fn ask_tool_def() -> serde_json::Value {
     serde_json::json!({
         "name": "ask_user_question",
         "description": "向用户提出一个问题并等待回答。当需要用户澄清需求、在多个方案中选择、或确认关键决策时使用。options 为空表示自由文本回答。",
@@ -151,15 +162,42 @@ fn tool_def() -> serde_json::Value {
     })
 }
 
+fn delegation_tool_defs() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "name": "delegate_to_agent",
+            "description": "把一个自包含、可独立执行的子任务交给本地子代理。调用会立即返回 task_id，子代理在独立会话中异步工作；随后用 get_delegation_status 收集结果。",
+            "inputSchema": { "type": "object", "required": ["agent_type", "task"], "properties": {
+                "agent_type": { "type": "string", "description": "已安装的 ACP 引擎：open_code、claude_code 或 codex" },
+                "task": { "type": "string", "description": "完整任务说明；子代理看不到当前聊天历史" },
+                "working_dir": { "type": "string", "description": "可选，必须位于父会话项目目录内" }
+            }}
+        }),
+        serde_json::json!({
+            "name": "get_delegation_status",
+            "description": "查询一个或多个已委派子任务的状态和结果摘要。",
+            "inputSchema": { "type": "object", "required": ["task_ids"], "properties": {
+                "task_ids": { "type": "array", "items": { "type": "string" } }
+            }}
+        }),
+        serde_json::json!({
+            "name": "cancel_delegation",
+            "description": "取消一个正在运行的子代理任务。",
+            "inputSchema": { "type": "object", "required": ["task_id"], "properties": { "task_id": { "type": "string" } }}
+        }),
+    ]
+}
+
 /// 经 socket 把问题回传主进程，阻塞等答案。
-fn ask_via_socket(
+fn call_via_socket(
     args: &Args,
+    kind: &str,
     arguments: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let mut stream = TcpStream::connect(&args.socket)
         .map_err(|e| format!("连接主进程失败（{}）：{e}", args.socket))?;
     let req = serde_json::json!({
-        "kind": "ask",
+        "kind": kind,
         "token": args.token,
         "connId": args.conn_id,
         "arguments": arguments
@@ -183,6 +221,15 @@ fn ask_via_socket(
     let resp: serde_json::Value =
         serde_json::from_str(resp_line.trim()).map_err(|e| format!("应答解析失败：{e}"))?;
 
+    if kind != "ask" {
+        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        let text = if ok {
+            resp.get("result").map(|v| v.to_string()).unwrap_or_else(|| "{}".into())
+        } else {
+            format!("委派操作失败：{}", resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"))
+        };
+        return Ok(serde_json::json!({ "content": [{ "type": "text", "text": text }], "structuredContent": resp.get("result").cloned().unwrap_or(serde_json::Value::Null), "isError": !ok }));
+    }
     let declined = resp.get("declined").and_then(|v| v.as_bool()).unwrap_or(false);
     if declined {
         return Ok(serde_json::json!({

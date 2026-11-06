@@ -22,7 +22,8 @@
     "10-08-real-folder-projects",
     "10-08-opencode-acp-chat",
     "10-13-acp-multi-engine",
-    "10-13-session-create-flow"
+    "10-13-session-create-flow",
+    "11-06-subagent-delegation"
   ],
   "parent": null,
   "relatedFiles": [],

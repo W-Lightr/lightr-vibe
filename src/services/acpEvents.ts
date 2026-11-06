@@ -9,18 +9,23 @@ import type {
   AcpStatusEvent,
   AcpUpdateEvent,
 } from '../types/acp'
+import type { DelegationRecord, DelegationStartedEvent } from '../types/delegation'
 
 type UpdateHandler = (event: AcpUpdateEvent) => void
 type PermissionHandler = (event: AcpPermissionEvent) => void
 type QuestionHandler = (event: AcpQuestionEvent) => void
 type StatusHandler = (event: AcpStatusEvent) => void
 type ConfigRejectedHandler = (event: AcpConfigRejectedEvent) => void
+type DelegationStartedHandler = (event: DelegationStartedEvent) => void
+type DelegationUpdatedHandler = (event: DelegationRecord) => void
 
 const updateHandlers = new Set<UpdateHandler>()
 const permissionHandlers = new Set<PermissionHandler>()
 const questionHandlers = new Set<QuestionHandler>()
 const statusHandlers = new Set<StatusHandler>()
 const configRejectedHandlers = new Set<ConfigRejectedHandler>()
+const delegationStartedHandlers = new Set<DelegationStartedHandler>()
+const delegationUpdatedHandlers = new Set<DelegationUpdatedHandler>()
 
 export function dispatchUpdate(event: AcpUpdateEvent): void {
   for (const h of updateHandlers) h(event)
@@ -42,6 +47,14 @@ export function dispatchStatus(event: AcpStatusEvent): void {
 /** 分发「配置被 agent 调整」事件（Rust 比对产生，非 wire 种类） */
 export function dispatchConfigRejected(event: AcpConfigRejectedEvent): void {
   for (const h of configRejectedHandlers) h(event)
+}
+
+export function dispatchDelegationStarted(event: DelegationStartedEvent): void {
+  for (const handler of delegationStartedHandlers) handler(event)
+}
+
+export function dispatchDelegationUpdated(event: DelegationRecord): void {
+  for (const handler of delegationUpdatedHandlers) handler(event)
 }
 
 /** 注册 session/update 处理器；返回取消订阅函数 */
@@ -72,4 +85,14 @@ export function onStatus(handler: StatusHandler): () => void {
 export function onConfigRejected(handler: ConfigRejectedHandler): () => void {
   configRejectedHandlers.add(handler)
   return () => configRejectedHandlers.delete(handler)
+}
+
+export function onDelegationStarted(handler: DelegationStartedHandler): () => void {
+  delegationStartedHandlers.add(handler)
+  return () => delegationStartedHandlers.delete(handler)
+}
+
+export function onDelegationUpdated(handler: DelegationUpdatedHandler): () => void {
+  delegationUpdatedHandlers.add(handler)
+  return () => delegationUpdatedHandlers.delete(handler)
 }

@@ -5,6 +5,7 @@ mod agent;
 mod agent_type;
 mod automation;
 mod engine;
+mod delegation;
 mod fs;
 mod task;
 mod worktree;
@@ -78,6 +79,9 @@ pub fn run() {
             acp::acp_set_config,
             acp::acp_respond_permission,
             acp::acp_answer_elicitation,
+            delegation::delegation_get_settings,
+            delegation::delegation_set_settings,
+            delegation::delegation_list,
             // 自动化（task 10-26-automation-scheduler）：CRUD + 调度引擎
             automation::automation_list,
             automation::automation_get,

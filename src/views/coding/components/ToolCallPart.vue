@@ -24,8 +24,13 @@ import {
   X,
 } from 'lucide-vue-next'
 import type { ToolCallPartData } from '../../../types/contentPart'
+import { parseCodexCollabInput } from '../../../utils/codexCollab'
+import DelegationCard from './DelegationCard.vue'
 
 const props = defineProps<{ part: ToolCallPartData }>()
+
+const isDelegation = computed(() => /(?:^|__)(delegate_to_agent|get_delegation_status|cancel_delegation)$/i.test(props.part.name))
+const nativeCodexCollab = computed(() => parseCodexCollabInput(props.part.input))
 
 const expanded = ref(false)
 
@@ -130,7 +135,8 @@ const statusLabel = computed(() => {
 </script>
 
 <template>
-  <div class="max-w-full overflow-hidden rounded-md">
+  <DelegationCard v-if="isDelegation || nativeCodexCollab" :part="part" :native-collab="nativeCodexCollab" />
+  <div v-else class="max-w-full overflow-hidden rounded-md">
     <button
       class="flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs transition-colors hover:bg-neutral-100/70"
       :class="hasDetail ? 'cursor-pointer' : 'cursor-default'"

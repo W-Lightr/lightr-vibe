@@ -67,6 +67,8 @@ function toIndexEntry(s: Session): SessionIndexEntry {
     model: s.model,
     mode: s.mode,
     engineId: s.engineId,
+    origin: s.origin,
+    parentSessionId: s.parentSessionId,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
   }
@@ -131,6 +133,8 @@ function sessionFromEntry(entry: SessionIndexEntry): Session {
     cwd: entry.cwd,
     acpSessionId: entry.acpSessionId,
     mode: entry.mode,
+    origin: entry.origin ?? 'user',
+    parentSessionId: entry.parentSessionId,
   }
 }
 
@@ -251,6 +255,31 @@ export const useSessionStore = defineStore('session', () => {
     session.cwd = opts.cwd ?? tmpSessionDirSync()
     // 临时会话落盘路径：~/.lightr-vibe/lightr-vibe/tmpsession/<id>（命名空间硬规则）
     if (session.kind === 'tmp') session.storagePath = `${tmpSessionDirSync()}/${session.id}`
+    sessions.value.unshift(session)
+    schedulePersistIndex()
+    return session
+  }
+
+  /** 注册 broker 已创建的子会话；它可被 drawer/事件路由解析，但不出现在普通侧栏。 */
+  function registerDelegatedSession(record: {
+    childSessionId: string
+    parentSessionId: string
+    agentType: EngineWire
+    task: string
+    cwd: string
+  }): Session {
+    const existing = get(record.childSessionId)
+    if (existing) return existing
+    const session = conversationService.createSession(record.task.slice(0, 20) || '子代理', '', {
+      kind: 'tmp',
+      engineId: record.agentType,
+    })
+    session.id = record.childSessionId
+    session.origin = 'delegation'
+    session.parentSessionId = record.parentSessionId
+    session.cwd = record.cwd
+    session.storagePath = `${tmpSessionDirSync()}/${record.childSessionId}`
+    session.messagesLoaded = true
     sessions.value.unshift(session)
     schedulePersistIndex()
     return session
@@ -511,6 +540,7 @@ export const useSessionStore = defineStore('session', () => {
     load,
     ensureMessages,
     createSession,
+    registerDelegatedSession,
     createDraft,
     promoteDraft,
     discardDraft,

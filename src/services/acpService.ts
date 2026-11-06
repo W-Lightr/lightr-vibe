@@ -17,9 +17,12 @@ import type {
   AcpStatusEvent,
   AcpUpdateEvent,
 } from '../types/acp'
+import type { DelegationRecord, DelegationStartedEvent } from '../types/delegation'
 import { isTauri } from '../utils/isTauri'
 import {
   dispatchConfigRejected,
+  dispatchDelegationStarted,
+  dispatchDelegationUpdated,
   dispatchPermission,
   dispatchQuestion,
   dispatchStatus,
@@ -47,7 +50,7 @@ export function initAcpListeners(): Promise<void> {
   if (!isTauri()) return Promise.resolve()
   if (!initPromise) {
     initPromise = (async () => {
-      const [u1, u2, u3, u4, u5] = await Promise.all([
+      const [u1, u2, u3, u4, u5, u6, u7] = await Promise.all([
         listen<AcpUpdateEvent>('acp://update', (e) => dispatchUpdate(e.payload)),
         listen<AcpPermissionEvent>('acp://permission', (e) => {
           console.debug('[acp-listener] acp://permission', e.payload?.connId, e.payload?.toolCall?.kind)
@@ -61,8 +64,10 @@ export function initAcpListeners(): Promise<void> {
         listen<AcpConfigRejectedEvent>('acp://configRejected', (e) =>
           dispatchConfigRejected(e.payload),
         ),
+        listen<DelegationStartedEvent>('delegation://started', (e) => dispatchDelegationStarted(e.payload)),
+        listen<DelegationRecord>('delegation://updated', (e) => dispatchDelegationUpdated(e.payload)),
       ])
-      unlistenAll = [u1, u2, u3, u4, u5]
+      unlistenAll = [u1, u2, u3, u4, u5, u6, u7]
       console.debug('[acp-listener] listeners ready')
     })().catch((err) => {
       // 初始化失败（webview 未就绪等）：清空缓存以便下次重试，不让一个 reject 永久卡死监听
