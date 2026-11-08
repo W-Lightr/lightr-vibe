@@ -69,8 +69,10 @@ export function initAcpListeners(): Promise<void> {
       ])
       unlistenAll = [u1, u2, u3, u4, u5, u6, u7]
       console.debug('[acp-listener] listeners ready')
-    })().catch((err) => {
-      // 初始化失败（webview 未就绪等）：清空缓存以便下次重试，不让一个 reject 永久卡死监听
+    })()
+    void initPromise.catch((err) => {
+      // 初始化失败（webview 未就绪等）允许下次调用重试；调用方仍会收到 reject，
+      // 因而不会在没有生命周期监听器时继续发起 ACP/委派工作。
       console.error('[acp-listener] init failed, will retry on next call', err)
       initPromise = null
     })

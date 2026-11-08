@@ -12,7 +12,13 @@ export const useDelegationStore = defineStore('delegation', () => {
   async function load(): Promise<void> {
     const [nextSettings, nextRecords] = await Promise.all([delegationService.getSettings(), delegationService.list()])
     settings.value = nextSettings
-    records.value = nextRecords
+    // 监听器在应用启动时先于此加载完成。保留 list 请求期间刚到达的事件，
+    // 避免较早的快照把新建任务从内存投影中覆盖掉。
+    const liveRecords = new Map(records.value.map((record) => [record.taskId, record]))
+    for (const record of nextRecords) {
+      if (!liveRecords.has(record.taskId)) liveRecords.set(record.taskId, record)
+    }
+    records.value = [...liveRecords.values()]
   }
 
   async function saveSettings(next: DelegationSettings): Promise<void> {

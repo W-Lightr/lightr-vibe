@@ -77,6 +77,13 @@ The broker has a small explicit interface to `acp.rs`, rather than reaching into
 
 `mcp_servers_for` injects the companion configuration only for the tools allowed by current settings. Changing the global toggle affects new or reconnected ACP sessions; the settings UI must say this explicitly and offer/recommend reconnecting active sessions. This avoids advertising a tool that will later be rejected.
 
+The companion is a first-class build artifact: the dev command builds the
+`lightr-ask-mcp` binary before launching Tauri, and the production build stages
+the exact binary beside or as a resolved bundle resource. Runtime lookup uses an
+explicit dev/resource resolution strategy rather than assuming a stale sibling
+binary is current. A smoke check starts the staged companion with delegation
+enabled and asserts the three delegation tool names appear in `tools/list`.
+
 ## 4. Frontend Design
 
 ### 4.1 Types and services
@@ -98,6 +105,12 @@ The broker has a small explicit interface to `acp.rs`, rather than reaching into
 The “查看会话” action opens a nested right-side drawer that renders the existing transcript components against `childSessionId`. It is available only where a real child Session exists. Permission and question queues already route by local `connId`; the drawer must select/filter by the child id, not the parent ACP session id.
 
 No fake session link is rendered for Codex-native collaboration data that lacks a stable child session reference.
+
+The durable `delegation://started` event is also the source of truth for an
+event-driven parent transcript entry. It creates/updates a typed delegation
+card for `parentSessionId` even when the ACP adapter omits an MCP tool-call
+update or supplies a prose title. Adapter tool details may enrich that card but
+never determine whether it exists.
 
 ### 4.3 Settings
 

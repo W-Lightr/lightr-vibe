@@ -7,7 +7,9 @@
     "dev": "vite",
     "dev:tauri": "tauri-dev.bat",
     "build": "vue-tsc --noEmit && vite build",
-    "build:tauri": "tauri build",
+    "build:tauri:prepare": "tauri-build.bat",
+    "build:tauri": "tauri build --config src-tauri/tauri.bundle.conf.json",
+    "smoke:ask-mcp": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\smoke-lightr-ask-mcp.ps1",
     "preview": "vite preview",
     "tauri": "tauri"
   },

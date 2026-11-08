@@ -29,6 +29,7 @@
 3. Extend `src-tauri/src/acp.rs` socket handler and `mcp_servers_for` to register delegation tools only when enabled; preserve existing ask-tool injection and cancellation cleanup.
 4. Make active-session reconnect behavior explicit when settings change; ensure no disabled session advertises delegation tools.
 5. Validate: stdio MCP framing tests, token/connection ownership rejection tests, and an ACP probe showing the expected tool set with toggle off/on.
+6. Make `lightr-ask-mcp` a deterministic dev and packaged artifact; add a staged-binary `tools/list` smoke test to prevent stale companion regressions.
 
 ## Phase 4 — Frontend cards, event routing and viewer
 
@@ -38,6 +39,7 @@
 4. Build a nested right-side child-session drawer reusing the existing transcript display. Ensure permission and question queues filter by child local `connId`.
 5. Add collaboration settings UI and explain default-off/direct-after-enable/reconnect behavior.
 6. Validate: browser mock interactions, TypeScript build, Tauri manual path for card, drawer, permissions and questions.
+7. Create/reconcile the parent delegation card from `delegation://started` / persisted records, independent of adapter tool titles; await listener readiness before the app mounts or opens ACP sessions.
 
 ## Phase 5 — Codex native compatibility and quality gate
 

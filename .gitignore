@@ -18,6 +18,9 @@ dist-ssr
 # 调试符号（sidecar 构建产物）
 *.pdb
 
+# Generated release companion staged for Tauri bundle.resources.
+src-tauri/binaries/lightr-ask-mcp.exe
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

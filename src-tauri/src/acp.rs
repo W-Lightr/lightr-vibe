@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::agent_type::AgentType;
 use crate::acp_question::{build_elicitation_result, classify_elicitation, ElicitationPlan, Question};
@@ -940,29 +940,41 @@ fn ask_token_for(conn_id: &str) -> String {
     format!("{}{}", ask_salt(), conn_id)
 }
 
-/// 定位 `lightr-ask-mcp` 可执行文件：与主进程同目录（生产/`tauri build`），
-/// 或 dev 下同目录（`target/debug` 与主 exe 同处）。
-fn ask_bin_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
+/// 定位随应用发布的 `lightr-ask-mcp` companion。
+///
+/// 开发时它由 `tauri-dev.bat` 先行编译，和主程序位于同一 `target/debug`
+/// 目录；打包时 `bundle.resources` 将 release binary 放到 resource 根目录。
+/// 不要只猜测主程序的相邻文件：安装后的 Tauri 应用不会把资源放在那里。
+fn ask_bin_path(app: &AppHandle) -> Option<PathBuf> {
     let name = if cfg!(windows) {
         "lightr-ask-mcp.exe"
     } else {
         "lightr-ask-mcp"
     };
-    let candidate = dir.join(name);
-    if candidate.is_file() {
-        Some(candidate)
-    } else {
-        None
+
+    // Direct cargo/debug execution and unbundled release runs.
+    if let Some(candidate) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .filter(|candidate| candidate.is_file())
+    {
+        return Some(candidate);
     }
+
+    // Installed bundle: the build maps this exact resource name into $RESOURCE.
+    app.path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join(name))
+        .filter(|candidate| candidate.is_file())
 }
 
 /// 构造注入 `session/new`/`session/load` 的 `mcpServers` 数组（ACP McpServerStdio 形状）：
 /// `{ "type":"stdio", "name":"lightr-ask", "command":<bin>, "args":[...], "env":[] }`。
 /// 无法定位 bin 时返回 `[]`（不注入，opencode 零回归）。
-fn mcp_servers_for(conn_id: &str) -> Value {
-    let Some(bin) = ask_bin_path() else {
+fn mcp_servers_for(app: &AppHandle, conn_id: &str) -> Value {
+    let Some(bin) = ask_bin_path(app) else {
+        eprintln!("[acp] companion MCP unavailable for connection {conn_id}; ask/delegation tools were not injected");
         return Value::Array(Vec::new());
     };
     let Some(addr) = ASK_LISTENER.get().map(|l| l.addr.clone()) else {
@@ -970,6 +982,10 @@ fn mcp_servers_for(conn_id: &str) -> Value {
     };
     let token = ask_token_for(conn_id);
     let delegation_enabled = crate::delegation::get_settings().enabled;
+    eprintln!(
+        "[acp] injecting companion MCP for connection {conn_id} (delegation_enabled={delegation_enabled}, path={})",
+        bin.display()
+    );
     json!([{
         "type": "stdio",
         "name": "lightr-ask",
@@ -1931,7 +1947,7 @@ pub(crate) fn run_delegated_child(
         let conn = require_conn(&child_session_id)?;
         std::fs::create_dir_all(&cwd).map_err(|e| format!("创建子会话目录失败: {e}"))?;
         *conn.cwd.lock().unwrap() = Some(cwd.clone());
-        let created = rpc_call(&conn, "session/new", json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&child_session_id) }))?;
+        let created = rpc_call(&conn, "session/new", json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&app, &child_session_id) }))?;
         let session = parse_session_result(&created, None)?;
         *conn.acp_session_id.lock().unwrap() = Some(session.session_id.clone());
         let result = rpc_call(&conn, "session/prompt", json!({
@@ -2122,7 +2138,7 @@ fn parse_session_result(result: &Value, fallback_id: Option<String>) -> Result<S
 /// 新建 ACP 会话（首调 7.6-8.9s → 30s 超时；mcpServers 为必填字段，传 []）。
 /// conn_id = 本地会话 id（定位该会话进程）；返回 agent-side sessionId。
 #[tauri::command]
-pub async fn acp_session_new(conn_id: String, cwd: String) -> Result<SessionResult, String> {
+pub async fn acp_session_new(app: AppHandle, conn_id: String, cwd: String) -> Result<SessionResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = require_conn(&conn_id)?;
         // cwd 必须存在（协议 §9 绝对路径）；tmpsession 目录首次使用时自动创建
@@ -2132,7 +2148,7 @@ pub async fn acp_session_new(conn_id: String, cwd: String) -> Result<SessionResu
         let result = rpc_call(
             &conn,
             "session/new",
-            json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&conn_id) }),
+            json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&app, &conn_id) }),
         )?;
         touch_activity(&conn);
         parse_session_result(&result, None)
@@ -2145,6 +2161,7 @@ pub async fn acp_session_new(conn_id: String, cwd: String) -> Result<SessionResu
 /// 前端对重放 update 一律忽略——本地历史为准，design §4）。
 #[tauri::command]
 pub async fn acp_session_load(
+    app: AppHandle,
     conn_id: String,
     acp_session_id: String,
     cwd: String,
@@ -2156,7 +2173,7 @@ pub async fn acp_session_load(
         let result = rpc_call(
             &conn,
             "session/load",
-            json!({ "sessionId": acp_session_id, "cwd": cwd, "mcpServers": mcp_servers_for(&conn_id) }),
+            json!({ "sessionId": acp_session_id, "cwd": cwd, "mcpServers": mcp_servers_for(&app, &conn_id) }),
         )?;
         touch_activity(&conn);
         parse_session_result(&result, Some(id))
@@ -2509,7 +2526,7 @@ pub(crate) fn run_automation_turn(
     let result = rpc_call(
         &conn,
         "session/new",
-        json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&conn_id) }),
+        json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&app, &conn_id) }),
     )?;
     touch_activity(&conn);
     let session = parse_session_result(&result, None)?;

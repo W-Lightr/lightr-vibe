@@ -8,6 +8,7 @@ import { computed, reactive, ref } from 'vue'
 import type { Message, Session, ToolCall } from '../types/session'
 import type { SessionIndexEntry } from '../types/acp'
 import type { EngineWire } from '../types/engine'
+import type { DelegationRecord } from '../types/delegation'
 import { DEFAULT_ENGINE_WIRE } from '../types/engine'
 import { conversationService } from '../services/conversationService'
 import { fsService } from '../services/fsService'
@@ -449,6 +450,48 @@ export const useSessionStore = defineStore('session', () => {
     return message
   }
 
+  /**
+   * 将 broker 生命周期投影为父会话的一张稳定委派卡。
+   *
+   * ACP adapter 的工具 title 属于展示性数据，可能是 prose 或干脆缺失；这里仅以
+   * 持久化 taskId 为幂等键。因此重启恢复与实时 `delegation://started` 走同一条路径。
+   */
+  async function ensureDelegationCard(record: DelegationRecord): Promise<void> {
+    const parent = get(record.parentSessionId)
+    if (!parent) return
+    await ensureMessages(record.parentSessionId)
+
+    const toolCallId = `delegation:${record.taskId}`
+    const toolCall: ToolCall = {
+      id: toolCallId,
+      name: 'delegate_to_agent',
+      input: JSON.stringify({
+        agent_type: record.agentType,
+        task: record.task,
+        working_dir: record.cwd,
+      }),
+      result: JSON.stringify(record),
+      status: record.status === 'failed' ? 'error' : record.status === 'running' ? 'running' : 'done',
+      kind: 'other',
+    }
+    const existingMessage = parent.messages.find((message) =>
+      message.toolCalls?.some((call) => call.id === toolCallId),
+    )
+    if (existingMessage) {
+      patchToolCall(record.parentSessionId, existingMessage.id, toolCallId, toolCall)
+    } else {
+      pushMessage(record.parentSessionId, {
+        id: toolCallId,
+        role: 'assistant',
+        type: 'text',
+        content: '',
+        status: 'done',
+        toolCalls: [toolCall],
+      })
+    }
+    await persistMessages(record.parentSessionId)
+  }
+
   function messageById(sessionId: string, messageId: string): Message | undefined {
     return get(sessionId)?.messages.find((m) => m.id === messageId)
   }
@@ -554,6 +597,7 @@ export const useSessionStore = defineStore('session', () => {
     persistIndex,
     persistMessages,
     pushMessage,
+    ensureDelegationCard,
     messageById,
     appendContent,
     patchMessage,
