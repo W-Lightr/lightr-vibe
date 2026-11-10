@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "委派 MCP 注入、事件通道与子会话查看器的跨层契约检查基线"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "构建、类型检查与禁止模式的验收依据"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "RightTab、DelegationRecord 派生与空值处理需符合类型约定"}

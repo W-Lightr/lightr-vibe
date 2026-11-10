@@ -450,6 +450,52 @@ export const useSessionStore = defineStore('session', () => {
     return message
   }
 
+  /** adapter 回传的委派工具名：`mcp__lightr-ask__delegate_to_agent`、
+   *  `lightr-ask_delegate_to_agent`、`delegate_to_agent` 都算。 */
+  function isDelegationToolName(name: string | undefined): boolean {
+    return /(?:^|[_-])delegate_to_agent$/i.test(name ?? '')
+  }
+
+  function parseJsonObject(text: string | undefined): Record<string, unknown> | null {
+    if (!text) return null
+    try {
+      const value: unknown = JSON.parse(text)
+      return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * transcript 里是否已有这次委派的**真实** MCP 工具调用。
+   *
+   * adapter 的 tool_call 与 broker 的 `delegation://started` 是两条通道：真实调用先到，
+   * 再补一张合成卡就会同一任务出现两张卡。终态按返回里的 taskId 强匹配；started 阶段
+   * 返回还没到，退化为 task 文本 + 引擎匹配。
+   */
+  function hasRealDelegationCall(parent: Session, record: DelegationRecord): boolean {
+    for (const message of parent.messages) {
+      for (const call of message.toolCalls ?? []) {
+        if (call.id === `delegation:${record.taskId}`) continue
+        if (!isDelegationToolName(call.name)) continue
+        const output = parseJsonObject(call.result)
+        if (typeof output?.taskId === 'string') {
+          if (output.taskId === record.taskId) return true
+          continue
+        }
+        const input = parseJsonObject(call.input)
+        if (
+          typeof input?.task === 'string' &&
+          input.task === record.task &&
+          (input.agent_type === undefined || input.agent_type === record.agentType)
+        ) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+
   /**
    * 将 broker 生命周期投影为父会话的一张稳定委派卡。
    *
@@ -462,6 +508,14 @@ export const useSessionStore = defineStore('session', () => {
     await ensureMessages(record.parentSessionId)
 
     const toolCallId = `delegation:${record.taskId}`
+    // 真实 MCP 调用已经在 transcript 里承载这张卡：不再插合成卡，并清掉旧版本
+    // 或竞态下留下的重复合成卡（启动恢复时会顺带清理历史数据）。
+    if (hasRealDelegationCall(parent, record)) {
+      const legacy = parent.messages.findIndex((message) => message.id === toolCallId)
+      if (legacy >= 0) parent.messages.splice(legacy, 1)
+      await persistMessages(record.parentSessionId)
+      return
+    }
     const toolCall: ToolCall = {
       id: toolCallId,
       name: 'delegate_to_agent',

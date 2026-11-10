@@ -460,8 +460,14 @@ function applyUpdate(event: AcpUpdateEvent): void {
       if (update.sessionUpdate === 'user_message_chunk') return
       const text = update.content?.text ?? ''
       const type = update.sessionUpdate === 'agent_thought_chunk' ? 'thinking' : 'text'
-      // 兜底 id 带 turnId：无 messageId 的 agent 跨 turn 不与上一条 done 消息碰撞
-      const messageId = update.messageId ?? `${type}-current-${turnId ?? 'live'}`
+      // `messageId` 是协议层的「一条 assistant 消息」标识：claude-agent-acp 会把同一条
+      // 消息里的思考块与正文块打上同一个 messageId。若直接拿它当本地消息 id，正文 chunk
+      // 会命中先创建的思考消息，把最终回答 append 进「思考」里。用内容类型做前缀分开，
+      // 保证正文另起一条消息（并触发 settleStreamingThinking 收尾思考）。
+      // 兜底 id 带 turnId：无 messageId 的 agent 跨 turn 不与上一条 done 消息碰撞。
+      const messageId = update.messageId
+        ? `${type}:${update.messageId}`
+        : `${type}-current-${turnId ?? 'live'}`
       let message = session?.messages.find((m) => m.id === messageId)
       if (!message) {
         // 开始产出正文：说明前面的思考阶段已经结束，先把它收尾

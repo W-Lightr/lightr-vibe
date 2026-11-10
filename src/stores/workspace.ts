@@ -17,6 +17,9 @@ export const EXECUTION_MODES: { value: ExecutionMode; label: string }[] = [
   { value: 'plan', label: '计划模式' },
 ]
 
+/** 右侧栏页签：文件 / 变更 / 详情 / 子任务。 */
+export type RightTab = 'files' | 'changes' | 'detail' | 'subtasks'
+
 export const useWorkspaceStore = defineStore('workspace', () => {
   const tabs = ref<OpenTab[]>([])
   const activeTabId = ref<string | null>(null)
@@ -28,7 +31,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    * 在那里渲染），所以关掉不会锁死。
    */
   const inspectorVisible = ref(false)
-  /** 委派卡片打开的只读子会话；显示在既有右侧栏，不污染普通标签历史。 */
+  /** 右侧栏当前页签；重新打开右栏时回到上次停留的位置。 */
+  const rightTab = ref<RightTab>('files')
+  /** 委派卡片打开的只读子会话；显示在右侧栏「子任务」页签内，不污染普通标签历史。 */
   const delegatedChildSessionId = ref<string | null>(null)
   /** 左/右栏宽度（px），拖拽分隔条调整 */
   const leftWidth = ref(260)
@@ -56,13 +61,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     activeTabId.value = tab.id
   }
 
+  /** 打开子任务详情：切到「子任务」页签并展开右栏（自动打开与卡片点击共用）。 */
   function openDelegatedChild(sessionId: string) {
     delegatedChildSessionId.value = sessionId
+    rightTab.value = 'subtasks'
     inspectorVisible.value = true
   }
 
+  /** 详情 → 列表（页签与右栏保持可见）。 */
   function closeDelegatedChild() {
     delegatedChildSessionId.value = null
+  }
+
+  /** 关闭整个右侧栏；保留 rightTab，便于顶栏按钮重新打开到上次页签。 */
+  function closeInspector() {
+    delegatedChildSessionId.value = null
+    inspectorVisible.value = false
   }
 
   /** 打开文件编辑标签（同路径复用） */
@@ -124,6 +138,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     activeSessionId,
     sidebarVisible,
     inspectorVisible,
+    rightTab,
     delegatedChildSessionId,
     leftWidth,
     rightWidth,
@@ -135,6 +150,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     openSession,
     openDelegatedChild,
     closeDelegatedChild,
+    closeInspector,
     openFile,
     closeTab,
     forgetSession,

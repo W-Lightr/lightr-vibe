@@ -6,6 +6,7 @@ import type { ToolCallPartData } from '../../../types/contentPart'
 import { useDelegationStore } from '../../../stores/delegation'
 import { useWorkspaceStore } from '../../../stores/workspace'
 import type { CodexCollabInfo } from '../../../utils/codexCollab'
+import { delegationStatusClass, delegationStatusText, isWaitingStatus } from '../../../utils/delegationStatus'
 
 const props = defineProps<{ part: ToolCallPartData, nativeCollab?: CodexCollabInfo | null }>()
 const delegation = useDelegationStore()
@@ -38,8 +39,8 @@ const record = computed(() => delegation.get(taskId.value))
 const task = computed(() => props.nativeCollab?.prompt ?? record.value?.task ?? (typeof input.value?.task === 'string' ? input.value.task : '子代理任务'))
 const agent = computed(() => props.nativeCollab?.model ?? record.value?.agentType ?? (typeof input.value?.agent_type === 'string' ? input.value.agent_type : 'Agent'))
 const status = computed(() => props.nativeCollab?.status ?? record.value?.status ?? (props.part.status === 'error' ? 'failed' : props.part.status === 'done' ? 'completed' : 'running'))
-const statusText = computed(() => ({ running: '运行中', waiting_permission: '等待授权', waiting_question: '等待回答', completed: '已完成', failed: '失败', canceled: '已取消', interrupted: '已中断' }[status.value] ?? '运行中'))
-const isWaiting = computed(() => status.value === 'waiting_permission' || status.value === 'waiting_question')
+const statusText = computed(() => delegationStatusText(status.value))
+const isWaiting = computed(() => isWaitingStatus(status.value))
 const canOpen = computed(() => !props.nativeCollab && !!record.value?.childSessionId)
 const nativeMessage = computed(() => props.nativeCollab?.agents.map((agent) => agent.message).find((message): message is string => !!message) ?? null)
 
@@ -51,7 +52,7 @@ function openChild(): void { if (record.value?.childSessionId) workspace.openDel
     <div class="flex min-w-0 items-center gap-2">
       <Bot class="h-4 w-4 shrink-0 text-blue-600" />
       <span class="min-w-0 flex-1 truncate font-medium text-neutral-700">{{ nativeCollab ? 'Codex 协作代理' : '委派给' }} {{ agent }}</span>
-      <span class="rounded px-1.5 py-0.5 text-[10px]" :class="status === 'failed' ? 'bg-red-50 text-red-600' : isWaiting ? 'bg-amber-50 text-amber-700' : status === 'running' ? 'bg-blue-50 text-blue-600' : 'bg-neutral-100 text-neutral-500'">
+      <span class="rounded px-1.5 py-0.5 text-[10px]" :class="delegationStatusClass(status)">
         <LoaderCircle v-if="status === 'running'" class="mr-1 inline h-3 w-3 animate-spin" />
         <ShieldQuestion v-else-if="isWaiting" class="mr-1 inline h-3 w-3" />
         <CircleAlert v-else-if="status === 'failed'" class="mr-1 inline h-3 w-3" />

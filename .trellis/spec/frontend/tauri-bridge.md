@@ -298,6 +298,43 @@ are `delegation://started` and `delegation://updated`.
 - Child drawers are passive viewers: do not auto-connect, create another
   ACP session, or mount a message composer that can send an unrelated turn.
 
+### Subtask tab + delegation guidance (task 11-10-delegation-subtask-tab)
+
+The delegated child viewer is no longer a whole-panel replacement. Its state is a
+`workspace` store property and the right panel renders it inside the 「子任务」 tab:
+
+- `RightTab = 'files' | 'changes' | 'detail' | 'subtasks'` and `rightTab` live in
+  `stores/workspace.ts`. Never reintroduce a local tab ref in `RightPanel.vue`.
+- `openDelegatedChild(childId)` sets `delegatedChildSessionId`, `rightTab='subtasks'`
+  and `inspectorVisible=true`, so a `delegation://started` event still auto-opens the
+  detail without a click. Parent-transcript 「查看会话」 uses the same entry point.
+- `closeDelegatedChild()` = detail → list (panel stays open);
+  `closeInspector()` = hide the whole panel while preserving `rightTab`, so the TopBar
+  toggle reopens the last visited tab.
+- The 「子任务」 tab appears only when the **active** session owns records
+  (`parentSessionId === session.id`) or a child detail is open; otherwise `RightPanel`
+  falls back to `files`. The badge counts only the active session's records.
+- Delegation steering is advisory only: the `delegate_to_agent` description is
+  deliberately long — when to use it, the forced convention (no native Claude
+  `Agent`/`Task`, opencode `task`, Codex collab tools), "delegate once then poll with
+  `get_delegation_status`", parameter meanings and the returned shape. `inputSchema`,
+  socket protocol and engine spawn args are unchanged.
+- **No duplicate delegation cards.** `sessionStore.ensureDelegationCard()` must first look
+  for the real MCP tool call already in the transcript (match by returned `taskId`, then by
+  `task` + `agent_type` while it is still running) and, when found, skip the synthetic
+  `delegation:<taskId>` card and delete any legacy copy. Adapter tool titles differ
+  (`mcp__lightr-ask__delegate_to_agent`, `lightr-ask_delegate_to_agent`), so both
+  `ToolCallPart.isDelegation` and the store matcher use `(?:^|[_-])delegate_to_agent$`.
+  Without this, every delegation renders twice: once from the adapter's real tool call and
+  once from the broker-driven synthetic card.
+- Claude sessions also get `_meta.systemPrompt.append` on `session/new` /
+  `session/load` and on delegated child sessions, built by `with_session_meta()` in
+  `acp.rs`. It is gated on `AgentType::ClaudeCode` plus the delegation setting; the
+  `claude-agent-acp` adapter merges `append` into its preset system prompt, while other
+  engines ignore the private key. Native `Agent` / `Task` tools stay enabled — do not
+  add `disallowedTools` without a product decision, and do not send `_meta` to engines
+  that have not been verified to accept it.
+
 ### 4. Validation & Error Matrix
 
 | Condition | Behavior |
@@ -432,6 +469,15 @@ codeg's `codeg-mcp` companion but simplified:
   sends `declined` → socket unblocks); `mark_dead` clears the map → drops the Sender
   → the socket thread's `recv` errors → writes declined. `cancel_by_rpc_id` matches
   only `Acp` (an MCP ask has no rpc id — it's canceled via socket/session close).
+- **Smoke test encoding** (`scripts/smoke-lightr-ask-mcp.ps1`, run by `tauri-dev.bat`,
+  `tauri-build.bat`, `pnpm smoke:ask-mcp`): MCP stdio is UTF-8 in both directions, but
+  Windows PowerShell 5.1 decodes child stdout with the console code page (936 on zh-CN)
+  and builds `Process.StandardInput` from `Console.InputEncoding` (BOM-emitting UTF-8).
+  Either mismatch breaks the probe — mojibake can swallow a `{`/`}` as a double-byte
+  trail byte, and the companion's `lines()` reader silently drops a BOM-prefixed
+  request. **Contract**: the smoke must decode stdout as UTF-8
+  (`StandardOutputEncoding = UTF8Encoding($false)`) and write stdin with the same
+  BOM-less encoding, never relying on the host code page.
 
 > **Warning**: `default-run = "lightr-vibe"` is required in `Cargo.toml` now that the
 > package has two bins — otherwise `cargo run` (Tauri dev) fails with "could not
@@ -442,6 +488,13 @@ codeg's `codeg-mcp` companion but simplified:
 `reader_loop` forwards the whole `session/update`, so the frontend can consume any
 kind. `useConversation.applyUpdate` now handles (beyond text/tool/usage/config):
 `plan` · `session_info_update` · `available_commands_update` · `current_mode_update`.
+
+**Chunk id namespacing.** ACP's `messageId` identifies one protocol-level assistant
+message, and `claude-agent-acp` stamps the same value on the `agent_thought_chunk` and
+`agent_message_chunk` events of that message. `applyUpdate` must therefore build the
+local message id as `<type>:<messageId>` (`thinking:` / `text:`), never from the raw
+`messageId` — otherwise the answer chunk matches the thinking message created first and
+gets appended into it, so the final answer renders inside 「思考」.
 
 - **`plan`** → `sessionStore.setPlan(connId, entries)` (overwrite; empty clears);
   `PlanCard.vue` renders items + status badges. Entries `{content, priority?, status?}`

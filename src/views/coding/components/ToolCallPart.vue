@@ -29,7 +29,9 @@ import DelegationCard from './DelegationCard.vue'
 
 const props = defineProps<{ part: ToolCallPartData }>()
 
-const isDelegation = computed(() => /(?:^|__)(delegate_to_agent|get_delegation_status|cancel_delegation)$/i.test(props.part.name))
+// adapter 的工具标题形态不稳定：`mcp__lightr-ask__delegate_to_agent`、
+// `lightr-ask_delegate_to_agent`、`delegate_to_agent` 都要识别成委派卡。
+const isDelegation = computed(() => /(?:^|[_-])(delegate_to_agent|get_delegation_status|cancel_delegation)$/i.test(props.part.name))
 const nativeCodexCollab = computed(() => parseCodexCollabInput(props.part.input))
 
 const expanded = ref(false)

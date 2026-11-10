@@ -166,7 +166,7 @@ fn delegation_tool_defs() -> Vec<serde_json::Value> {
     vec![
         serde_json::json!({
             "name": "delegate_to_agent",
-            "description": "把一个自包含、可独立执行的子任务交给本地子代理。调用会立即返回 task_id，子代理在独立会话中异步工作；随后用 get_delegation_status 收集结果。",
+            "description": "在 Lightr 内启动一个独立子代理执行子任务，立即返回 task_id；子代理在自己的会话里异步工作，不阻塞当前对话。\n\n【何时使用】任何需要子代理的场景：拆分出的子任务、并行探索、大范围目录/代码检索、独立的长任务。\n\n【强制约定】\n1. 在本应用内创建子任务必须使用本工具。禁止使用引擎内置的子任务工具，例如 Claude Code 的 Agent / Task 工具、opencode 的 task 工具、Codex 的协作代理（collab / spawn）工具。\n2. 内置子任务工具不会出现在 Lightr 的「子任务」面板中，用户看不到进度、无法查看子会话，任务也不受 Lightr 生命周期管理；只有本工具创建的任务会展示在右侧「子任务」页签。\n3. 同一个任务只委派一次。需要等待结果时用 get_delegation_status 轮询，不要因为等待就重复调用本工具（会产生多张重复的委派卡）。\n\n【参数】agent_type：执行引擎（open_code / claude_code / codex）；task：完整、自包含的任务说明（子代理看不到当前聊天历史）；working_dir：可选，必须位于当前项目目录内。\n\n【返回】{ taskId, status, childSessionId, ... }。taskId 用于 get_delegation_status 查询和 cancel_delegation 取消。",
             "inputSchema": { "type": "object", "required": ["agent_type", "task"], "properties": {
                 "agent_type": { "type": "string", "description": "已安装的 ACP 引擎：open_code、claude_code 或 codex" },
                 "task": { "type": "string", "description": "完整任务说明；子代理看不到当前聊天历史" },
@@ -175,14 +175,14 @@ fn delegation_tool_defs() -> Vec<serde_json::Value> {
         }),
         serde_json::json!({
             "name": "get_delegation_status",
-            "description": "查询一个或多个已委派子任务的状态和结果摘要。",
+            "description": "查询由 delegate_to_agent 创建的一个或多个子任务的状态和结果摘要。等待子任务时用本工具轮询（间隔几秒），不要重复调用 delegate_to_agent 创建同一任务。",
             "inputSchema": { "type": "object", "required": ["task_ids"], "properties": {
                 "task_ids": { "type": "array", "items": { "type": "string" } }
             }}
         }),
         serde_json::json!({
             "name": "cancel_delegation",
-            "description": "取消一个正在运行的子代理任务。",
+            "description": "取消由 delegate_to_agent 创建且仍在运行的子任务。",
             "inputSchema": { "type": "object", "required": ["task_id"], "properties": { "task_id": { "type": "string" } }}
         }),
     ]

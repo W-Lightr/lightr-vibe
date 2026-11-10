@@ -1,0 +1,5 @@
+{"file": ".trellis/tasks/11-06-subagent-delegation/design.md", "reason": "既有委派 broker、事件与前端投影的完整设计，是本任务复用的基线"}
+{"file": ".trellis/tasks/11-06-subagent-delegation/research/delegation-display-diagnosis.md", "reason": "解释面板缺失的根因（原生子代理 / 旧 companion），约束本任务的可见性设计"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Pinia setup store 的边界与派生状态约定，涉及 workspace/delegation store 改动"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "新增列表 / 卡片 / 详情组件的 props 与组合约定"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "状态徽标、卡片、页签的视觉语言约束"}

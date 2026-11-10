@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
-import { MessageSquarePlus, X } from 'lucide-vue-next'
+import { MessageSquarePlus } from 'lucide-vue-next'
 import TopBar from './components/TopBar.vue'
 import SidebarPanel from './components/SidebarPanel.vue'
 import WorkspaceHeader from './components/WorkspaceHeader.vue'
@@ -41,7 +41,6 @@ const projectStore = useProjectStore()
 
 const activeTab = computed(() => workspace.activeTab)
 const activeSession = computed(() => sessionStore.get(workspace.activeSessionId))
-const delegatedChildSession = computed(() => sessionStore.get(workspace.delegatedChildSessionId))
 
 // 底部终端抽屉（顶栏终端按钮切换）
 const terminalVisible = ref(false)
@@ -245,19 +244,8 @@ onBeforeUnmount(() => {
         />
         <div class="col" :style="{ width: (workspace.inspectorVisible ? workspace.rightWidth : 0) + 'px' }">
           <div class="h-full" :style="{ width: workspace.rightWidth + 'px' }">
-            <div v-if="delegatedChildSession" class="flex h-full min-h-0 flex-col bg-white">
-              <div class="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-3 py-2">
-                <span class="min-w-0 flex-1 truncate text-xs font-medium text-neutral-700">子代理 · {{ delegatedChildSession.title }}</span>
-                <button class="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700" title="关闭子会话抽屉" @click="workspace.closeDelegatedChild()">
-                  <X class="h-3.5 w-3.5" />
-                </button>
-              </div>
-              <ConversationView :key="delegatedChildSession.id" :session="delegatedChildSession" />
-              <!-- 子会话的权限/提问队列以 local connId 过滤，复用 composer 仅提供
-                   交互入口；用户不必离开父会话即可处理 child 的阻塞请求。 -->
-              <MessageComposer :session-id="delegatedChildSession.id" passive />
-            </div>
-            <RightPanel v-else :session="activeSession" />
+            <!-- 子会话详情也在右栏内部，由「子任务」页签统一渲染 -->
+            <RightPanel :session="activeSession" />
           </div>
         </div>
       </div>

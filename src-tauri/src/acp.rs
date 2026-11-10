@@ -258,8 +258,7 @@ struct AcpConn {
     /// 连接归属（默认用户会话）；决定权限请求是自动放行还是转前端
     owner: ConnOwner,
     /// 该连接绑定的引擎（建连时确定；会话级命令从连接取，不再重复传参）。
-    /// 本期会话级命令无需按引擎分支，字段为「新增第 2 个引擎」预留的落点。
-    #[allow(dead_code)]
+    /// 目前用于 Claude 会话的 `_meta.systemPrompt` 注入（子任务委派引导）。
     engine: AgentType,
     /// 本地会话的工作目录。委派只能从 session/new/load 已确认的根目录派生。
     cwd: Mutex<Option<String>>,
@@ -993,6 +992,32 @@ fn mcp_servers_for(app: &AppHandle, conn_id: &str) -> Value {
         "args": ["--socket", addr, "--token", token, "--conn-id", conn_id, "--delegation-enabled", delegation_enabled.to_string()],
         "env": []
     }])
+}
+
+/// Claude Code 的系统提示追加：把「子任务统一走 Lightr MCP」写进会话预置提示。
+///
+/// 只有 `@agentclientprotocol/claude-agent-acp` 约定 `session/new` / `session/load`
+/// 接受 `_meta.systemPrompt`（字符串，或 `{ append }` 对象）；其它引擎不认这个字段，
+/// 因此按引擎门控，避免给未知适配器塞私有参数。委派关闭时不注入——那时工具本身也不在
+/// `tools/list` 里，提示会指向不存在的工具。
+const DELEGATION_SYSTEM_HINT: &str = "本应用（Lightr）内的子任务统一由 MCP 工具 \
+mcp__lightr-ask__delegate_to_agent 执行：需要子代理、并行探索或独立子任务时，必须调用该工具\
+（参数 agent_type 与 task），不要使用内置的 Agent 或 Task 工具——内置子代理不会出现在 \
+Lightr 的「子任务」面板中，用户看不到进度，任务也不受 Lightr 生命周期管理。查询进度用 \
+mcp__lightr-ask__get_delegation_status，取消用 mcp__lightr-ask__cancel_delegation。";
+
+/// 给 `session/new` / `session/load` 参数补上引擎私有 `_meta`（目前仅 Claude）。
+fn with_session_meta(mut params: Value, engine: AgentType) -> Value {
+    if engine != AgentType::ClaudeCode || !crate::delegation::get_settings().enabled {
+        return params;
+    }
+    if let Value::Object(map) = &mut params {
+        map.insert(
+            "_meta".into(),
+            json!({ "systemPrompt": { "append": DELEGATION_SYSTEM_HINT } }),
+        );
+    }
+    params
 }
 
 /// 处理一条伴生进程回连：读一行 `{kind:"ask", token, connId, arguments}` →
@@ -1947,7 +1972,11 @@ pub(crate) fn run_delegated_child(
         let conn = require_conn(&child_session_id)?;
         std::fs::create_dir_all(&cwd).map_err(|e| format!("创建子会话目录失败: {e}"))?;
         *conn.cwd.lock().unwrap() = Some(cwd.clone());
-        let created = rpc_call(&conn, "session/new", json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&app, &child_session_id) }))?;
+        let new_params = with_session_meta(
+            json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&app, &child_session_id) }),
+            engine,
+        );
+        let created = rpc_call(&conn, "session/new", new_params)?;
         let session = parse_session_result(&created, None)?;
         *conn.acp_session_id.lock().unwrap() = Some(session.session_id.clone());
         let result = rpc_call(&conn, "session/prompt", json!({
@@ -2145,11 +2174,11 @@ pub async fn acp_session_new(app: AppHandle, conn_id: String, cwd: String) -> Re
         std::fs::create_dir_all(&cwd).map_err(|e| format!("创建会话目录失败: {}", e))?;
         *conn.cwd.lock().unwrap() = Some(cwd.clone());
         // 注入我们的提问 MCP 服务器（任意引擎可提问；无法定位 bin 时为空数组，零回归）
-        let result = rpc_call(
-            &conn,
-            "session/new",
+        let params = with_session_meta(
             json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&app, &conn_id) }),
-        )?;
+            conn.engine,
+        );
+        let result = rpc_call(&conn, "session/new", params)?;
         touch_activity(&conn);
         parse_session_result(&result, None)
     })
@@ -2170,11 +2199,11 @@ pub async fn acp_session_load(
         let conn = require_conn(&conn_id)?;
         *conn.cwd.lock().unwrap() = Some(cwd.clone());
         let id = acp_session_id.clone();
-        let result = rpc_call(
-            &conn,
-            "session/load",
+        let params = with_session_meta(
             json!({ "sessionId": acp_session_id, "cwd": cwd, "mcpServers": mcp_servers_for(&app, &conn_id) }),
-        )?;
+            conn.engine,
+        );
+        let result = rpc_call(&conn, "session/load", params)?;
         touch_activity(&conn);
         parse_session_result(&result, Some(id))
     })
