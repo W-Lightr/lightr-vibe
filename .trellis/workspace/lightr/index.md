@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-10-29
+- **Total Sessions**: 8
+- **Last Active**: 2026-11-10
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~169 | Active |
+| `journal-1.md` | ~191 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-11-10 | 设置窗口化与 Agent 管理独立滚动 | `63014f6` | `codex/subagent-delegation` |
 | 7 | 2026-10-29 | 收尾会话消息队列 + 子代理展示调研 | `0b61b77` | `main` |
 | 6 | 2026-10-15 | 消费 session/update 全量种类 | `5b11c12` | `main` |
 | 5 | 2026-10-15 | 注入自有 ask 工具（任意引擎可提问） | `341a5a2`, `e8bc3d9` | `main` |

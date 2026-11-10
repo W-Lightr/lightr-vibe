@@ -167,3 +167,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 8: 设置窗口化与 Agent 管理独立滚动
+<!-- trellis-session: v=2 fp=9b30c4d0608b9bbe -->
+
+**Date**: 2026-11-10
+**Task**: 设置窗口化与 Agent 管理独立滚动
+**Branch**: `codex/subagent-delegation`
+
+### Summary
+
+设置入口改为独立单例 settings-window 窗口并复用聚焦；设置窗口独立启动、不加载编码工作区副作用；Agent 管理左右列独立滚动，外层页面不再整页滚动；新增 settings-window capability 并补充 main 窗口创建/聚焦权限；核查 ACP 适配器版本：claude-agent-acp 0.103 起仅支持 ACP v2，本项目固定 protocolVersion 1，最高可升 0.102.0，opencode-ai 可升 1.19.5，codex-acp 需真机冒烟。pnpm build 与 cargo check 通过，运行时交互待手工验证。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `63014f6` | feat(settings): 独立设置窗口与 Agent 管理独立滚动 |
+
+### Status
+
+[OK] **Completed**
