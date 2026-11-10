@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "质量校验命令、禁止模式与提交前检查"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "新增 helper/路由/异步返回值的类型约定"}
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "核对 capability、窗口创建与浏览器 fallback 是否契约一致"}
+{"file": ".trellis/tasks/11-10-settings-window-agent-scroll/research/acp-versions.md", "reason": "核对交付的 ACP 版本结论是否与需求一致"}

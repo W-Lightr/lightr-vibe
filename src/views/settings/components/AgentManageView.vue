@@ -137,7 +137,7 @@ onMounted(async () => {
 <template>
   <div class="flex h-full min-h-0">
     <!-- 左列：Agent 列表 + 默认引擎 -->
-    <aside class="flex w-64 shrink-0 flex-col border-r border-neutral-200 bg-white">
+    <aside class="flex min-h-0 w-64 shrink-0 flex-col border-r border-neutral-200 bg-white">
       <div class="px-3 pb-2 pt-3 text-xs font-medium text-neutral-500">Agent 列表</div>
       <div class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2">
         <AgentListItem
@@ -151,8 +151,8 @@ onMounted(async () => {
         />
       </div>
 
-      <!-- 默认引擎：新建会话弹窗的预选项 -->
-      <div class="border-t border-neutral-200 p-3">
+      <!-- 默认引擎：新建会话弹窗的预选项（固定可见，不随列表滚动被压缩） -->
+      <div class="shrink-0 border-t border-neutral-200 p-3">
         <div class="mb-1.5 text-xs font-medium text-neutral-500">默认引擎</div>
         <select
           class="w-full cursor-pointer rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-[13px] text-neutral-700 outline-none focus:border-blue-400"
@@ -166,7 +166,7 @@ onMounted(async () => {
         <p class="mt-1.5 text-[11px] text-neutral-400">新建会话时默认预选该引擎</p>
       </div>
 
-      <div class="border-t border-neutral-200 p-3">
+      <div class="shrink-0 border-t border-neutral-200 p-3">
         <div class="flex items-center justify-between gap-2">
           <div class="text-xs font-medium text-neutral-500">子代理委派</div>
           <input
@@ -195,16 +195,18 @@ onMounted(async () => {
       </div>
     </aside>
 
-    <!-- 右列：详情（OpenCode 专用面板 / 其余引擎通用占位） -->
-    <OpencodeDetail v-if="showOpencodeDetail" class="min-w-0 flex-1" />
-    <EngineDetail
-      v-else-if="selectedAgent?.enabled"
-      :engine-id="selectedAgentId as EngineWire"
-      :icon-svg="selectedAgent.iconSvg"
-      class="min-w-0 flex-1 overflow-y-auto"
-    />
-    <div v-else class="flex min-w-0 flex-1 items-center justify-center text-sm text-neutral-400">
-      该引擎详情即将推出
+    <!-- 右列：详情独立滚动；滚动职责只在这一层，子组件不再各自 overflow -->
+    <div class="min-h-0 min-w-0 flex-1 overflow-y-auto">
+      <OpencodeDetail v-if="showOpencodeDetail" class="min-w-0" />
+      <EngineDetail
+        v-else-if="selectedAgent?.enabled"
+        :engine-id="selectedAgentId as EngineWire"
+        :icon-svg="selectedAgent.iconSvg"
+        class="min-w-0"
+      />
+      <div v-else class="flex h-full items-center justify-center text-sm text-neutral-400">
+        该引擎详情即将推出
+      </div>
     </div>
   </div>
 </template>

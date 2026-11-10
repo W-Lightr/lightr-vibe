@@ -16,3 +16,8 @@ try {
 export function getAppWindow(): Window | null {
   return resolved
 }
+
+/** 当前窗口 label；浏览器 dev 环境返回 null（用于启动时按窗口分流） */
+export function getAppWindowLabel(): string | null {
+  return resolved?.label ?? null
+}

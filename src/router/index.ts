@@ -9,7 +9,15 @@ const router = createRouter({
       name: 'home',
       component: HomeView,
     },
+    // 独立设置窗口：不挂 WorkspaceShell，只渲染设置页（design §3）。
+    // 与 /settings 共用同一个 SFC，由路由 name 区分「关闭窗口」与「返回上一页」。
+    {
+      path: '/settings-window',
+      name: 'settings-window',
+      component: () => import('../views/settings/SettingsView.vue').then((m) => m.default),
+    },
     // 设置页同样挂在 WorkspaceShell 下：侧栏常驻，设置入口在所有页面都可见
+    // （浏览器 dev 的回退形态；桌面端入口改为 openSettingsWindow()）
     {
       path: '/settings',
       component: () => import('../layouts/WorkspaceShell.vue'),

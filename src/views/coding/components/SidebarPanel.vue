@@ -25,6 +25,7 @@ import { useProjectStore } from '../../../stores/project'
 import { useConversation, ensureModelOptions } from '../../../composables/useConversation'
 import { canPickFolder, fsService, projectNameFromPath } from '../../../services/fsService'
 import { formatRelativeTime } from '../../../utils/time'
+import { openSettingsWindow } from '../../../utils/settingsWindow'
 import SessionItem from './SessionItem.vue'
 import NewSessionDialog from './NewSessionDialog.vue'
 import type { Session, NewSessionTarget } from '../../../types/session'
@@ -169,12 +170,18 @@ const activeNav = ref<NavKey>('chat')
 const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
 
 /**
- * 打开设置页。
+ * 打开设置。
  *
- * 设置页有自己的返回逻辑（回 /coding），所以这里只需要 push。
- * 从自动化 / 待办任务点进来也能正常返回，因为那是页面内独立的返回按钮。
+ * 桌面端走独立单例设置窗口（openSettingsWindow），主窗口停留原页面；
+ * 浏览器 dev 或创建失败时回退页内 /settings（design §7）。
  */
-function openSettings(): void {
+async function openSettings(): Promise<void> {
+  try {
+    if (await openSettingsWindow()) return
+  } catch (e) {
+    message.error(`打开设置窗口失败：${e instanceof Error ? e.message : String(e)}`)
+    return
+  }
   if (!isSettingsRoute.value) void router.push('/settings')
 }
 

@@ -12,6 +12,8 @@ import { useDelegationStore } from './stores/delegation'
 import { initAcpListeners } from './services/acpService'
 import { onDelegationStarted, onDelegationUpdated } from './services/acpEvents'
 import { handleExternalLinkClick } from './utils/externalLink'
+import { getAppWindowLabel } from './utils/window'
+import { SETTINGS_WINDOW_LABEL } from './utils/settingsWindow'
 import { wireTaskSessionBridge } from './views/tasks/taskSessionBridge'
 
 // 全局唯一入口：任何 <a href> 点击都以外部方式打开（默认浏览器 / 新标签页），
@@ -35,9 +37,20 @@ const pinia = createPinia()
 app.use(pinia)
 app.use(router)
 
+/** 设置窗口只渲染设置页：不得执行编码工作区的全局副作用（design §4）。
+ *  两个 WebView 同时注册 ACP/委派订阅会重复写同一份会话数据；
+ *  任务看板桥接与设置页无关。 */
+const isSettingsWindow = getAppWindowLabel() === SETTINGS_WINDOW_LABEL
+
 // 启动流程：解析数据目录 → 加载项目索引 → 加载会话索引（懒加载消息）→
 // 完成 ACP/委派事件订阅 → 恢复委派投影 → mount。列表需在任何视图渲染前就绪。
 async function bootstrap() {
+  if (isSettingsWindow) {
+    // 懒加载的 /settings-window 路由解析完成后再 mount，避免首帧空白
+    await router.isReady()
+    app.mount('#app')
+    return
+  }
   await initAppData()
   try {
     await useProjectStore(pinia).load()

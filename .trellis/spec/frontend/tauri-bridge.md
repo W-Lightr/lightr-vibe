@@ -158,6 +158,39 @@ fs_write_text { path, text }                                 // auto-creates par
 under `~/.lightr-vibe/lightr-vibe/` (see `appNamespaceDirSync()` in
 `src/utils/appData.ts`). Never read or write the root-level files.
 
+## Standalone settings window (`settings-window`, task 11-10-settings-window-agent-scroll)
+
+Settings opens in its own Tauri window instead of navigating the main window.
+
+- **Single entry**: `openSettingsWindow()` (`src/utils/settingsWindow.ts`) is the only
+  way to open settings. It reuses/focuses an existing `settings-window`
+  (`unminimize` + `show` + `setFocus`), otherwise creates one (`1100×760`, min
+  `900×600`, frameless, centered). A module-level `inFlight` promise dedupes double
+  clicks. Off-Tauri it returns `false`; the caller (sidebar bottom, Home gear,
+  `useConversation.passGate`) falls back to `router.push('/settings')`. Never
+  construct `WebviewWindow` in a component, and never add a new direct
+  `router.push('/settings')` entry point outside that fallback.
+- **Route**: `/settings-window` is a **top-level** route (name `settings-window`)
+  rendering `SettingsView.vue` without `WorkspaceShell`. `/settings` stays as the
+  browser-dev fallback under `WorkspaceShell`.
+- **Boot split**: `main.ts` compares `getAppWindowLabel()` (`src/utils/window.ts`) with
+  `SETTINGS_WINDOW_LABEL`. The settings window only does
+  `await router.isReady(); app.mount('#app')`; it must **not** run `initAppData`,
+  project/session load, `initAcpListeners`, delegation projection, or
+  `wireTaskSessionBridge` — two webviews writing the same session/delegation data
+  would fork state.
+- **Capabilities**: `main` needs `core:webview:allow-create-webview-window` plus
+  `allow-show` / `allow-set-focus` / `allow-unminimize` (`getAllWebviews` comes from
+  `core:default`). `settings-window` has its own `capabilities/settings.json` limited
+  to `core:default` + start-dragging/toggle-maximize/minimize/close + `opener:default`.
+  Custom `#[tauri::command]`s are not capability-gated, so `agent_detect` /
+  `engine_default_set` / `delegation_*` keep working there.
+- **Layout**: the settings page is a two-column independent-scroll shell. `<main>` is
+  `overflow-hidden` + `flex-col`; the Agent list column and the right detail column
+  each own `overflow-y-auto`, so the outer page never scrolls.
+- **Back button**: on `settings-window` it closes the window (`getAppWindow()?.close()`,
+  title 「关闭设置窗口」); on `/settings` it keeps the historical back/home behavior.
+
 ## Native dialogs
 
 Directory picking uses `@tauri-apps/plugin-dialog` from the **frontend**
@@ -1447,13 +1480,16 @@ const runningIds = computed(() =>
 > 挂在 `WorkspaceShell` 下的页面（`/tasks`、`/tasks/:projectId`、`/automations`）
 > 由页面自己的单条 header 提供返回 / 标题 / 操作 / 窗口三键。
 
-> **Warning**: 设置入口只放在**侧栏底部状态栏**（`SidebarPanel`），负责跳
-> `/settings`。不要再在 `TopBar` 或各页 header 里另放一个 —— 侧栏常驻，所以
-> 一处即可覆盖所有页面；`/coding` 顶栏曾经也有一份，会造成同屏两个设置按钮。
+> **Warning**: 设置入口集中在三处：侧栏底部状态栏（`SidebarPanel`）、首页右上角
+> 齿轮（`HomeView`）、`useConversation.passGate()` 的门禁提示。三处都必须调用
+> `openSettingsWindow()`（桌面端独立窗口，非 Tauri 回退 `/settings`）。不要再在
+> `TopBar` 或各页 header 里另放一个 —— 侧栏常驻，所以一处即可覆盖所有页面；
+> `/coding` 顶栏曾经也有一份，会造成同屏两个设置按钮。
 >
 > 因此所有顶层页面（`/coding`、`/tasks`、`/automations`、`/settings`）都必须
-> 挂在带侧栏的布局下。新增独立顶层路由时记得走 `WorkspaceShell`，否则该页会
-> 既没有左侧菜单、也没有设置入口。
+> 挂在带侧栏的布局下；**唯一例外**是 `/settings-window`（独立窗口，不能有主应用
+> 侧栏）。新增独立顶层路由时默认走 `WorkspaceShell`，否则该页会既没有左侧菜单、
+> 也没有设置入口。
 
 ## 对话渲染：part 驱动（task 10-27-chat-ui-parity）
 

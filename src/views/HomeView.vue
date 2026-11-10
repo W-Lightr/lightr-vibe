@@ -1,12 +1,26 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
+import { useMessage } from 'naive-ui'
 import type { Component } from 'vue'
 import { Code, Minus, Settings, Square, X } from 'lucide-vue-next'
 import { getAppWindow } from '../utils/window'
+import { openSettingsWindow } from '../utils/settingsWindow'
 
 const router = useRouter()
+const message = useMessage()
 // 浏览器 dev 环境为 null：隐藏窗口三键（AC7）
 const appWindow = getAppWindow()
+
+/** 桌面端打开独立设置窗口；浏览器 dev 回退页内 /settings */
+async function openSettings(): Promise<void> {
+  try {
+    if (await openSettingsWindow()) return
+  } catch (e) {
+    message.error(`打开设置窗口失败：${e instanceof Error ? e.message : String(e)}`)
+    return
+  }
+  void router.push('/settings')
+}
 
 interface FeatureEntry {
   id: string
@@ -49,7 +63,7 @@ const features: FeatureEntry[] = [
         <button
           class="mr-1 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100"
           title="设置"
-          @click="router.push('/settings')"
+          @click="openSettings"
         >
           <Settings class="h-4 w-4" />
         </button>

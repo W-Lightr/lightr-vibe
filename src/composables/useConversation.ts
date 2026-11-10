@@ -31,6 +31,7 @@ import { useAcpQuestion } from './useAcpQuestion'
 import { dequeue, dropQueue, getQueueLength, onQueueFlushNeeded, requeueFront } from './useMessageQueue'
 import { flushRetryDelayMs } from '../utils/queueFlush'
 import { isTauri } from '../utils/isTauri'
+import { openSettingsWindow } from '../utils/settingsWindow'
 import { tmpSessionDirSync } from '../utils/appData'
 import { hasRetryMeta, parseRetryState } from '../utils/sessionUpdateMeta'
 import { noticeToast, type NoticeToast } from '../utils/sessionNotice'
@@ -833,7 +834,14 @@ export function useConversation() {
     const d = agentStore.detectResults[engineId]
     if (d && d.installed && d.acpOk) return true
     message.warning(`未检测到可用的 ${engineDisplayName(engineId)}，请先到设置页完成配置`)
-    void router.push('/settings')
+    // 桌面端弹独立设置窗口；非 Tauri（或失败）回退页内 /settings
+    void openSettingsWindow()
+      .then((handled) => {
+        if (!handled) void router.push('/settings')
+      })
+      .catch(() => {
+        void router.push('/settings')
+      })
     return false
   }
 

@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "窗口/能力/ACP 契约：新增 Tauri 窗口、capability、环境相关 API、设置页既有约定"}
+{"file": ".trellis/spec/frontend/lazy-loading.md", "reason": "新增 /settings-window 懒加载路由与动态导入 @tauri-apps/api/webviewWindow 的约束"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "新增窗口工具与页面入口改动需遵循组件/组合式函数约定"}
+{"file": ".trellis/spec/frontend/ui-style.md", "reason": "Agent 管理左右独立滚动的布局与视觉约定"}
+{"file": ".trellis/tasks/11-10-settings-window-agent-scroll/research/acp-versions.md", "reason": "ACP 适配器版本结论与回归冒烟清单"}
