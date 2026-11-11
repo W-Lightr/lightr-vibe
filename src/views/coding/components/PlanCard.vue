@@ -14,6 +14,8 @@ function statusLabel(status: AcpPlanEntryStatus | undefined): string {
       return '进行中'
     case 'completed':
       return '已完成'
+    case 'cancelled':
+      return '已取消'
     default:
       return '待办'
   }
@@ -26,6 +28,9 @@ function badgeClass(status: AcpPlanEntryStatus | undefined): string {
       return 'bg-blue-50 text-blue-600 border-blue-200'
     case 'completed':
       return 'bg-emerald-50 text-emerald-600 border-emerald-200'
+    case 'cancelled':
+      // 中性徽章：已取消 ≠ 待办，也 ≠ 成功
+      return 'bg-neutral-50 text-neutral-400 border-neutral-200'
     default:
       return 'bg-neutral-100 text-neutral-500 border-neutral-200'
   }

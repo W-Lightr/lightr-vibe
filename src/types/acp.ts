@@ -33,7 +33,14 @@ export type AcpToolKind =
   | 'switch_mode'
   | 'other'
 
-export type AcpToolCallStatus = 'pending' | 'in_progress' | 'completed' | 'failed'
+export type AcpToolCallStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'failed'
+  // ACP v2 可扩展状态：paused 仍视为进行中；cancelled 按失败/停止处理（见 mapToolStatus）
+  | 'paused'
+  | 'cancelled'
 
 /** tool_call / tool_call_update / request_permission.toolCall 的增量形状 */
 export interface AcpToolCallUpdate {
@@ -61,7 +68,7 @@ export interface AcpUsageUpdateEvent {
 
 /** 计划条目（ACP 标准 PlanEntry）：content 步骤描述，priority/status 可选 */
 export type AcpPlanPriority = 'high' | 'medium' | 'low'
-export type AcpPlanEntryStatus = 'pending' | 'in_progress' | 'completed'
+export type AcpPlanEntryStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
 
 export interface AcpPlanEntry {
   content: string

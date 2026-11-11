@@ -284,6 +284,8 @@ function mapToolStatus(status?: AcpToolCallStatus): ToolCall['status'] {
     case 'completed':
       return 'done'
     case 'failed':
+    // v2 cancelled：停止转圈；语义上不是成功完成
+    case 'cancelled':
       return 'error'
     default:
       return 'running'
