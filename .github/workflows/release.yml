@@ -70,9 +70,15 @@ jobs:
               echo "::warning::tag $INPUT_RELEASE_TAG 指向 $tag_sha，本次构建是 $TARGET_SHA；请确认资产与 tag 源码一致。"
             fi
 
-            # 列出所有 Release（含 draft），按 tag 查找。
-            release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
-              --jq ".[] | select(.tag_name == \"$INPUT_RELEASE_TAG\") | .id" | head -n1 || true)"
+            # 按 tag 直接查询 Release（含 draft），比列表查询更可靠；
+            # 列表查询存在索引延迟，刚创建的 Release 可能查不到。
+            release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$INPUT_RELEASE_TAG" --jq .id 2>/dev/null || true)"
+            if [ -z "$release_id" ]; then
+              release_id="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+                --json tagName,databaseId \
+                --jq ".[] | select(.tagName == \"$INPUT_RELEASE_TAG\") | .databaseId" \
+                | head -n1 || true)"
+            fi
 
             if [ -z "$release_id" ]; then
               echo "Release $INPUT_RELEASE_TAG 不存在，创建中..."
@@ -87,8 +93,19 @@ jobs:
                 --notes "lightr-vibe 构建产物，安装包见下方 Assets。" \
                 --target "$TARGET_SHA" \
                 $draft_flag
-              release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
-                --jq ".[] | select(.tag_name == \"$INPUT_RELEASE_TAG\") | .id" | head -n1)"
+
+              # 创建后按 tag 再查一次；仍为空则失败，避免静默上传到 workflow artifact。
+              release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$INPUT_RELEASE_TAG" --jq .id 2>/dev/null || true)"
+              if [ -z "$release_id" ]; then
+                release_id="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+                  --json tagName,databaseId \
+                  --jq ".[] | select(.tagName == \"$INPUT_RELEASE_TAG\") | .databaseId" \
+                  | head -n1 || true)"
+              fi
+              if [ -z "$release_id" ]; then
+                echo "::error::Release $INPUT_RELEASE_TAG 已创建，但无法解析其 ID。"
+                exit 1
+              fi
             fi
             echo "Release ID: $release_id"
           else
