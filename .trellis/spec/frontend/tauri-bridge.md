@@ -429,7 +429,9 @@ forms). Previously refused with `-32601` → those questions **silently failed**
 Now handled for the **Questions** shape only:
 
 - **Rust** (`acp_question.rs`): pure `classify_elicitation(&Value) -> ElicitationPlan`
-  reads `params.mode.requestedSchema.properties` (lenient) → `Questions(Vec<Question>)`
+  reads `params.requestedSchema.properties` (flat form shape used by
+  `claude-agent-acp` 0.90+/0.104) with fallback to the legacy nested
+  `params.mode.requestedSchema.properties` (codex) (lenient) → `Questions(Vec<Question>)`
   or `Decline`. Field mapping: `type:"array"` → multi; `type:"string"` → single if
   it carries options, else free text; any other type / empty/missing schema →
   `Decline`. **Option source is dual-shape**: `enum` (+ optional `enumNames`) OR
@@ -683,6 +685,61 @@ Other ACP behaviors worth keeping:
   `acp_set_config(connId, sessionId, configId, value)`,
   `acp_respond_permission(connId, requestId, optionId?)`,
   `acp_answer_elicitation(connId, requestId, answers, declined)`.
+
+### ACP v1/v2 dual stack (task 11-10-acp-v2-claude-agent-upgrade)
+
+The Rust ACP layer negotiates the protocol per connection at `initialize`; the
+frontend contract is unchanged because v2 differences are normalized in Rust.
+**Never branch on engine name** — only on the negotiated `AcpProtocol`.
+
+- **Negotiation (design §4.3).** Send v2 `initialize` first. `protocolVersion: 2`
+  wins. A v1 response (or a missing version) re-sends v1 `initialize` on the
+  **same connection**. `-32022` / `-32602` from the v2 attempt also re-send v1.
+  Auth `-32000`, process exit, and timeouts do **not** fall back; when both
+  attempts fail the error combines both (`acp:-32022 ...; v1 fallback failed: ...`).
+  The probe (`acp_probe_options`) uses the same logic in its throwaway process.
+- **Escape hatch.** `LIGHTR_ACP_PROTOCOL=v1` sends only v1; `v2` sends only v2 and
+  never falls back (diagnostics). `auto` / unset / invalid = negotiate.
+- **initialize shapes.** v1 keeps `clientCapabilities` + `clientInfo` (fs false,
+  `elicitation.form`, `session.notices`). v2 uses `capabilities` (only
+  `elicitation.form`) + `info`; response info is `info` instead of `agentInfo`.
+  `_meta.systemPrompt` stays the Claude private extension (top-level
+  `systemPrompt` requires a capability we do not declare).
+- **Sessions.** v1 `session/load`; v2 maps the same command to `session/resume`
+  with `{sessionId, cwd, mcpServers, replayFrom:{type:"start"}}`. The response
+  has no `sessionId` in v2 → use the request id. `configOptions` are normalized
+  (`configId`→`id`, `groupId`→`group`) on every entry point: session response,
+  probe, `config_option_update`, `set_config` response.
+- **Prompt lifecycle.** v1: `session/prompt` response = turn end (300s activity
+  timeout). v2: response only acknowledges insertion (`{messageId}`, fixed 30s);
+  the turn ends at that session's idle `state_update`. `running` /
+  `requires_action` keep waiting; idle `stopReason` maps to the existing
+  `PromptResult` (`end_turn` default, `usage` from the idle update, `error` →
+  `Err`). Idle with no waiter (resume replay / background completion) is dropped.
+  Cancel still sends `session/cancel` and resolves pending permissions; the turn
+  converges on idle. Disconnect/mark-dead clears waiters so callers fail fast.
+- **Updates.** v2 `plan_update` → `plan` (`plan.type === "items"`, entries replace
+  wholesale). `agent_message` / `agent_thought` are whole-message replacements:
+  dedupe by `messageId` and emit only the suffix of the already-streamed text;
+  a rewritten (non-prefix) body updates the accumulator without emitting.
+  `user_message`, `tool_call_content_chunk`, terminal updates, `state_update`, and
+  unknown variants are dropped. `tool_call_update` still creates the card on
+  first sight (v2 has no `tool_call` variant).
+- **Permissions.** v2 `title` / `description` / `subject` are normalized into the
+  existing `acp://permission` `toolCall` / `meta`. `subject.type === "tool_call"`
+  uses its `toolCall`; `command` synthesizes an `execute` toolCall with
+  `rawInput.{command,cwd}`; missing/unknown subject synthesizes an `other` card.
+  `meta.permission.{version:1,title,description}` is filled so the existing
+  frontend parsers and `defaultToNo` behavior stay unchanged.
+- **Config.** v2 `session/set_config_option` requires `type`: `"id"` for strings,
+  `"boolean"` for booleans, anything else → `-32602`.
+- **Auth / known limit.** Non-empty `authMethods` is logged as a warning. There is
+  no in-app login UI in this iteration; if 0.104 asks for interactive auth, run
+  the vendor CLI once (`claude`) to log in.
+- **Rollback.** Code: `LIGHTR_ACP_PROTOCOL=v1` (old adapters) or revert
+  `src-tauri/src/acp.rs`. Version:
+  `npm i -g @agentclientprotocol/claude-agent-acp@0.102.0`; restore with
+  `@0.104.0`. The app never runs global npm installs itself.
 
 ### Per-session invariants (verify on every ACP change)
 
