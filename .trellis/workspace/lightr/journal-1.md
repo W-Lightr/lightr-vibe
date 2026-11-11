@@ -189,3 +189,28 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 9: ACP v1/v2 双栈与 claude-agent-acp 0.104 适配
+<!-- trellis-session: v=2 fp=dc68578bb48114c8 -->
+
+**Date**: 2026-11-11
+**Task**: ACP v1/v2 双栈与 claude-agent-acp 0.104 适配
+**Branch**: `codex/subagent-delegation`
+
+### Summary
+
+升级 claude-agent-acp 至 0.104.0 并保留 v1 兼容：按 initialize 协商 v1/v2，v2 的 session/resume、idle prompt 生命周期、update/权限/配置在 Rust 归一化为现有前端契约；新增 LIGHTR_ACP_PROTOCOL 故障开关；修复 elicitation 扁平 form 形状导致的 claude 提问失效。cargo test 148 passed，pnpm build 通过，0.104.0 协议级握手冒烟通过；应用内 UI 冒烟与 0.102.0 回退验证待执行。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4ebbb1c` | feat(acp): 支持 ACP v1/v2 双栈并适配 claude-agent-acp 0.104 |
+| `bf03815` | fix(acp): 兼容 elicitation/create 扁平 form 形状 |
+| `63149bd` | feat(coding): 兼容 ACP v2 工具与计划状态 |
+| `29c54c1` | docs(spec): 记录 ACP v1/v2 双栈契约 |
+
+### Status
+
+[OK] **Completed**

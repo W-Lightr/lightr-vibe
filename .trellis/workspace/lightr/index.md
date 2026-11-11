@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
-- **Last Active**: 2026-11-10
+- **Total Sessions**: 9
+- **Last Active**: 2026-11-11
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~191 | Active |
+| `journal-1.md` | ~216 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 9 | 2026-11-11 | ACP v1/v2 双栈与 claude-agent-acp 0.104 适配 | `4ebbb1c`, `bf03815`, `63149bd`, `29c54c1` | `codex/subagent-delegation` |
 | 8 | 2026-11-10 | 设置窗口化与 Agent 管理独立滚动 | `63014f6` | `codex/subagent-delegation` |
 | 7 | 2026-10-29 | 收尾会话消息队列 + 子代理展示调研 | `0b61b77` | `main` |
 | 6 | 2026-10-15 | 消费 session/update 全量种类 | `5b11c12` | `main` |
