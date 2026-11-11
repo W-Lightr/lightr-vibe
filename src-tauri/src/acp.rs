@@ -1572,8 +1572,9 @@ fn ask_token_for(conn_id: &str) -> String {
 /// 定位随应用发布的 `lightr-ask-mcp` companion。
 ///
 /// 开发时它由 `tauri-dev.bat` 先行编译，和主程序位于同一 `target/debug`
-/// 目录；打包时 `bundle.resources` 将 release binary 放到 resource 根目录。
-/// 不要只猜测主程序的相邻文件：安装后的 Tauri 应用不会把资源放在那里。
+/// 目录；打包时 Tauri 会把同包的第二个 `[[bin]]` 作为 external binary 放到
+/// 主程序同目录（Windows 安装目录 / macOS Contents/MacOS / Linux usr/bin）。
+/// 仍保留 resource 目录的回退，兼容把 companion 作为资源打包的旧安装。
 fn ask_bin_path(app: &AppHandle) -> Option<PathBuf> {
     let name = if cfg!(windows) {
         "lightr-ask-mcp.exe"

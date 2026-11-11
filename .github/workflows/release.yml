@@ -31,26 +31,22 @@ jobs:
           - name: Windows x64
             platform: windows-latest
             rust_targets: ''
-            tauri_args: --config src-tauri/tauri.bundle.windows.conf.json
+            tauri_args: ''
             target_triple: ''
           - name: macOS arm64
             platform: macos-latest
             rust_targets: aarch64-apple-darwin
-            tauri_args: >-
-              --target aarch64-apple-darwin
-              --config src-tauri/tauri.bundle.macos.conf.json
+            tauri_args: --target aarch64-apple-darwin
             target_triple: aarch64-apple-darwin
           - name: macOS x64
             platform: macos-latest
             rust_targets: x86_64-apple-darwin
-            tauri_args: >-
-              --target x86_64-apple-darwin
-              --config src-tauri/tauri.bundle.macos.conf.json
+            tauri_args: --target x86_64-apple-darwin
             target_triple: x86_64-apple-darwin
           - name: Linux x64
             platform: ubuntu-22.04
             rust_targets: ''
-            tauri_args: --config src-tauri/tauri.bundle.linux.conf.json
+            tauri_args: ''
             target_triple: ''
 
     runs-on: ${{ matrix.platform }}

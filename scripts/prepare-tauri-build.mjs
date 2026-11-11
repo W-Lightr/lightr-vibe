@@ -6,14 +6,19 @@
  *   1. `pnpm build`：生成前端产物（Tauri `frontendDist` 指向 ../dist）。
  *   2. `cargo build --release --bin lightr-ask-mcp`：编译伴生 MCP 进程；
  *      CI 交叉编译时由 LIGHTR_TARGET_TRIPLE 指定目标三元组。
- *   3. 复制到 `src-tauri/binaries/lightr-ask-mcp[.exe]`，供 bundle.resources 打包
- *      （平台资源映射见 tauri.bundle.windows.conf.json /
- *      tauri.bundle.macos.conf.json / tauri.bundle.linux.conf.json）。
- *   4. Windows 本地构建时运行 smoke 测试，确认伴生进程与暂存产物一致。
+ *   3. Windows 本地构建时运行 smoke 测试，确认伴生进程可正常响应。
+ *
+ * 伴生进程是同一个 Cargo 包里的第二个 `[[bin]]`，Tauri CLI 会自动把它作为
+ * external binary 打进安装包（Windows 安装目录 / macOS Contents/MacOS /
+ * Linux usr/bin），运行时由 `ask_bin_path` 优先在主程序同目录查找。
+ *
+ * 因此这里不再复制到 `src-tauri/binaries`，也不使用 bundle.resources：
+ * tauri-build 会在编译期校验 resources 路径，而本脚本的 cargo build 发生在
+ * 伴生进程生成之前，干净工作区会直接构建失败。
  */
 
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -75,12 +80,7 @@ if (!existsSync(builtBinary)) {
   console.error(`[prepare] 未找到伴生 MCP 构建产物: ${builtBinary}`);
   process.exit(1);
 }
-
-const binariesDir = path.join(tauriDir, 'binaries');
-const stagedBinary = path.join(binariesDir, `lightr-ask-mcp${exeSuffix}`);
-mkdirSync(binariesDir, { recursive: true });
-copyFileSync(builtBinary, stagedBinary);
-console.log(`[prepare] 已暂存 ${path.relative(projectRoot, stagedBinary)}`);
+console.log(`[prepare] 伴生 MCP 产物: ${path.relative(projectRoot, builtBinary)}`);
 
 if (process.platform === 'win32' && !triple) {
   run('powershell.exe', [
@@ -91,6 +91,5 @@ if (process.platform === 'win32' && !triple) {
     path.join(projectRoot, 'scripts', 'smoke-lightr-ask-mcp.ps1'),
     '-Configuration',
     'release',
-    '-RequireStagedResource',
   ]);
 }
