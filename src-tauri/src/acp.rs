@@ -14,7 +14,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -55,6 +55,75 @@ fn idle_timeout_secs() -> u64 {
 /// 只要 agent 还在推 `session/update`，就说明它活着，不该中断。
 const PROMPT_IDLE_TIMEOUT_SECS: u64 = 300;
 
+/// v2 `session/prompt` 的 **ack** 超时：响应只表示「用户消息已插入」，
+/// 必须快速失败而不是复用 300s 活动性超时（turn 结束由 idle `state_update` 决定）。
+const PROMPT_ACK_TIMEOUT_SECS: u64 = 30;
+
+// ---------- 协议版本（v1/v2 双栈） ----------
+//
+// 协议只由 initialize 握手结果决定，**不按引擎名分支**（design §1.2 / §4）。
+// `LIGHTR_ACP_PROTOCOL=v1|v2|auto` 仅作故障开关：v1 = 强制旧协议，v2 = 强制新协议
+// 且失败不回退，auto/未设置 = 自动协商（先 v2，版本不支持时回退 v1）。
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcpProtocol {
+    V1,
+    V2,
+}
+
+impl AcpProtocol {
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::V1 => 1,
+            Self::V2 => 2,
+        }
+    }
+
+    fn as_u64(self) -> u64 {
+        self.as_u8() as u64
+    }
+
+    fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(Self::V1),
+            2 => Some(Self::V2),
+            _ => None,
+        }
+    }
+
+    fn from_version(v: u64) -> Option<Self> {
+        match v {
+            1 => Some(Self::V1),
+            2 => Some(Self::V2),
+            _ => None,
+        }
+    }
+}
+
+/// 解析 `LIGHTR_ACP_PROTOCOL`：`v1` / `v2` 为强制值，其余（auto/非法/缺失）为 None。
+fn parse_forced_protocol(raw: Option<&str>) -> Option<AcpProtocol> {
+    match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("v1") => Some(AcpProtocol::V1),
+        Some("v2") => Some(AcpProtocol::V2),
+        _ => None,
+    }
+}
+
+fn forced_protocol() -> Option<AcpProtocol> {
+    parse_forced_protocol(std::env::var("LIGHTR_ACP_PROTOCOL").ok().as_deref())
+}
+
+/// initialize 失败是否值得用 v1 重试：仅版本相关错误。
+/// `-32022` = Unsupported protocol version；`-32602` = Invalid params（v2 初始化文档的
+/// 版本/参数拒绝）。认证 `-32000`、进程退出、超时都不回退，避免掩盖真实问题。
+fn should_fallback_to_v1(err: &str) -> bool {
+    err.starts_with("acp:-32022") || err.starts_with("acp:-32602")
+}
+
+fn combine_initialize_errors(v2: &str, v1: &str) -> String {
+    format!("{}; v1 fallback failed: {}", v2, v1)
+}
+
 /// 请求超时矩阵（PRD R1）：initialize 60s / session/new、load 30s（首调实测
 /// 7.6-8.9s，probe §2）/ prompt 300s / 其余 30s。
 ///
@@ -65,7 +134,7 @@ const PROMPT_IDLE_TIMEOUT_SECS: u64 = 300;
 fn timeout_for(method: &str) -> Duration {
     match method {
         "initialize" => Duration::from_secs(60),
-        "session/new" | "session/load" => Duration::from_secs(30),
+        "session/new" | "session/load" | "session/resume" => Duration::from_secs(30),
         "session/prompt" => Duration::from_secs(300),
         _ => Duration::from_secs(30),
     }
@@ -115,11 +184,79 @@ mod timeout_semantics_tests {
 ///   一旦声明，claude 会停止发送现有的 `_meta.contextCompaction` 合成工具调用 →
 ///   纯回归。故此处刻意只开 notices。后续若新增 compaction 消费面再同步开启。
 fn client_capabilities() -> Value {
-    json!({
-        "fs": { "readTextFile": false, "writeTextFile": false },
-        "elicitation": { "form": {} },
-        "session": { "notices": {} }
-    })
+    client_capabilities_for(AcpProtocol::V1)
+}
+
+/// v2 客户端能力：只声明 `elicitation.form`。
+///
+/// v2 schema 已移除 `fs` / `terminal` / `loadSession`，`session.notices` 也被标记移除
+/// （RFD：v2 notices 可直接下发）。本项目仍只消费 `session/update {notice}`，因此
+/// 无需再声明 `session.notices`。`elicitation.form` 保留，提问路径不回归。
+fn client_capabilities_for(protocol: AcpProtocol) -> Value {
+    match protocol {
+        AcpProtocol::V1 => json!({
+            "fs": { "readTextFile": false, "writeTextFile": false },
+            "elicitation": { "form": {} },
+            "session": { "notices": {} }
+        }),
+        AcpProtocol::V2 => json!({
+            "elicitation": { "form": {} }
+        }),
+    }
+}
+
+/// initialize 参数（v1 保持现状避免回归；v2 用 capabilities/info）。
+///
+/// v2 顶层 `systemPrompt` 是规范字段，但只在 Agent 声明 `session.systemPrompt`
+/// 后才能发；本项目继续使用 claude 的 `_meta.systemPrompt` 私有扩展。
+fn initialize_params(protocol: AcpProtocol) -> Value {
+    match protocol {
+        AcpProtocol::V1 => json!({
+            "protocolVersion": 1,
+            "clientCapabilities": client_capabilities(),
+            "clientInfo": { "name": "lightr-vibe", "version": "0.1.0" }
+        }),
+        AcpProtocol::V2 => json!({
+            "protocolVersion": 2,
+            "capabilities": client_capabilities_for(AcpProtocol::V2),
+            "info": { "name": "lightr-vibe", "title": "Lightr Vibe", "version": "0.1.0" }
+        }),
+    }
+}
+
+/// 读取 initialize 响应里的 `protocolVersion`（容忍字符串数字；缺失 → None）。
+fn initialize_version(result: &Value) -> Option<u64> {
+    result
+        .get("protocolVersion")
+        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+}
+
+/// initialize 响应里的 agent 信息：v1 `agentInfo`，v2 `info`。
+fn initialize_agent_info(protocol: AcpProtocol, result: &Value) -> Value {
+    let key = match protocol {
+        AcpProtocol::V1 => "agentInfo",
+        AcpProtocol::V2 => "info",
+    };
+    result.get(key).cloned().unwrap_or(Value::Null)
+}
+
+/// initialize 响应里的认证方式（v1/v2 字段名相同）。非空时只记录警告，不阻塞握手。
+fn auth_method_names(result: &Value) -> Vec<String> {
+    result
+        .get("authMethods")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|m| {
+                    m.get("name")
+                        .and_then(Value::as_str)
+                        .or_else(|| m.get("id").and_then(Value::as_str))
+                })
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 入站消息三分路由（research/acp-protocol.md §2）：
@@ -252,6 +389,15 @@ pub(crate) enum ConnOwner {
     Automation,
 }
 
+/// v2 turn 的结算结果：由该会话的 idle `state_update` 产生（prompt 响应只表示
+/// 用户消息已插入）。
+#[derive(Debug, Clone)]
+struct PromptOutcome {
+    stop_reason: String,
+    usage: Value,
+    error: Option<String>,
+}
+
 struct AcpConn {
     /// 本地会话 id（connId）：事件/命令路由键，与 ACP 进程一一对应
     conn_id: String,
@@ -289,6 +435,19 @@ struct AcpConn {
     dead: AtomicBool,
     /// 最后一次活动时刻（prompt / update / permission 交互刷新）：空闲回收判据
     last_activity_at: Mutex<Instant>,
+    /// 握手协商到的协议（0 = 未协商；初始化完成前不会走会话路径，读取时回退 v1）
+    protocol: AtomicU8,
+    /// v2：sessionId → prompt waiter。turn 结束由 idle `state_update` 唤醒。
+    prompt_waiters: Mutex<HashMap<String, Sender<PromptOutcome>>>,
+    /// v2 整消息 upsert 去重：key = `"{kind}:{messageId}"`（kind = agent | thought）
+    message_text: Mutex<HashMap<String, String>>,
+}
+
+impl AcpConn {
+    /// 已协商协议；未协商（0）时回退 v1（初始化完成后才会走会话命令）。
+    fn protocol(&self) -> AcpProtocol {
+        AcpProtocol::from_u8(self.protocol.load(Ordering::SeqCst)).unwrap_or(AcpProtocol::V1)
+    }
 }
 
 /// 连接仓库：key = connId（本地会话 id）。每个会话一个独立进程连接（design §8.1）。
@@ -352,8 +511,27 @@ fn take_pending(map: &mut HashMap<u64, Sender<Value>>, id: u64) -> Option<Sender
     map.remove(&id)
 }
 
-/// 发请求并阻塞等待响应（调用方必须处于 spawn_blocking）；超时清理 pending 并返回 Err
+/// 发请求并阻塞等待响应（调用方必须处于 spawn_blocking）；超时清理 pending 并返回 Err。
+/// 默认超时矩阵来自 [`timeout_for`]；`session/prompt` 使用活动性超时（v1 语义）。
 fn rpc_call(conn: &AcpConn, method: &str, params: Value) -> Result<Value, String> {
+    rpc_call_with_timeout(
+        conn,
+        method,
+        params,
+        timeout_for(method),
+        method == "session/prompt",
+    )
+}
+
+/// 可指定固定超时的请求。`activity_based = true` 时按「两次活动之间静默」判超时
+/// （v1 prompt）；v2 prompt 的 ack 必须用固定超时（30s）。
+fn rpc_call_with_timeout(
+    conn: &AcpConn,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+    activity_based: bool,
+) -> Result<Value, String> {
     let id = conn.next_id.fetch_add(1, Ordering::SeqCst);
     let rx = {
         let mut pending = conn.pending.lock().unwrap();
@@ -364,11 +542,10 @@ fn rpc_call(conn: &AcpConn, method: &str, params: Value) -> Result<Value, String
         take_pending(&mut conn.pending.lock().unwrap(), id);
         return Err(e);
     }
-    let timeout = timeout_for(method);
-    let recv = if method == "session/prompt" {
+    let recv = if activity_based {
         // 长请求：改用「活动性超时」—— 每收到一次 progress 就重置计时，
-        // 只有真的静默满 PROMPT_IDLE_TIMEOUT_SECS 才判定卡死。
-        recv_with_activity_timeout(conn, rx, Duration::from_secs(PROMPT_IDLE_TIMEOUT_SECS))
+        // 只有真的静默满指定时长才判定卡死。
+        recv_with_activity_timeout(conn, rx, timeout)
     } else {
         rx.recv_timeout(timeout)
     };
@@ -382,12 +559,7 @@ fn rpc_call(conn: &AcpConn, method: &str, params: Value) -> Result<Value, String
         Err(RecvTimeoutError::Timeout) => {
             // 超时：移除 pending，避免迟到的响应按超时 id 检不出来
             take_pending(&mut conn.pending.lock().unwrap(), id);
-            let shown = if method == "session/prompt" {
-                PROMPT_IDLE_TIMEOUT_SECS
-            } else {
-                timeout.as_secs()
-            };
-            Err(format!("timeout:{}s {}", shown, method))
+            Err(format!("timeout:{}s {}", timeout.as_secs(), method))
         }
         Err(RecvTimeoutError::Disconnected) => {
             Err("acp-dead: subprocess exited while awaiting response".to_string())
@@ -421,6 +593,143 @@ fn recv_with_activity_timeout(
     }
 }
 
+// ---------- prompt 生命周期（v1 响应 / v2 idle state_update） ----------
+
+/// 由 idle `state_update` 构造 turn 结算结果（纯函数，便于单测）。
+fn prompt_outcome_from_idle(update: &Value) -> PromptOutcome {
+    let stop_reason = update
+        .get("stopReason")
+        .and_then(Value::as_str)
+        .unwrap_or("end_turn")
+        .to_string();
+    let usage = update.get("usage").cloned().unwrap_or(Value::Null);
+    let error = if stop_reason == "error" {
+        Some(idle_error_string(update.get("error")))
+    } else {
+        None
+    };
+    PromptOutcome {
+        stop_reason,
+        usage,
+        error,
+    }
+}
+
+/// idle `stopReason:"error"` 的附加字段归一化为可读错误串。
+fn idle_error_string(error: Option<&Value>) -> String {
+    match error {
+        Some(err @ Value::Object(_)) => rpc_error_string(err),
+        Some(Value::String(text)) => text.clone(),
+        _ => "acp:-32603 agent reported error without details".to_string(),
+    }
+}
+
+/// v2 `state_update` 处理：`idle` 唤醒该会话的 prompt waiter；`running` /
+/// `requires_action` 只刷新活动时间。没有 waiter 的 idle（resume 重放、后台结束）
+/// 直接丢弃，不 emit。
+fn handle_state_update(conn: &AcpConn, session_id: &str, update: &Value) {
+    if conn.protocol() != AcpProtocol::V2 {
+        return;
+    }
+    match update.get("state").and_then(Value::as_str) {
+        Some("idle") => {}
+        Some("running") | Some("requires_action") => return,
+        _ => return,
+    }
+    let outcome = prompt_outcome_from_idle(update);
+    // turn 已结束：清空整消息累积，防止长会话无限增长（本连接即本会话）。
+    conn.message_text.lock().unwrap().clear();
+    let waiter = conn.prompt_waiters.lock().unwrap().remove(session_id);
+    if let Some(tx) = waiter {
+        let _ = tx.send(outcome);
+    }
+}
+
+/// 发送 prompt 并等待 turn 结束。
+///
+/// - v1：`session/prompt` 的响应就是 turn 结束（300s 活动性超时）。
+/// - v2：响应只表示消息已插入（固定 30s ack），turn 结束以该会话 idle
+///   `state_update` 为准；等到 idle 后返回 stopReason/usage。
+fn send_prompt(conn: &AcpConn, session_id: &str, text: &str) -> Result<PromptResult, String> {
+    let params = json!({
+        "sessionId": session_id,
+        "prompt": [{ "type": "text", "text": text }]
+    });
+    if conn.protocol() != AcpProtocol::V2 {
+        let result = rpc_call(conn, "session/prompt", params)?;
+        return Ok(PromptResult {
+            stop_reason: result
+                .get("stopReason")
+                .and_then(Value::as_str)
+                .unwrap_or("end_turn")
+                .to_string(),
+            // opencode 扩展字段 usage（probe §3：inputTokens/outputTokens/totalTokens）
+            usage: result.get("usage").cloned().unwrap_or(Value::Null),
+        });
+    }
+    send_prompt_v2(conn, session_id, params)
+}
+
+fn send_prompt_v2(conn: &AcpConn, session_id: &str, params: Value) -> Result<PromptResult, String> {
+    // 同一会话已有飞行中的 prompt → 拒绝，避免覆盖 waiter 导致悬挂。
+    let (tx, rx) = mpsc::channel();
+    {
+        let mut waiters = conn.prompt_waiters.lock().unwrap();
+        if waiters.contains_key(session_id) {
+            return Err("acp:-32603 该会话已有 prompt 在飞行中".to_string());
+        }
+        waiters.insert(session_id.to_string(), tx);
+    }
+
+    // 注册之后发 `session/prompt`：即使 idle 先于 ack 到达，outcome 也会被 channel 缓存。
+    let ack = rpc_call_with_timeout(
+        conn,
+        "session/prompt",
+        params,
+        Duration::from_secs(PROMPT_ACK_TIMEOUT_SECS),
+        false,
+    );
+    if let Err(error) = ack {
+        conn.prompt_waiters.lock().unwrap().remove(session_id);
+        if error.starts_with("acp:-32800") {
+            return Err("acp:-32800 prompt 未被接受（可能已取消或关闭）".to_string());
+        }
+        return Err(error);
+    }
+    touch_activity(conn);
+
+    let idle = Duration::from_secs(PROMPT_IDLE_TIMEOUT_SECS);
+    let outcome = loop {
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(outcome) => break outcome,
+            Err(RecvTimeoutError::Disconnected) => {
+                conn.prompt_waiters.lock().unwrap().remove(session_id);
+                let reason = conn
+                    .dead_reason
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| "subprocess exited while awaiting turn completion".into());
+                return Err(format!("acp-dead: {}", reason));
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if conn.last_activity_at.lock().unwrap().elapsed() >= idle {
+                    conn.prompt_waiters.lock().unwrap().remove(session_id);
+                    return Err(format!("timeout:{}s session/prompt", PROMPT_IDLE_TIMEOUT_SECS));
+                }
+            }
+        }
+    };
+    conn.prompt_waiters.lock().unwrap().remove(session_id);
+    if let Some(error) = outcome.error {
+        return Err(error);
+    }
+    Ok(PromptResult {
+        stop_reason: outcome.stop_reason,
+        usage: outcome.usage,
+    })
+}
+
 // ---------- 读线程：三分路由 ----------
 
 fn handle_incoming(app: &AppHandle, conn: &AcpConn, msg: &Value) {
@@ -440,7 +749,7 @@ fn handle_incoming(app: &AppHandle, conn: &AcpConn, msg: &Value) {
                     .and_then(|p| p.get("sessionId"))
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let update = params
+                let raw_update = params
                     .and_then(|p| p.get("update"))
                     .cloned()
                     .unwrap_or(Value::Null);
@@ -451,7 +760,20 @@ fn handle_incoming(app: &AppHandle, conn: &AcpConn, msg: &Value) {
                     .and_then(|p| p.get("_meta"))
                     .cloned()
                     .unwrap_or(Value::Null);
-                // 自动化无头会话的 summary：累积 assistant 正文分片。
+                // v2 `state_update` 只驱动 prompt waiter，不进入 transcript、不 emit。
+                if conn.protocol() == AcpProtocol::V2
+                    && raw_update.get("sessionUpdate").and_then(Value::as_str)
+                        == Some("state_update")
+                {
+                    handle_state_update(conn, acp_session_id, &raw_update);
+                    return;
+                }
+                // v1 原样透传；v2 归一化为前端已有的 v1 形状（未知变体安全丢弃）。
+                let Some(update) = normalize_update(conn, raw_update) else {
+                    return;
+                };
+                // 自动化无头会话的 summary：累积 assistant 正文分片（读归一化后的
+                // update，v2 整消息的增量才会进入 summary）。
                 // 前端不消费这条连接，所以这里顺手在 Rust 侧留一份末轮文本。
                 if (conn.owner == ConnOwner::Automation
                     || crate::delegation::is_active_child(&conn.conn_id))
@@ -557,12 +879,14 @@ fn handle_client_request(
             .unwrap()
             .insert(request_id.clone(), (id, session_id.clone()));
         crate::delegation::mark_child_waiting(app, &conn.conn_id, false);
-        // toolCall 原样透传；顺带对 rawInput 注入 `_start_line`（best-effort，仅供前端 diff 定位；
+        // v1：toolCall/_meta 原样透传；v2：title/description/subject 归一化为
+        // 现有 `acp://permission` 的 toolCall/meta 形状（design §8）。
+        let empty = Value::Null;
+        let request_params = params.unwrap_or(&empty);
+        let (mut tool_call, meta) =
+            normalize_permission(conn.protocol(), request_params, &request_id);
+        // 顺带对 rawInput 注入 `_start_line`（best-effort，仅供前端 diff 定位；
         // 失败保持原值，不阻断事件，不 host 任何 fs/terminal）。
-        let mut tool_call = params
-            .and_then(|p| p.get("toolCall"))
-            .cloned()
-            .unwrap_or(Value::Null);
         inject_raw_input_start_line_into(&mut tool_call);
         let _ = app.emit(
             "acp://permission",
@@ -572,8 +896,8 @@ fn handle_client_request(
                 "sessionId": session_id,
                 "toolCall": tool_call,
                 "options": params.and_then(|p| p.get("options")).cloned().unwrap_or(Value::Null),
-                // 请求级 `_meta`（title/description/defaultToNo）原样透传，前端解析；缺失 → null
-                "meta": params.and_then(|p| p.get("_meta")).cloned().unwrap_or(Value::Null),
+                // 请求级 `_meta`：v1 原样透传；v2 合并 title/description 后透传
+                "meta": meta,
             }),
         );
         eprintln!("[acp] emitted acp://permission requestId={request_id}");
@@ -691,6 +1015,310 @@ fn inject_raw_input_start_line(raw: &Value) -> Value {
     }
 }
 
+// ---------- v2 update / permission / config 归一化 ----------
+
+/// session/update 归一化：v1 原样返回；v2 映射到前端已有的 v1 形状。
+/// 未知变体返回 `None`（安全丢弃，不 panic、不阻断后续 update）。
+fn normalize_update(conn: &AcpConn, update: Value) -> Option<Value> {
+    if conn.protocol() != AcpProtocol::V2 {
+        return Some(update);
+    }
+    let kind = update.get("sessionUpdate").and_then(Value::as_str)?;
+    match kind {
+        // 已是前端可消费的形状（含 messageId 的消息分组）。
+        "agent_message_chunk" | "agent_thought_chunk" | "user_message_chunk"
+        | "tool_call_update" | "available_commands_update" | "usage_update"
+        | "session_info_update" | "notice" => {
+            // chunk 到达时累积正文，供整消息 upsert 做前缀增量。
+            accumulate_message_chunk(conn, &update);
+            Some(update)
+        }
+        // v2 整消息替换 → 只发增量 chunk（见 7.2）。
+        "agent_message" => normalize_agent_upsert(conn, "agent", &update),
+        "agent_thought" => normalize_agent_upsert(conn, "thought", &update),
+        // 本地已有用户消息，不重复渲染。
+        "user_message" => None,
+        // 本期无 terminal/工具内容 UI；完整内容通常随 tool_call_update.content 到达。
+        "tool_call_content_chunk" | "terminal_update" | "terminal_output_chunk" => None,
+        "plan_update" => normalize_plan_update(&update),
+        "config_option_update" => {
+            let mut out = update;
+            normalize_config_options(&mut out);
+            Some(out)
+        }
+        // state_update 已在 handle_incoming 提前消费；这里兜底不 emit。
+        "state_update" => None,
+        _ => None,
+    }
+}
+
+/// v2 `plan_update` → v1 `plan`：`{plan:{type:"items", planId, entries}}` → `{entries}`。
+/// 同 planId 整体覆盖由前端 consumer 保证（entries 整体替换）。
+fn normalize_plan_update(update: &Value) -> Option<Value> {
+    let plan = update.get("plan")?;
+    match plan.get("type").and_then(Value::as_str) {
+        Some("items") | None => {}
+        _ => return None,
+    }
+    let entries = plan
+        .get("entries")
+        .cloned()
+        .unwrap_or(Value::Array(Vec::new()));
+    Some(json!({ "sessionUpdate": "plan", "entries": entries }))
+}
+
+/// chunk 累积：v2 `agent_message_chunk` / `agent_thought_chunk` 追加到按 messageId
+/// 分组的累积正文，供整消息替换时计算「已发送前缀」。
+fn accumulate_message_chunk(conn: &AcpConn, update: &Value) {
+    let kind = match update.get("sessionUpdate").and_then(Value::as_str) {
+        Some("agent_message_chunk") => "agent",
+        Some("agent_thought_chunk") => "thought",
+        _ => return,
+    };
+    let message_id = update
+        .get("messageId")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let Some(text) = update
+        .get("content")
+        .and_then(|c| c.get("text"))
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+    let key = format!("{}:{}", kind, message_id);
+    conn.message_text
+        .lock()
+        .unwrap()
+        .entry(key)
+        .or_default()
+        .push_str(text);
+}
+
+/// 展平 v2 整消息 `content` 数组中的文本块。
+fn flatten_text_blocks(content: &Value) -> String {
+    match content {
+        Value::Array(items) => {
+            let mut out = String::new();
+            for item in items {
+                if item.get("type").and_then(Value::as_str) == Some("text") {
+                    if let Some(text) = item.get("text").and_then(Value::as_str) {
+                        out.push_str(text);
+                    }
+                }
+            }
+            out
+        }
+        Value::String(text) => text.clone(),
+        _ => String::new(),
+    }
+}
+
+/// v2 整消息 upsert 的纯增量计算（便于单测）。
+///
+/// - `content` 缺失 → 不 emit、不改累积；
+/// - `content == null` / `[]` → 清空累积，不 emit；
+/// - 累积值是 new_text 前缀 → 只 emit 后缀；
+/// - 无累积 → emit 全文；
+/// - 内容被改写且不是前缀 → 不 emit（保留已流式内容），只更新累积。
+fn agent_upsert_delta(
+    store: &mut HashMap<String, String>,
+    kind: &str,
+    message_id: &str,
+    content: Option<&Value>,
+) -> Option<Value> {
+    let content = content?;
+    let key = format!("{}:{}", kind, message_id);
+    if content.is_null() || matches!(content, Value::Array(items) if items.is_empty()) {
+        store.remove(&key);
+        return None;
+    }
+    let new_text = flatten_text_blocks(content);
+    let old_text = store.get(&key).cloned().unwrap_or_default();
+    store.insert(key, new_text.clone());
+    let suffix = new_text.strip_prefix(old_text.as_str())?;
+    if suffix.is_empty() {
+        return None;
+    }
+    let chunk_kind = match kind {
+        "thought" => "agent_thought_chunk",
+        _ => "agent_message_chunk",
+    };
+    Some(json!({
+        "sessionUpdate": chunk_kind,
+        "messageId": message_id,
+        "content": { "type": "text", "text": suffix },
+    }))
+}
+
+fn normalize_agent_upsert(conn: &AcpConn, kind: &str, update: &Value) -> Option<Value> {
+    let message_id = update
+        .get("messageId")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let mut store = conn.message_text.lock().unwrap();
+    agent_upsert_delta(&mut store, kind, message_id, update.get("content"))
+}
+
+/// 配置项键名归一化：v2 `configId` → `id`，`groupId` → `group`。
+///
+/// 接受三种输入：会话响应 / set_config 响应（对象含 `configOptions` 数组）、
+/// `config_option_update` 的 update 对象（同样含 `configOptions`）、或裸数组。
+/// 只改这两个键，不碰 `category` / `currentValue` / `type` / 选项值。
+fn normalize_config_options(value: &mut Value) {
+    if let Value::Object(map) = value {
+        if let Some(Value::Array(items)) = map.get_mut("configOptions") {
+            for item in items.iter_mut() {
+                normalize_config_option(item);
+            }
+            return;
+        }
+    }
+    match value {
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                normalize_config_option(item);
+            }
+        }
+        _ => normalize_config_option(value),
+    }
+}
+
+fn normalize_config_option(option: &mut Value) {
+    let Some(obj) = option.as_object_mut() else {
+        return;
+    };
+    if let Some(v) = obj.remove("configId") {
+        obj.insert("id".into(), v);
+    }
+    if let Some(v) = obj.remove("groupId") {
+        obj.insert("group".into(), v);
+    }
+    // 分组形态：`options` 数组里的每个 group 用 groupId；group 内选项保持不变。
+    if let Some(Value::Array(groups)) = obj.get_mut("options") {
+        for group in groups.iter_mut() {
+            let Some(g) = group.as_object_mut() else {
+                continue;
+            };
+            if let Some(v) = g.remove("groupId") {
+                g.insert("group".into(), v);
+            }
+        }
+    }
+}
+
+/// v2 权限请求归一化为前端现有 `acp://permission` 形状（toolCall + meta）。
+fn normalize_permission(
+    protocol: AcpProtocol,
+    params: &Value,
+    request_id: &str,
+) -> (Value, Value) {
+    if protocol == AcpProtocol::V1 {
+        return (
+            params.get("toolCall").cloned().unwrap_or(Value::Null),
+            params.get("_meta").cloned().unwrap_or(Value::Null),
+        );
+    }
+    let title = params.get("title").and_then(Value::as_str).unwrap_or("");
+    let description = params.get("description").and_then(Value::as_str);
+    let tool_call = permission_tool_call(params.get("subject"), title, request_id);
+    let meta = permission_meta(params, title, description);
+    (tool_call, meta)
+}
+
+fn permission_tool_call(subject: Option<&Value>, title: &str, request_id: &str) -> Value {
+    let fallback_id = format!("perm-{}", request_id);
+    let Some(subject) = subject else {
+        return json!({
+            "toolCallId": fallback_id,
+            "title": title,
+            "kind": "other",
+            "status": "pending",
+        });
+    };
+    match subject.get("type").and_then(Value::as_str) {
+        Some("tool_call") => {
+            let mut tool_call = subject
+                .get("toolCall")
+                .cloned()
+                .unwrap_or_else(|| json!({ "toolCallId": fallback_id }));
+            if let Some(obj) = tool_call.as_object_mut() {
+                let missing_title = obj
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::is_empty)
+                    .unwrap_or(true);
+                if missing_title && !title.is_empty() {
+                    obj.insert("title".into(), json!(title));
+                }
+                if !obj.contains_key("toolCallId") {
+                    obj.insert("toolCallId".into(), json!(fallback_id));
+                }
+                if !obj.contains_key("status") {
+                    obj.insert("status".into(), json!("pending"));
+                }
+            }
+            tool_call
+        }
+        Some("command") => {
+            let tool_call_id = subject
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or(fallback_id);
+            json!({
+                "toolCallId": tool_call_id,
+                "title": title,
+                "kind": "execute",
+                "status": "pending",
+                "rawInput": {
+                    "command": subject.get("command").cloned().unwrap_or(Value::Null),
+                    "cwd": subject.get("cwd").cloned().unwrap_or(Value::Null),
+                },
+            })
+        }
+        // 未知 tag：合成可展示的 other，原始 subject 放 rawInput 供详情面板。
+        _ => json!({
+            "toolCallId": fallback_id,
+            "title": title,
+            "kind": "other",
+            "status": "pending",
+            "rawInput": subject.clone(),
+        }),
+    }
+}
+
+/// v2 权限 meta：保留请求级 `_meta`，补 `permission.{version,title,description}`，
+/// 让前端 `parsePermissionTitle` / `parsePermissionDescription` 无需改动。
+fn permission_meta(params: &Value, title: &str, description: Option<&str>) -> Value {
+    let mut meta = match params.get("_meta") {
+        Some(v) if v.is_object() => v.clone(),
+        _ => json!({}),
+    };
+    let Some(meta_obj) = meta.as_object_mut() else {
+        return meta;
+    };
+    let permission = meta_obj
+        .entry("permission")
+        .or_insert_with(|| json!({}));
+    if !permission.is_object() {
+        *permission = json!({});
+    }
+    let Some(p) = permission.as_object_mut() else {
+        return meta;
+    };
+    if !p.contains_key("version") {
+        p.insert("version".into(), json!(1));
+    }
+    if !title.is_empty() {
+        p.insert("title".into(), json!(title));
+    }
+    if let Some(description) = description.filter(|d| !d.is_empty()) {
+        p.insert("description".into(), json!(description));
+    }
+    meta
+}
+
 /// $/cancel_request 兜底：按被取消请求的 JSON-RPC id 找 pending_perm / pending_question
 /// 中对应条目，回取消响应并从 map 移除（协议 §5：收到方 MUST 对原请求回响应；
 /// permission 请求的规范取消形状是 outcome cancelled；elicitation 回 decline）
@@ -753,6 +1381,8 @@ fn mark_dead(app: &AppHandle, conn: &Arc<AcpConn>, reason: &str) {
     // 挂起的 elicitation 同理：进程已死，无法回响应，清 map 防泄漏。
     // （清 map 会 drop Mcp 的 Sender → socket 处理线程 recv 失败 → 写 declined，不 hang）
     conn.pending_question.lock().unwrap().clear();
+    // v2 prompt waiter：drop sender → 等待方立即得到 Disconnected，不挂满 300s。
+    conn.prompt_waiters.lock().unwrap().clear();
     unregister_ask_token(&conn.conn_id);
     let tail: Vec<String> = {
         let t = conn.stderr_tail.lock().unwrap();
@@ -1233,6 +1863,80 @@ fn idle_sweep_loop(app: AppHandle) {
     }
 }
 
+/// initialize 握手与版本协商（design §4.3）。
+///
+/// - 允许 v2 时先发 v2；Agent 返回 v2 → 确定 v2。
+/// - Agent 返回 v1（选择更低版本）→ 同一连接用 v1 参数重新确认。
+/// - v2 返回 `-32022` / `-32602` → 同一连接重发 v1（ACP v2 文档允许失败后重发）。
+/// - 认证 `-32000`、进程退出、超时直接返回，不用 v1 重试掩盖问题。
+/// - 两次都失败 → 合并两次错误。
+fn initialize_connection(conn: &AcpConn) -> Result<AcpProtocol, String> {
+    let forced = forced_protocol();
+
+    if forced == Some(AcpProtocol::V1) {
+        let result = rpc_call(conn, "initialize", initialize_params(AcpProtocol::V1))?;
+        let protocol = initialize_version(&result)
+            .and_then(AcpProtocol::from_version)
+            .unwrap_or(AcpProtocol::V1);
+        finish_initialize(conn, protocol, &result);
+        return Ok(protocol);
+    }
+
+    match rpc_call(conn, "initialize", initialize_params(AcpProtocol::V2)) {
+        Ok(result) => match initialize_version(&result).and_then(AcpProtocol::from_version) {
+            Some(AcpProtocol::V2) => {
+                finish_initialize(conn, AcpProtocol::V2, &result);
+                Ok(AcpProtocol::V2)
+            }
+            // Agent 选择了较低的 v1（或未返回版本）：用 v1 参数重新确认。
+            // 强制 v2 时不允许降级（design §4.2：v2 失败不回退）。
+            _ => {
+                if forced == Some(AcpProtocol::V2) {
+                    return Err(
+                        "acp:-32022 agent 未选择 ACP v2（LIGHTR_ACP_PROTOCOL=v2 禁止降级）"
+                            .to_string(),
+                    );
+                }
+                let v1 = rpc_call(conn, "initialize", initialize_params(AcpProtocol::V1))?;
+                let protocol = initialize_version(&v1)
+                    .and_then(AcpProtocol::from_version)
+                    .unwrap_or(AcpProtocol::V1);
+                finish_initialize(conn, protocol, &v1);
+                Ok(protocol)
+            }
+        },
+        Err(v2_err) => {
+            if forced == Some(AcpProtocol::V2) || !should_fallback_to_v1(&v2_err) {
+                return Err(v2_err);
+            }
+            match rpc_call(conn, "initialize", initialize_params(AcpProtocol::V1)) {
+                Ok(v1) => {
+                    let protocol = initialize_version(&v1)
+                        .and_then(AcpProtocol::from_version)
+                        .unwrap_or(AcpProtocol::V1);
+                    finish_initialize(conn, protocol, &v1);
+                    Ok(protocol)
+                }
+                Err(v1_err) => Err(combine_initialize_errors(&v2_err, &v1_err)),
+            }
+        }
+    }
+}
+
+/// 保存协商结果、agent 信息与认证警告（不阻塞初始化）。
+fn finish_initialize(conn: &AcpConn, protocol: AcpProtocol, result: &Value) {
+    conn.protocol.store(protocol.as_u8(), Ordering::SeqCst);
+    *conn.agent_info.lock().unwrap() = initialize_agent_info(protocol, result);
+    let auth = auth_method_names(result);
+    if !auth.is_empty() {
+        eprintln!(
+            "[acp] agent {} requires authentication ({:?}); if generation hangs, run the vendor CLI once to log in",
+            conn.conn_id,
+            auth
+        );
+    }
+}
+
 /// 建立/复用某会话的 ACP 连接（幂等）：spawn + 读线程 + initialize 握手。
 /// 已有活连接直接返回其 agentInfo；否则启动全新进程（design §8.1）。
 fn connect_inner(
@@ -1251,7 +1955,7 @@ fn connect_inner(
         touch_activity(&conn);
         return Ok(StartResult {
             status: "ready".into(),
-            protocol_version: 1,
+            protocol_version: conn.protocol().as_u64(),
             agent_info: agent_info_from(&info),
         });
     }
@@ -1290,6 +1994,9 @@ fn connect_inner(
         stderr_tail: stderr_tail.clone(),
         dead: AtomicBool::new(false),
         last_activity_at: Mutex::new(Instant::now()),
+        protocol: AtomicU8::new(0),
+        prompt_waiters: Mutex::new(HashMap::new()),
+        message_text: Mutex::new(HashMap::new()),
     });
     conns()
         .lock()
@@ -1309,36 +2016,23 @@ fn connect_inner(
     }
 
     // initialize 握手（60s 超时，对齐 codeg，容忍 claude MCP 预热；D2：不声明 fs/terminal capability，缺省=不支持）
-    let result = rpc_call(
-        &conn,
-        "initialize",
-        json!({
-            "protocolVersion": 1,
-            "clientCapabilities": client_capabilities(),
-            "clientInfo": { "name": "lightr-vibe", "version": "0.1.0" }
-        }),
-    )
-    .inspect_err(|_| {
-        // 握手失败：关 stdin + kill + 摘该 conn（其余连接不受影响）
-        *conn.stdin.lock().unwrap() = None;
-        let _ = conn.child.lock().unwrap().kill();
-        conn.dead.store(true, Ordering::SeqCst);
-        remove_conn(&conn_id, &conn);
-    })?;
-
-    *conn.agent_info.lock().unwrap() = result
-        .get("agentInfo")
-        .cloned()
-        .unwrap_or(Value::Null);
+    // 协议由握手结果决定：先 v2，版本不支持时同一连接回退 v1（design §4.3）。
+    let protocol = match initialize_connection(&conn) {
+        Ok(protocol) => protocol,
+        Err(error) => {
+            // 握手失败：关 stdin + kill + 摘该 conn（其余连接不受影响）
+            *conn.stdin.lock().unwrap() = None;
+            let _ = conn.child.lock().unwrap().kill();
+            conn.dead.store(true, Ordering::SeqCst);
+            remove_conn(&conn_id, &conn);
+            return Err(error);
+        }
+    };
     touch_activity(&conn);
-    let protocol_version = result
-        .get("protocolVersion")
-        .and_then(Value::as_u64)
-        .unwrap_or(1);
     let info = conn.agent_info.lock().unwrap().clone();
     Ok(StartResult {
         status: "ready".into(),
-        protocol_version,
+        protocol_version: protocol.as_u64(),
         agent_info: agent_info_from(&info),
     })
 }
@@ -1361,6 +2055,11 @@ fn disconnect_conn(app: &AppHandle, conn_id: &str, conn: &Arc<AcpConn>, reason: 
         let _ = decline_elicitation_inner(conn, &request_id);
     }
     unregister_ask_token(conn_id);
+    // v2 prompt waiter：断连时立即失败等待方（drop sender），不用挂满 300s。
+    conn.prompt_waiters.lock().unwrap().clear();
+    // 挂起的普通请求（含 v2 prompt ack）也立即以 Disconnected 失败，
+    // 避免断连后等满各自超时（连接已移除，不会再有响应到达）。
+    conn.pending.lock().unwrap().clear();
     // 关 stdin（drop writer）触发 opencode <1s 干净退出
     *conn.stdin.lock().unwrap() = None;
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -1488,6 +2187,96 @@ fn probe_read_response(
     }
 }
 
+/// 探针的一次请求：id 自增，发送后等待对应响应。
+fn probe_request(
+    writer: &mut BufWriter<ChildStdin>,
+    rx: &Receiver<Value>,
+    next_id: &mut u64,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let id = *next_id;
+    *next_id += 1;
+    let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+    probe_send(writer, &msg)?;
+    probe_read_response(rx, id, method)
+}
+
+/// 探针的 initialize 协商：语义与 [`initialize_connection`] 相同，但使用独立
+/// throwaway 进程与 channel（不能复用 `AcpConn`）。
+fn probe_initialize(
+    writer: &mut BufWriter<ChildStdin>,
+    rx: &Receiver<Value>,
+    next_id: &mut u64,
+) -> Result<(AcpProtocol, Value), String> {
+    let forced = forced_protocol();
+    if forced == Some(AcpProtocol::V1) {
+        let result = probe_request(
+            writer,
+            rx,
+            next_id,
+            "initialize",
+            initialize_params(AcpProtocol::V1),
+        )?;
+        let protocol = initialize_version(&result)
+            .and_then(AcpProtocol::from_version)
+            .unwrap_or(AcpProtocol::V1);
+        return Ok((protocol, result));
+    }
+
+    match probe_request(
+        writer,
+        rx,
+        next_id,
+        "initialize",
+        initialize_params(AcpProtocol::V2),
+    ) {
+        Ok(result) => match initialize_version(&result).and_then(AcpProtocol::from_version) {
+            Some(AcpProtocol::V2) => Ok((AcpProtocol::V2, result)),
+            _ => {
+                // 强制 v2 时不降级（design §4.2）。
+                if forced == Some(AcpProtocol::V2) {
+                    return Err(
+                        "acp:-32022 agent 未选择 ACP v2（LIGHTR_ACP_PROTOCOL=v2 禁止降级）"
+                            .to_string(),
+                    );
+                }
+                let v1 = probe_request(
+                    writer,
+                    rx,
+                    next_id,
+                    "initialize",
+                    initialize_params(AcpProtocol::V1),
+                )?;
+                let protocol = initialize_version(&v1)
+                    .and_then(AcpProtocol::from_version)
+                    .unwrap_or(AcpProtocol::V1);
+                Ok((protocol, v1))
+            }
+        },
+        Err(v2_err) => {
+            if forced == Some(AcpProtocol::V2) || !should_fallback_to_v1(&v2_err) {
+                return Err(v2_err);
+            }
+            match probe_request(
+                writer,
+                rx,
+                next_id,
+                "initialize",
+                initialize_params(AcpProtocol::V1),
+            ) {
+                Ok(v1) => {
+                    let protocol = initialize_version(&v1)
+                        .and_then(AcpProtocol::from_version)
+                        .unwrap_or(AcpProtocol::V1);
+                    Ok((protocol, v1))
+                }
+                Err(v1_err) => Err(combine_initialize_errors(&v2_err, &v1_err)),
+            }
+        }
+    }
+}
+
 /// 探针子进程句柄：Drop 时关 stdin → 短宽限等待退出 → kill 兜底，保证不泄漏
 struct ProbeChild {
     child: Child,
@@ -1560,32 +2349,21 @@ fn probe_options_inner(cwd: Option<String>, engine: AgentType) -> Result<ProbeRe
     let rx = probe_spawn_reader(stdout);
 
     // 探针 id 从 1 起（与长驻连接 id 空间无关，独立进程）
-    let init_id: u64 = 1;
-    let init_msg = json!({
-        "jsonrpc": "2.0", "id": init_id, "method": "initialize",
-        "params": {
-            "protocolVersion": 1,
-            "clientCapabilities": client_capabilities(),
-            "clientInfo": { "name": "lightr-vibe", "version": "0.1.0" }
-        }
-    });
-    {
+    let mut next_id: u64 = 1;
+    let (_protocol, _init_result) = {
         let writer = probe.stdin.as_mut().ok_or("探针 stdin 已关闭")?;
-        probe_send(writer, &init_msg)?;
-    }
-    let _init_result = probe_read_response(&rx, init_id, "initialize")?;
+        probe_initialize(writer, &rx, &mut next_id)?
+    };
 
-    // session/new：首调 7.6-8.9s（probe §2），timeout_for 给 30s
-    let new_id: u64 = 2;
-    let new_msg = json!({
-        "jsonrpc": "2.0", "id": new_id, "method": "session/new",
-        "params": { "cwd": cwd_str, "mcpServers": [] }
-    });
-    {
+    // session/new：首调 7.6-8.9s（probe §2），timeout_for 给 30s。
+    // v1/v2 参数形状一致（v2 `mcpServers` 可省，这里仍显式传 []）。
+    let new_params = json!({ "cwd": cwd_str, "mcpServers": [] });
+    let mut result = {
         let writer = probe.stdin.as_mut().ok_or("探针 stdin 已关闭")?;
-        probe_send(writer, &new_msg)?;
-    }
-    let result = probe_read_response(&rx, new_id, "session/new")?;
+        probe_request(writer, &rx, &mut next_id, "session/new", new_params)?
+    };
+    // v2 的 configOptions 用 configId/groupId，归一化为前端现有 id/group。
+    normalize_config_options(&mut result);
 
     // 取 configOptions（缺失 → Null，前端按 null 处理）
     let config_options = result.get("configOptions").cloned().unwrap_or(Value::Null);
@@ -1972,18 +2750,17 @@ pub(crate) fn run_delegated_child(
         let conn = require_conn(&child_session_id)?;
         std::fs::create_dir_all(&cwd).map_err(|e| format!("创建子会话目录失败: {e}"))?;
         *conn.cwd.lock().unwrap() = Some(cwd.clone());
-        let new_params = with_session_meta(
-            json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&app, &child_session_id) }),
+        let new_params = session_new_params(
+            conn.protocol(),
+            cwd,
+            mcp_servers_for(&app, &child_session_id),
             engine,
         );
         let created = rpc_call(&conn, "session/new", new_params)?;
         let session = parse_session_result(&created, None)?;
         *conn.acp_session_id.lock().unwrap() = Some(session.session_id.clone());
-        let result = rpc_call(&conn, "session/prompt", json!({
-            "sessionId": session.session_id,
-            "prompt": [{ "type": "text", "text": prompt }]
-        }))?;
-        Ok(result.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn").to_string())
+        let result = send_prompt(&conn, &session.session_id, &prompt)?;
+        Ok(result.stop_reason)
     })();
     match outcome {
         Ok(stop_reason) => {
@@ -2150,6 +2927,49 @@ pub async fn agent_model_context_window(
     .map_err(|e| format!("acp 任务执行失败: {}", e))
 }
 
+/// v2 没有 `session/load`；历史恢复映射为 `session/resume`（design §5.1）。
+fn session_load_method(protocol: AcpProtocol) -> &'static str {
+    match protocol {
+        AcpProtocol::V1 => "session/load",
+        AcpProtocol::V2 => "session/resume",
+    }
+}
+
+/// `session/new` 参数：v1/v2 形状相同（v2 `mcpServers` 可省，但继续显式传注入列表）。
+fn session_new_params(
+    _protocol: AcpProtocol,
+    cwd: String,
+    mcp_servers: Value,
+    engine: AgentType,
+) -> Value {
+    with_session_meta(json!({ "cwd": cwd, "mcpServers": mcp_servers }), engine)
+}
+
+/// `session/load`（v1）/ `session/resume`（v2）参数。
+/// v2 必须带 `replayFrom: {"type":"start"}` 才能重放历史。
+fn session_load_params(
+    protocol: AcpProtocol,
+    session_id: String,
+    cwd: String,
+    mcp_servers: Value,
+    engine: AgentType,
+) -> Value {
+    let params = match protocol {
+        AcpProtocol::V1 => json!({
+            "sessionId": session_id,
+            "cwd": cwd,
+            "mcpServers": mcp_servers,
+        }),
+        AcpProtocol::V2 => json!({
+            "sessionId": session_id,
+            "cwd": cwd,
+            "mcpServers": mcp_servers,
+            "replayFrom": { "type": "start" },
+        }),
+    };
+    with_session_meta(params, engine)
+}
+
 fn parse_session_result(result: &Value, fallback_id: Option<String>) -> Result<SessionResult, String> {
     let session_id = result
         .get("sessionId")
@@ -2157,10 +2977,13 @@ fn parse_session_result(result: &Value, fallback_id: Option<String>) -> Result<S
         .map(|s| s.to_string())
         .or(fallback_id)
         .ok_or("acp:-32603 会话响应缺少 sessionId")?;
+    // opencode 走 configOptions 新机制（probe §2）；v2 键名为 configId/groupId，
+    // 统一归一化为前端的 id/group。
+    let mut config_options = result.get("configOptions").cloned().unwrap_or(Value::Null);
+    normalize_config_options(&mut config_options);
     Ok(SessionResult {
         session_id,
-        // opencode 走 configOptions 新机制（probe §2）；容忍缺失
-        config_options: result.get("configOptions").cloned().unwrap_or(Value::Null),
+        config_options,
     })
 }
 
@@ -2174,8 +2997,10 @@ pub async fn acp_session_new(app: AppHandle, conn_id: String, cwd: String) -> Re
         std::fs::create_dir_all(&cwd).map_err(|e| format!("创建会话目录失败: {}", e))?;
         *conn.cwd.lock().unwrap() = Some(cwd.clone());
         // 注入我们的提问 MCP 服务器（任意引擎可提问；无法定位 bin 时为空数组，零回归）
-        let params = with_session_meta(
-            json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&app, &conn_id) }),
+        let params = session_new_params(
+            conn.protocol(),
+            cwd,
+            mcp_servers_for(&app, &conn_id),
             conn.engine,
         );
         let result = rpc_call(&conn, "session/new", params)?;
@@ -2199,19 +3024,26 @@ pub async fn acp_session_load(
         let conn = require_conn(&conn_id)?;
         *conn.cwd.lock().unwrap() = Some(cwd.clone());
         let id = acp_session_id.clone();
-        let params = with_session_meta(
-            json!({ "sessionId": acp_session_id, "cwd": cwd, "mcpServers": mcp_servers_for(&app, &conn_id) }),
+        let method = session_load_method(conn.protocol());
+        let params = session_load_params(
+            conn.protocol(),
+            acp_session_id,
+            cwd,
+            mcp_servers_for(&app, &conn_id),
             conn.engine,
         );
-        let result = rpc_call(&conn, "session/load", params)?;
+        let result = rpc_call(&conn, method, params)?;
         touch_activity(&conn);
+        // 历史重放（v2 resume）的整消息累积不应影响后续 live turn。
+        conn.message_text.lock().unwrap().clear();
         parse_session_result(&result, Some(id))
     })
     .await
     .map_err(|e| format!("acp 任务执行失败: {}", e))?
 }
 
-/// 发送 prompt（长请求：期间 session/update 流式推送，turn 结束才响应；300s 超时）。
+/// 发送 prompt（长请求：期间 session/update 流式推送）。turn 结束判定见
+/// [`send_prompt`]：v1 等 `session/prompt` 响应，v2 等 idle `state_update`。
 /// conn_id = 本地会话 id（定位进程）；session_id = agent-side id（方法参数）。
 #[tauri::command]
 pub async fn acp_prompt(
@@ -2222,24 +3054,9 @@ pub async fn acp_prompt(
     tauri::async_runtime::spawn_blocking(move || {
         let conn = require_conn(&conn_id)?;
         touch_activity(&conn);
-        let result = rpc_call(
-            &conn,
-            "session/prompt",
-            json!({
-                "sessionId": session_id,
-                "prompt": [{ "type": "text", "text": text }]
-            }),
-        )?;
+        let result = send_prompt(&conn, &session_id, &text)?;
         touch_activity(&conn);
-        Ok(PromptResult {
-            stop_reason: result
-                .get("stopReason")
-                .and_then(Value::as_str)
-                .unwrap_or("end_turn")
-                .to_string(),
-            // opencode 扩展字段 usage（probe §3：inputTokens/outputTokens/totalTokens），原样透传
-            usage: result.get("usage").cloned().unwrap_or(Value::Null),
-        })
+        Ok(result)
     })
     .await
     .map_err(|e| format!("acp 任务执行失败: {}", e))?
@@ -2317,6 +3134,40 @@ fn detect_config_rejection(result: &Value, config_id: &str, requested: &str) -> 
     }
 }
 
+/// `session/set_config_option` 参数（design §9）。
+///
+/// v1：`{sessionId, configId, value}`。
+/// v2：额外必填 `type` —— 字符串值 `"id"`，布尔值 `"boolean"`，其它类型 `-32602`。
+fn set_config_params(
+    protocol: AcpProtocol,
+    session_id: &str,
+    config_id: &str,
+    value: &Value,
+) -> Result<Value, String> {
+    match protocol {
+        AcpProtocol::V1 => Ok(json!({
+            "sessionId": session_id,
+            "configId": config_id,
+            "value": value,
+        })),
+        AcpProtocol::V2 => {
+            let value_type = if value.is_boolean() {
+                "boolean"
+            } else if value.is_string() {
+                "id"
+            } else {
+                return Err("acp:-32602 不支持的配置值类型".to_string());
+            };
+            Ok(json!({
+                "sessionId": session_id,
+                "configId": config_id,
+                "value": value,
+                "type": value_type,
+            }))
+        }
+    }
+}
+
 /// 切换会话配置（优先规范方法 set_config_option，probe §6）→ 返回全量 configOptions。
 /// 应答里该 configId 的落定值 != 请求值 → 额外 emit `acp://configRejected`（AC6）：
 /// agent 有时不采纳（如需凭据模型回退），前端据此提示「该选项被 agent 调整」。
@@ -2330,12 +3181,11 @@ pub async fn acp_set_config(
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = require_conn(&conn_id)?;
-        let out = rpc_call(
-            &conn,
-            "session/set_config_option",
-            json!({ "sessionId": session_id, "configId": config_id, "value": value.clone() }),
-        )?;
+        let params = set_config_params(conn.protocol(), &session_id, &config_id, &value)?;
+        let mut out = rpc_call(&conn, "session/set_config_option", params)?;
         touch_activity(&conn);
+        // v2 响应用 configId/groupId：先归一化，再比对落定值（依赖 `id`）。
+        normalize_config_options(&mut out);
         // 比对落定值：仅当请求值为字符串且被落成别的字符串时才提示
         if let Some(requested) = value.as_str() {
             if let Some(actual) = detect_config_rejection(&out, &config_id, requested) {
@@ -2536,7 +3386,8 @@ pub(crate) fn shutdown_automation_conn(app: &AppHandle, conn_id: &str) {
 /// [`shutdown_automation_conn`]。
 ///
 /// 与前端会话系统的边界（prd R7）：这里用独立的 connId，且不写前端会话索引 ——
-/// 完成的判定完全靠 `rpc_call` 的阻塞返回值，不依赖前端事件总线。
+/// 完成的判定交给 [`send_prompt`]（v1 等响应，v2 等 idle `state_update`），
+/// 不依赖前端事件总线。
 pub(crate) fn run_automation_turn(
     app: AppHandle,
     conn_id: String,
@@ -2552,11 +3403,13 @@ pub(crate) fn run_automation_turn(
 
     // 协议要求 cwd 是已存在的绝对路径
     std::fs::create_dir_all(&cwd).map_err(|e| format!("io: 创建会话目录失败: {}", e))?;
-    let result = rpc_call(
-        &conn,
-        "session/new",
-        json!({ "cwd": cwd, "mcpServers": mcp_servers_for(&app, &conn_id) }),
-    )?;
+    let new_params = session_new_params(
+        conn.protocol(),
+        cwd,
+        mcp_servers_for(&app, &conn_id),
+        engine,
+    );
+    let result = rpc_call(&conn, "session/new", new_params)?;
     touch_activity(&conn);
     let session = parse_session_result(&result, None)?;
     *conn.acp_session_id.lock().unwrap() = Some(session.session_id.clone());
@@ -2568,43 +3421,30 @@ pub(crate) fn run_automation_turn(
     }
 
     // 模型 / 思考强度：best-effort，agent 不认就保持默认，不阻断这轮运行
+    let protocol = conn.protocol();
     if let Some(model) = model_id.filter(|m| !m.trim().is_empty()) {
-        let _ = rpc_call(
-            &conn,
-            "session/set_config_option",
-            json!({ "sessionId": session.session_id, "configId": "model", "value": model }),
-        );
+        if let Ok(params) = set_config_params(protocol, &session.session_id, "model", &json!(model)) {
+            let _ = rpc_call(&conn, "session/set_config_option", params);
+        }
     }
     if let Some((config_id, value)) = effort {
         if !config_id.trim().is_empty() && !value.trim().is_empty() {
-            let _ = rpc_call(
-                &conn,
-                "session/set_config_option",
-                json!({ "sessionId": session.session_id, "configId": config_id, "value": value }),
-            );
+            if let Ok(params) =
+                set_config_params(protocol, &session.session_id, &config_id, &json!(value))
+            {
+                let _ = rpc_call(&conn, "session/set_config_option", params);
+            }
         }
     }
 
     // 每轮开始清空 summary 槽，避免上一轮残留
     *conn.last_assistant_text.lock().unwrap() = None;
 
-    let prompt_result = rpc_call(
-        &conn,
-        "session/prompt",
-        json!({
-            "sessionId": session.session_id,
-            "prompt": [{ "type": "text", "text": prompt }]
-        }),
-    );
+    let prompt_result = send_prompt(&conn, &session.session_id, &prompt);
     touch_activity(&conn);
 
     match prompt_result {
-        Ok(value) => {
-            let stop_reason = value
-                .get("stopReason")
-                .and_then(Value::as_str)
-                .unwrap_or("end_turn")
-                .to_string();
+        Ok(result) => {
             let summary = conn
                 .last_assistant_text
                 .lock()
@@ -2613,7 +3453,7 @@ pub(crate) fn run_automation_turn(
                 .filter(|t| !t.trim().is_empty());
             Ok(AutomationTurnOutcome {
                 session_id: session.session_id,
-                stop_reason,
+                stop_reason: result.stop_reason,
                 summary,
             })
         }
@@ -2639,6 +3479,327 @@ mod tests {
         // 既有能力保持不变（回归护栏）
         assert!(caps.get("fs").is_some());
         assert!(caps.get("elicitation").is_some());
+    }
+
+    #[test]
+    fn client_capabilities_v2_only_elicitation() {
+        let caps = client_capabilities_for(AcpProtocol::V2);
+        assert!(caps.get("elicitation").is_some());
+        assert!(caps.get("fs").is_none());
+        assert!(caps.get("session").is_none());
+        assert!(caps.get("terminal").is_none());
+    }
+
+    #[test]
+    fn initialize_params_v1_shape() {
+        let params = initialize_params(AcpProtocol::V1);
+        assert_eq!(params.get("protocolVersion"), Some(&json!(1)));
+        assert!(params.get("clientCapabilities").is_some());
+        assert!(params.get("clientInfo").is_some());
+        assert!(params.get("capabilities").is_none());
+        assert!(params.get("info").is_none());
+    }
+
+    #[test]
+    fn initialize_params_v2_shape() {
+        let params = initialize_params(AcpProtocol::V2);
+        assert_eq!(params.get("protocolVersion"), Some(&json!(2)));
+        assert!(params.get("capabilities").is_some());
+        assert!(params.get("info").is_some());
+        assert!(params.get("clientCapabilities").is_none());
+        assert!(params.get("clientInfo").is_none());
+    }
+
+    #[test]
+    fn parse_forced_protocol_recognizes_switch() {
+        assert_eq!(parse_forced_protocol(Some("v1")), Some(AcpProtocol::V1));
+        assert_eq!(parse_forced_protocol(Some(" V2 ")), Some(AcpProtocol::V2));
+        assert_eq!(parse_forced_protocol(Some("auto")), None);
+        assert_eq!(parse_forced_protocol(Some("")), None);
+        assert_eq!(parse_forced_protocol(Some("garbage")), None);
+        assert_eq!(parse_forced_protocol(None), None);
+    }
+
+    #[test]
+    fn should_fallback_to_v1_only_for_version_errors() {
+        assert!(should_fallback_to_v1(
+            "acp:-32022 Unsupported protocol version"
+        ));
+        assert!(should_fallback_to_v1("acp:-32602 Invalid params"));
+        assert!(!should_fallback_to_v1("acp:-32000 auth required"));
+        assert!(!should_fallback_to_v1("timeout:60s initialize"));
+        assert!(!should_fallback_to_v1("acp-dead: stdout EOF"));
+    }
+
+    #[test]
+    fn initialize_version_parse() {
+        assert_eq!(initialize_version(&json!({"protocolVersion": 2})), Some(2));
+        assert_eq!(initialize_version(&json!({"protocolVersion": 1})), Some(1));
+        assert_eq!(initialize_version(&json!({"protocolVersion": "2"})), Some(2));
+        assert_eq!(initialize_version(&json!({})), None);
+    }
+
+    #[test]
+    fn session_load_method_and_params() {
+        assert_eq!(session_load_method(AcpProtocol::V1), "session/load");
+        assert_eq!(session_load_method(AcpProtocol::V2), "session/resume");
+
+        let v1 = session_load_params(
+            AcpProtocol::V1,
+            "s1".into(),
+            "/tmp".into(),
+            json!([]),
+            AgentType::OpenCode,
+        );
+        assert_eq!(v1.get("sessionId"), Some(&json!("s1")));
+        assert!(v1.get("replayFrom").is_none());
+
+        let v2 = session_load_params(
+            AcpProtocol::V2,
+            "s1".into(),
+            "/tmp".into(),
+            json!([]),
+            AgentType::OpenCode,
+        );
+        assert_eq!(v2.get("sessionId"), Some(&json!("s1")));
+        assert_eq!(v2.pointer("/replayFrom/type"), Some(&json!("start")));
+        assert_eq!(v2.get("cwd"), Some(&json!("/tmp")));
+        assert_eq!(v2.get("mcpServers"), Some(&json!([])));
+    }
+
+    #[test]
+    fn set_config_params_v2_type() {
+        let id = set_config_params(AcpProtocol::V2, "s", "model", &json!("x")).unwrap();
+        assert_eq!(id.get("type"), Some(&json!("id")));
+        let boolean = set_config_params(AcpProtocol::V2, "s", "flag", &json!(true)).unwrap();
+        assert_eq!(boolean.get("type"), Some(&json!("boolean")));
+        let err = set_config_params(AcpProtocol::V2, "s", "x", &json!(1)).unwrap_err();
+        assert!(err.starts_with("acp:-32602"), "err={err}");
+
+        // v1 不带 type（保持现状）
+        let v1 = set_config_params(AcpProtocol::V1, "s", "model", &json!("x")).unwrap();
+        assert!(v1.get("type").is_none());
+    }
+
+    #[test]
+    fn normalize_config_options_maps_v2_keys() {
+        let mut value = json!({
+            "configOptions": [{
+                "configId": "model",
+                "groupId": "g",
+                "category": "model",
+                "currentValue": "x",
+                "type": "select",
+                "options": [{ "groupId": "g1", "options": [{ "value": "a" }] }]
+            }]
+        });
+        normalize_config_options(&mut value);
+        assert_eq!(value.pointer("/configOptions/0/id"), Some(&json!("model")));
+        assert!(value.pointer("/configOptions/0/configId").is_none());
+        assert_eq!(value.pointer("/configOptions/0/group"), Some(&json!("g")));
+        assert_eq!(
+            value.pointer("/configOptions/0/category"),
+            Some(&json!("model"))
+        );
+        assert_eq!(
+            value.pointer("/configOptions/0/currentValue"),
+            Some(&json!("x"))
+        );
+        assert_eq!(
+            value.pointer("/configOptions/0/options/0/group"),
+            Some(&json!("g1"))
+        );
+        assert_eq!(
+            value.pointer("/configOptions/0/options/0/options/0/value"),
+            Some(&json!("a"))
+        );
+
+        // 裸数组同样归一化
+        let mut array = json!([{ "configId": "a" }, { "groupId": "b" }]);
+        normalize_config_options(&mut array);
+        assert_eq!(array[0].get("id"), Some(&json!("a")));
+        assert_eq!(array[1].get("group"), Some(&json!("b")));
+    }
+
+    #[test]
+    fn config_rejection_after_normalize() {
+        let mut result = json!({
+            "configOptions": [
+                { "configId": "model", "currentValue": "fallback" }
+            ]
+        });
+        normalize_config_options(&mut result);
+        assert_eq!(
+            detect_config_rejection(&result, "model", "requested").as_deref(),
+            Some("fallback")
+        );
+    }
+
+    #[test]
+    fn normalize_plan_update_maps_to_plan() {
+        let out = normalize_plan_update(&json!({
+            "sessionUpdate": "plan_update",
+            "plan": {
+                "type": "items",
+                "planId": "p1",
+                "entries": [{ "content": "a", "status": "pending" }]
+            }
+        }))
+        .expect("items plan");
+        assert_eq!(
+            out,
+            json!({
+                "sessionUpdate": "plan",
+                "entries": [{ "content": "a", "status": "pending" }]
+            })
+        );
+
+        // 非 items 类型 / 缺 plan → 丢弃
+        assert!(normalize_plan_update(&json!({ "plan": { "type": "other" } })).is_none());
+        assert!(normalize_plan_update(&json!({ "sessionUpdate": "plan_update" })).is_none());
+    }
+
+    fn text_blocks(texts: &[&str]) -> Value {
+        json!(texts
+            .iter()
+            .map(|t| json!({ "type": "text", "text": t }))
+            .collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn normalize_agent_message_delta_dedupes_by_message_id() {
+        let mut store: HashMap<String, String> = HashMap::new();
+        let first = text_blocks(&["hello"]);
+        let out = agent_upsert_delta(&mut store, "agent", "m1", Some(&first))
+            .expect("首次全文");
+        assert_eq!(
+            out.get("sessionUpdate").and_then(Value::as_str),
+            Some("agent_message_chunk")
+        );
+        assert_eq!(
+            out.get("content")
+                .and_then(|c| c.get("text"))
+                .and_then(Value::as_str),
+            Some("hello")
+        );
+
+        // 前缀扩展 → 只发后缀
+        let second = text_blocks(&["hello", " world"]);
+        let out = agent_upsert_delta(&mut store, "agent", "m1", Some(&second))
+            .expect("前缀只发增量");
+        assert_eq!(
+            out.get("content")
+                .and_then(|c| c.get("text"))
+                .and_then(Value::as_str),
+            Some(" world")
+        );
+
+        // 内容未变 → 不 emit
+        assert!(agent_upsert_delta(&mut store, "agent", "m1", Some(&second)).is_none());
+
+        // 非前缀改写 → 不 emit，但更新累积避免下次重复
+        let rewritten = text_blocks(&["different"]);
+        assert!(agent_upsert_delta(&mut store, "agent", "m1", Some(&rewritten)).is_none());
+        assert_eq!(store.get("agent:m1"), Some(&"different".to_string()));
+
+        // 空数组 → 清空累积，不 emit
+        let empty = json!([]);
+        assert!(agent_upsert_delta(&mut store, "agent", "m1", Some(&empty)).is_none());
+        assert!(!store.contains_key("agent:m1"));
+
+        // content 缺失 → 不 emit、不改累积
+        assert!(agent_upsert_delta(&mut store, "agent", "m1", None).is_none());
+
+        // thought 映射为 agent_thought_chunk
+        let thought = text_blocks(&["thinking"]);
+        let out = agent_upsert_delta(&mut store, "thought", "m1", Some(&thought)).unwrap();
+        assert_eq!(
+            out.get("sessionUpdate").and_then(Value::as_str),
+            Some("agent_thought_chunk")
+        );
+    }
+
+    #[test]
+    fn normalize_permission_tool_call_shapes() {
+        // subject.type == tool_call
+        let params = json!({
+            "title": "Run",
+            "description": "desc",
+            "subject": { "type": "tool_call", "toolCall": { "toolCallId": "c1" } },
+            "_meta": { "claudeCode": { "x": 1 } }
+        });
+        let (tool_call, meta) = normalize_permission(AcpProtocol::V2, &params, "7");
+        assert_eq!(tool_call.get("toolCallId"), Some(&json!("c1")));
+        assert_eq!(tool_call.get("title"), Some(&json!("Run")));
+        assert_eq!(tool_call.get("status"), Some(&json!("pending")));
+        assert_eq!(meta.pointer("/permission/version"), Some(&json!(1)));
+        assert_eq!(meta.pointer("/permission/title"), Some(&json!("Run")));
+        assert_eq!(
+            meta.pointer("/permission/description"),
+            Some(&json!("desc"))
+        );
+        assert_eq!(meta.pointer("/claudeCode/x"), Some(&json!(1)));
+
+        // subject.type == command → 合成可展示 toolCall
+        let params = json!({
+            "title": "Run cmd",
+            "subject": { "type": "command", "command": "ls -la", "cwd": "/tmp" }
+        });
+        let (tool_call, _) = normalize_permission(AcpProtocol::V2, &params, "9");
+        assert_eq!(tool_call.get("toolCallId"), Some(&json!("perm-9")));
+        assert_eq!(tool_call.get("kind"), Some(&json!("execute")));
+        assert_eq!(tool_call.get("status"), Some(&json!("pending")));
+        assert_eq!(tool_call.pointer("/rawInput/command"), Some(&json!("ls -la")));
+        assert_eq!(tool_call.pointer("/rawInput/cwd"), Some(&json!("/tmp")));
+
+        // 无 subject → title 合成
+        let params = json!({ "title": "Allow?" });
+        let (tool_call, meta) = normalize_permission(AcpProtocol::V2, &params, "3");
+        assert_eq!(tool_call.get("toolCallId"), Some(&json!("perm-3")));
+        assert_eq!(tool_call.get("kind"), Some(&json!("other")));
+        assert_eq!(meta.pointer("/permission/title"), Some(&json!("Allow?")));
+
+        // v1 原样透传
+        let params = json!({
+            "toolCall": { "toolCallId": "t" },
+            "_meta": { "permission": { "version": 1 } }
+        });
+        let (tool_call, meta) = normalize_permission(AcpProtocol::V1, &params, "5");
+        assert_eq!(tool_call, json!({ "toolCallId": "t" }));
+        assert_eq!(meta, json!({ "permission": { "version": 1 } }));
+    }
+
+    #[test]
+    fn prompt_outcome_from_idle_maps_reason_usage_error() {
+        let outcome = prompt_outcome_from_idle(&json!({
+            "state": "idle",
+            "stopReason": "end_turn",
+            "usage": { "totalTokens": 7 }
+        }));
+        assert_eq!(outcome.stop_reason, "end_turn");
+        assert_eq!(outcome.usage, json!({ "totalTokens": 7 }));
+        assert!(outcome.error.is_none());
+
+        // error 对象 → rpc error 串
+        let outcome = prompt_outcome_from_idle(&json!({
+            "state": "idle",
+            "stopReason": "error",
+            "error": { "code": -32603, "message": "boom" }
+        }));
+        assert_eq!(outcome.stop_reason, "error");
+        assert_eq!(outcome.error.as_deref(), Some("acp:-32603 boom"));
+
+        // error 字符串 → 原样
+        let outcome = prompt_outcome_from_idle(&json!({
+            "state": "idle", "stopReason": "error", "error": "plain"
+        }));
+        assert_eq!(outcome.error.as_deref(), Some("plain"));
+
+        // 缺 stopReason → end_turn；缺 usage → Null
+        let outcome = prompt_outcome_from_idle(&json!({ "state": "idle" }));
+        assert_eq!(outcome.stop_reason, "end_turn");
+        assert_eq!(outcome.usage, Value::Null);
+        assert!(outcome.error.is_none());
     }
 
     #[test]
@@ -2853,6 +4014,7 @@ mod tests {
         assert_eq!(timeout_for("initialize"), Duration::from_secs(60));
         assert_eq!(timeout_for("session/new"), Duration::from_secs(30));
         assert_eq!(timeout_for("session/load"), Duration::from_secs(30));
+        assert_eq!(timeout_for("session/resume"), Duration::from_secs(30));
         assert_eq!(timeout_for("session/prompt"), Duration::from_secs(300));
         assert_eq!(
             timeout_for("session/set_config_option"),
