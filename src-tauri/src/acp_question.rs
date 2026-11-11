@@ -4,7 +4,9 @@
 // 不触碰进程/连接（协议路由在 acp.rs）。
 //
 // 协议形状（design §1，核对自 codeg `question.rs:1255,1600`）：
-//   请求 params.mode.requestedSchema.properties.<fieldId> = { type, title, enum, ... }
+//   请求 params.requestedSchema.properties.<fieldId> = { type, title, enum, ... }
+//   （claude-agent-acp 0.90+/0.104 为扁平形状；codex 旧形态为
+//    params.mode.requestedSchema.*，两者都接受）
 //   响应 result = { action: "accept", content: { <fieldId>: <value> } } | { action: "decline" }
 // 本期只认 Questions：single-select / multi-select / free-text（一次一问）。
 // Approval 型（MCP 工具审批 / message-only confirm）与其余未知形状 → Decline，
@@ -54,7 +56,8 @@ pub enum ElicitationPlan {
 /// 从 elicitaiton `params` 提取问题；无法识别 → Decline。
 ///
 /// 规则（design §3.1）：
-/// - `params.mode.requestedSchema.properties` 缺失/非 object/空 → Decline。
+/// - `params.requestedSchema.properties`（claude-agent-acp 扁平形状）或
+///   `params.mode.requestedSchema.properties`（codex 嵌套形状）缺失/非 object/空 → Decline。
 /// - 逐字段：`type=="array"` → Multi（选项取 `items.enum`/`items.oneOf`）；
 ///   `type=="string"` 且含 `enum` → Single；`type=="string"` 无 `enum` → Text；
 ///   其他类型（boolean/number/…) → 整体 Decline（不支持字段让 agent 自行处理）。
@@ -66,9 +69,12 @@ pub fn classify_elicitation(params: &Value) -> ElicitationPlan {
         .unwrap_or("")
         .to_string();
 
+    // 两种线上形状都要认：
+    // - claude-agent-acp 0.90+/0.104：`{ mode: "form", requestedSchema }`（扁平）
+    // - codex 旧形态：`{ mode: { requestedSchema } }`（嵌套）
     let properties = params
-        .get("mode")
-        .and_then(|m| m.get("requestedSchema"))
+        .get("requestedSchema")
+        .or_else(|| params.get("mode").and_then(|m| m.get("requestedSchema")))
         .and_then(|s| s.get("properties"))
         .and_then(Value::as_object);
 
@@ -252,6 +258,43 @@ mod tests {
             vec![
                 QuestionOption { value: "dev".into(), label: "开发".into() },
                 QuestionOption { value: "prod".into(), label: "生产".into() },
+            ]
+        );
+    }
+
+    /// claude-agent-acp 0.90+/0.104 的扁平形状：
+    /// `{ mode: "form", requestedSchema, ... }`（mode 是字符串，不是嵌套对象）。
+    #[test]
+    fn classify_flat_form_shape_from_claude_agent_acp() {
+        let params = json!({
+            "mode": "form",
+            "sessionId": "s1",
+            "message": "选择方案",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "question_0": {
+                        "type": "string",
+                        "title": "方案",
+                        "oneOf": [
+                            { "const": "A", "title": "方案 A" },
+                            { "const": "B", "title": "方案 B" }
+                        ]
+                    }
+                }
+            }
+        });
+        let ElicitationPlan::Questions(qs) = classify_elicitation(&params) else {
+            panic!("扁平 form 形状应识别为 Questions");
+        };
+        assert_eq!(qs[0].id, "question_0");
+        assert_eq!(qs[0].prompt, "方案");
+        assert_eq!(qs[0].kind, QuestionKind::Single);
+        assert_eq!(
+            qs[0].options,
+            vec![
+                QuestionOption { value: "A".into(), label: "方案 A".into() },
+                QuestionOption { value: "B".into(), label: "方案 B".into() },
             ]
         );
     }
