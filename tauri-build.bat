@@ -1,12 +1,5 @@
 @echo off
-rem Build the UI and the exact companion binary that Tauri bundles as a resource.
-call pnpm build
-if errorlevel 1 exit /b %errorlevel%
-pushd src-tauri
-cargo build --release --bin lightr-ask-mcp
-if errorlevel 1 exit /b %errorlevel%
-copy /Y "target\release\lightr-ask-mcp.exe" "binaries\lightr-ask-mcp.exe" >nul
-if errorlevel 1 exit /b %errorlevel%
-popd
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke-lightr-ask-mcp.ps1 -Configuration release -RequireStagedResource
+rem Windows 手动入口：统一转到跨平台准备脚本
+rem （Vite 构建 + lightr-ask-mcp 编译/暂存 + smoke 测试）。
+node "%~dp0scripts\prepare-tauri-build.mjs"
 if errorlevel 1 exit /b %errorlevel%

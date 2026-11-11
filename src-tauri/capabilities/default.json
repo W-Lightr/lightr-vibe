@@ -14,26 +14,6 @@
     "core:window:allow-minimize",
     "core:window:allow-close",
     "opener:default",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "name": "binaries/agent-sidecar",
-          "sidecar": true,
-          "args": true
-        }
-      ]
-    },
-    {
-      "identifier": "shell:allow-spawn",
-      "allow": [
-        {
-          "name": "binaries/agent-sidecar",
-          "sidecar": true,
-          "args": true
-        }
-      ]
-    },
     "shell:allow-kill",
     "shell:allow-stdin-write",
     "dialog:allow-open"

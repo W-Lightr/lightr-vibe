@@ -20,6 +20,7 @@ dist-ssr
 
 # Generated release companion staged for Tauri bundle.resources.
 src-tauri/binaries/lightr-ask-mcp.exe
+src-tauri/binaries/lightr-ask-mcp
 
 # Editor directories and files
 .vscode/*

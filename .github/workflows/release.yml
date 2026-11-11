@@ -1,0 +1,144 @@
+name: Release
+
+# 触发方式：
+# - 推送 v* 标签：构建 Windows / macOS / Linux 安装包并创建 GitHub Release。
+# - 手动运行：只构建，安装包作为本次 workflow 的 artifact 提供，不发 Release。
+#
+# 版本要求：标签形如 v0.1.0 时，必须与 src-tauri/tauri.conf.json 的 version 一致。
+# 可选 GitHub Secrets（不配置则构建未签名包）：
+#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY
+#   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            platform: windows-latest
+            rust_targets: ''
+            tauri_args: --config src-tauri/tauri.bundle.windows.conf.json
+            target_triple: ''
+          - name: macOS arm64
+            platform: macos-latest
+            rust_targets: aarch64-apple-darwin
+            tauri_args: >-
+              --target aarch64-apple-darwin
+              --config src-tauri/tauri.bundle.macos.conf.json
+            target_triple: aarch64-apple-darwin
+          - name: macOS x64
+            platform: macos-latest
+            rust_targets: x86_64-apple-darwin
+            tauri_args: >-
+              --target x86_64-apple-darwin
+              --config src-tauri/tauri.bundle.macos.conf.json
+            target_triple: x86_64-apple-darwin
+          - name: Linux x64
+            platform: ubuntu-22.04
+            rust_targets: ''
+            tauri_args: --config src-tauri/tauri.bundle.linux.conf.json
+            target_triple: ''
+
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # 与 pnpm-lock.yaml (lockfileVersion 9) 兼容；本地开发使用 11.4.0
+          version: 11.4.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: .pnpm-store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install frontend dependencies
+        # pnpm-workspace.yaml 里的 storeDir 是本机 Windows 路径，CI 用项目内 store 覆盖
+        run: pnpm install --frozen-lockfile --store-dir .pnpm-store
+
+      - name: Verify tag matches app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          app_version="$(node -e "console.log(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version)")"
+          if [ "$tag_version" != "$app_version" ]; then
+            echo "::error::标签 v${tag_version} 与 src-tauri/tauri.conf.json 的版本 ${app_version} 不一致"
+            exit 1
+          fi
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # beforeBuildCommand 据此为同一目标架构编译 lightr-ask-mcp
+          LIGHTR_TARGET_TRIPLE: ${{ matrix.target_triple }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          args: ${{ matrix.tauri_args }}
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('lightr-vibe {0}', github.ref_name) || '' }}
+          releaseBody: |
+            lightr-vibe ${{ github.ref_name }}
+
+            安装包见下方 Assets：
+            - Windows：`.msi` / `.exe`
+            - macOS：`.dmg`
+            - Linux：`.deb` / `.rpm` / `.AppImage`
+          releaseDraft: false
+          prerelease: false
+          # 手动运行时没有 tagName，改为上传 workflow artifact
+          uploadWorkflowArtifacts: ${{ !startsWith(github.ref, 'refs/tags/') }}
