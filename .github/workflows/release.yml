@@ -1,29 +1,105 @@
 name: Release
 
-# 触发方式：
-# - 推送 v* 标签：构建 Windows / macOS / Linux 安装包并创建 GitHub Release。
-# - 手动运行：只构建，安装包作为本次 workflow 的 artifact 提供，不发 Release。
+# 触发方式：手动运行（Actions -> Release -> Run workflow）。
 #
-# 版本要求：标签形如 v0.1.0 时，必须与 src-tauri/tauri.conf.json 的 version 一致。
-# 可选 GitHub Secrets（不配置则构建未签名包）：
-#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY
-#   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+# Release 上传规则：
+# - release_tag 留空：只构建，安装包作为本次 workflow 的 artifact 提供。
+# - release_tag=latest（默认）：首次创建、之后复用同一个 latest Release，
+#   安装包作为 Release Assets 可直接下载；不会每次新建 tag。
+# - release_id 填已有 Release 的数字 ID：只更新该 Release，绝不创建 tag。
+#
+# 注意：GitHub Release 必须关联一个 tag。要“不发布新 tag”，就复用同一个
+# tag（如 latest），或传入已有 Release 的 release_id。
+#
+# macOS 签名：
+# - 配置 APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD 等 secrets 时签名/公证。
+# - 未配置时使用 ad-hoc 签名；macOS 仍会提示“未知开发者”，需用户在
+#   系统设置 -> 隐私与安全性 中允许。
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '要创建/更新的 Release tag（如 latest / v0.1.0）；留空只上传 workflow artifact'
+        required: false
+        default: 'latest'
+      release_id:
+        description: '已有 Release 的数字 ID；填写后只上传资产，不创建任何 tag'
+        required: false
+        default: ''
+      draft:
+        description: '新建 Release 时设为草稿'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_id || inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # 先解析/创建 Release，避免多个矩阵任务同时创建同一个 Release 产生竞态。
+  prepare-release:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - name: Resolve or create release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_RELEASE_ID: ${{ inputs.release_id }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_DRAFT: ${{ inputs.draft }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          release_id=''
+
+          if [ -n "$INPUT_RELEASE_ID" ]; then
+            release_id="$INPUT_RELEASE_ID"
+            echo "使用指定的 Release ID: $release_id"
+          elif [ -n "$INPUT_RELEASE_TAG" ]; then
+            # 如果 tag 已存在，提示它指向的 commit，避免资产与 tag 源码不一致。
+            tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$INPUT_RELEASE_TAG" --jq .sha 2>/dev/null || true)"
+            if [ -n "$tag_sha" ] && [ "$tag_sha" != "$TARGET_SHA" ]; then
+              echo "::warning::tag $INPUT_RELEASE_TAG 指向 $tag_sha，本次构建是 $TARGET_SHA；请确认资产与 tag 源码一致。"
+            fi
+
+            # 列出所有 Release（含 draft），按 tag 查找。
+            release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+              --jq ".[] | select(.tag_name == \"$INPUT_RELEASE_TAG\") | .id" | head -n1 || true)"
+
+            if [ -z "$release_id" ]; then
+              echo "Release $INPUT_RELEASE_TAG 不存在，创建中..."
+              draft_flag=''
+              if [ "$INPUT_DRAFT" = 'true' ]; then
+                draft_flag='--draft'
+              fi
+              # prepare-release 没有 checkout，必须显式指定仓库。
+              gh release create "$INPUT_RELEASE_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "lightr-vibe $INPUT_RELEASE_TAG" \
+                --notes "lightr-vibe 构建产物，安装包见下方 Assets。" \
+                --target "$TARGET_SHA" \
+                $draft_flag
+              release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+                --jq ".[] | select(.tag_name == \"$INPUT_RELEASE_TAG\") | .id" | head -n1)"
+            fi
+            echo "Release ID: $release_id"
+          else
+            echo "未指定 Release，安装包将只作为 workflow artifact 上传。"
+          fi
+
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.name }}
+    needs: prepare-release
     strategy:
       fail-fast: false
       matrix:
@@ -100,41 +176,80 @@ jobs:
         # pnpm-workspace.yaml 里的 storeDir 是本机 Windows 路径，CI 用项目内 store 覆盖
         run: pnpm install --frozen-lockfile --store-dir .pnpm-store
 
-      - name: Verify tag matches app version
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Verify release tag matches app version
+        if: inputs.release_id == '' && startsWith(inputs.release_tag, 'v')
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${RELEASE_TAG#v}"
           app_version="$(node -e "console.log(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version)")"
           if [ "$tag_version" != "$app_version" ]; then
-            echo "::error::标签 v${tag_version} 与 src-tauri/tauri.conf.json 的版本 ${app_version} 不一致"
+            echo "::error::Release tag ${RELEASE_TAG} 与 src-tauri/tauri.conf.json 的版本 ${app_version} 不一致"
             exit 1
           fi
 
-      - name: Build and release
-        uses: tauri-apps/tauri-action@v1
+      - name: Configure Apple code signing
+        if: runner.os == 'macOS'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # beforeBuildCommand 据此为同一目标架构编译 lightr-ask-mcp
-          LIGHTR_TARGET_TRIPLE: ${{ matrix.target_triple }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # base64 中不应有空白，去掉复制时可能带上的换行/空格。
+          APPLE_CERTIFICATE="$(printf '%s' "${APPLE_CERTIFICATE:-}" | tr -d '[:space:]')"
+
+          set_env() {
+            local name="$1"
+            local value="$2"
+            if [ -n "$value" ]; then
+              printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+            fi
+          }
+
+          # 关键：只在证书和密码都非空时才导出 APPLE_CERTIFICATE。
+          # GitHub Actions 未配置的 secret 会变成空字符串；Tauri 用 var_os
+          # 判断是否存在，空字符串也会触发 security import 并失败。
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ]; then
+            if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+              echo "::error::已配置 APPLE_CERTIFICATE，但缺少 APPLE_SIGNING_IDENTITY。"
+              exit 1
+            fi
+            set_env APPLE_CERTIFICATE "$APPLE_CERTIFICATE"
+            set_env APPLE_CERTIFICATE_PASSWORD "$APPLE_CERTIFICATE_PASSWORD"
+            set_env APPLE_SIGNING_IDENTITY "$APPLE_SIGNING_IDENTITY"
+            if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              set_env APPLE_ID "$APPLE_ID"
+              set_env APPLE_PASSWORD "$APPLE_PASSWORD"
+              set_env APPLE_TEAM_ID "$APPLE_TEAM_ID"
+              echo "已检测到 Apple 证书，将进行签名/公证。"
+            else
+              echo "已检测到 Apple 证书，将进行签名；未完整配置公证凭据，跳过公证。"
+            fi
+          else
+            if [ -n "$APPLE_CERTIFICATE" ] || [ -n "$APPLE_CERTIFICATE_PASSWORD" ]; then
+              echo "::warning::APPLE_CERTIFICATE 与 APPLE_CERTIFICATE_PASSWORD 需要同时配置，本次改用 ad-hoc 签名。"
+            fi
+            set_env APPLE_SIGNING_IDENTITY "-"
+            echo "未配置 Apple 证书，使用 ad-hoc 签名。"
+          fi
+
+      - name: Build and upload
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # beforeBuildCommand 据此为同一目标架构编译 lightr-ask-mcp
+          LIGHTR_TARGET_TRIPLE: ${{ matrix.target_triple }}
         with:
           args: ${{ matrix.tauri_args }}
-          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('lightr-vibe {0}', github.ref_name) || '' }}
-          releaseBody: |
-            lightr-vibe ${{ github.ref_name }}
-
-            安装包见下方 Assets：
-            - Windows：`.msi` / `.exe`
-            - macOS：`.dmg`
-            - Linux：`.deb` / `.rpm` / `.AppImage`
-          releaseDraft: false
-          prerelease: false
-          # 手动运行时没有 tagName，改为上传 workflow artifact
-          uploadWorkflowArtifacts: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          # 只按已有 Release 的 ID 上传；没有 Release 时为空，不创建任何 tag。
+          releaseId: ${{ needs.prepare-release.outputs.release_id }}
+          # 没有指定 Release 时，安装包上传为 workflow artifact。
+          uploadWorkflowArtifacts: ${{ needs.prepare-release.outputs.release_id == '' }}
+          # 项目未使用 Tauri updater，不生成 latest.json / .sig。
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
