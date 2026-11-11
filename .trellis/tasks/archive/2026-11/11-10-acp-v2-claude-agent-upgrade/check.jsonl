@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "检查 ACP 事件名/形状、connId 路由、权限与超时契约是否被破坏"}
+{"file": ".trellis/tasks/11-10-acp-v2-claude-agent-upgrade/prd.md", "reason": "逐条核对 R1–R10 与 AC1–AC12"}
+{"file": ".trellis/tasks/11-10-acp-v2-claude-agent-upgrade/design.md", "reason": "核对实现是否遵循双栈边界、归一化表与回滚开关"}
+{"file": ".trellis/tasks/11-10-acp-v2-claude-agent-upgrade/implement.md", "reason": "核对实施顺序、验证命令、禁止事项与回滚点"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "检查错误处理、测试覆盖与代码质量"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "检查 Rust 归一化与前端 v1 契约之间的跨层假设"}

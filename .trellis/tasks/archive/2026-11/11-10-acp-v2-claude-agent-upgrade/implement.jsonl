@@ -1,0 +1,6 @@
+{"file": ".trellis/tasks/11-10-acp-v2-claude-agent-upgrade/research/acp-v2-protocol.md", "reason": "ACP v1→v2 差异、claude-agent-acp 0.104 行为与本项目影响点，是本次实现的协议依据"}
+{"file": ".trellis/tasks/11-10-acp-v2-claude-agent-upgrade/design.md", "reason": "协议枚举、协商流程、prompt waiter、update/权限/配置归一化的实现契约"}
+{"file": ".trellis/tasks/11-10-acp-v2-claude-agent-upgrade/implement.md", "reason": "有序实施清单、验证命令、回滚点与禁止事项"}
+{"file": ".trellis/spec/frontend/tauri-bridge.md", "reason": "ACP 事件契约、per-session 连接不变量、权限富数据与超时规则，改动必须保持"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "前端类型补充（tool/plan 状态枚举）与 Rust/TS 边界类型约束"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "项目代码质量、错误处理与验证基线"}
